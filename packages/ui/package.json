@@ -1,0 +1,19 @@
+{
+  "name": "@shilabs/ui",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "type-check": "tsc -b --pretty false",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "react": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.4"
+  }
+}

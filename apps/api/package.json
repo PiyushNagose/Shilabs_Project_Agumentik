@@ -1,0 +1,28 @@
+{
+  "name": "@shilabs/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "build": "tsc -b",
+    "type-check": "tsc -b --pretty false",
+    "test": "vitest run",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:seed": "tsx prisma/seed.ts",
+    "db:reset": "prisma migrate reset --force"
+  },
+  "dependencies": {
+    "@prisma/client": "6.12.0",
+    "@shilabs/shared-config": "0.0.0",
+    "@shilabs/shared-types": "0.0.0",
+    "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "prisma": "6.12.0",
+    "tsx": "^4.19.0"
+  }
+}

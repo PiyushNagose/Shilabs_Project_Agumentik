@@ -1,0 +1,23 @@
+{
+  "name": "@shilabs/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "type-check": "tsc -b --pretty false",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@shilabs/shared-types": "0.0.0",
+    "@shilabs/ui": "0.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.4",
+    "@types/react-dom": "^18.3.0"
+  }
+}

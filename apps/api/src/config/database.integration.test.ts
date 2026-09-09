@@ -1,0 +1,105 @@
+import { PrismaClient, ActivityType, AuditActorType, UserRole } from "@prisma/client";
+
+const databaseUrl = process.env.DATABASE_URL;
+const runDatabaseTests = databaseUrl === undefined ? describe.skip : describe;
+
+runDatabaseTests("database schema integration", () => {
+  const prisma = new PrismaClient();
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  it("contains the seeded pipeline stages in canonical order", async () => {
+    const stages = await prisma.pipelineStage.findMany({ orderBy: { order: "asc" } });
+
+    expect(stages.map((stage) => stage.key)).toEqual([
+      "NEW",
+      "CONTACTED",
+      "ENGAGED",
+      "QUALIFIED",
+      "MEETING_BOOKED",
+      "PROPOSAL",
+      "NEGOTIATION",
+      "WON",
+      "LOST",
+      "NURTURE"
+    ]);
+    expect(stages.find((stage) => stage.key === "WON")).toMatchObject({
+      probability: 100,
+      isClosed: true,
+      isWon: true,
+      isLost: false
+    });
+    expect(stages.find((stage) => stage.key === "LOST")).toMatchObject({
+      probability: 0,
+      isClosed: true,
+      isWon: false,
+      isLost: true
+    });
+  });
+
+  it("enforces important relationships and contact duplicate assumptions", async () => {
+    const suffix = `${String(Date.now())}-${Math.random().toString(36).slice(2)}`;
+    const user = await prisma.user.create({
+      data: {
+        email: `owner-${suffix}@example.local`,
+        passwordHash: "test-only-password-hash",
+        firstName: "Test",
+        lastName: "Owner",
+        role: UserRole.SALES_REP
+      }
+    });
+    const company = await prisma.company.create({
+      data: { name: `Relationship Test ${suffix}`, website: `https://${suffix}.example.local` }
+    });
+    const contact = await prisma.contact.create({
+      data: {
+        companyId: company.id,
+        firstName: "Priya",
+        lastName: "Prospect",
+        normalizedEmail: `priya-${suffix}@example.local`
+      }
+    });
+    const newStage = await prisma.pipelineStage.findUniqueOrThrow({ where: { key: "NEW" } });
+    const lead = await prisma.lead.create({
+      data: {
+        companyId: company.id,
+        contactId: contact.id,
+        ownerId: user.id,
+        source: "TEST",
+        stageId: newStage.id
+      }
+    });
+
+    await prisma.activity.create({
+      data: {
+        leadId: lead.id,
+        actorUserId: user.id,
+        type: ActivityType.LEAD_CREATED,
+        description: "Test lead created"
+      }
+    });
+    await prisma.auditEvent.create({
+      data: {
+        actorType: AuditActorType.USER,
+        actorId: user.id,
+        entityType: "Lead",
+        entityId: lead.id,
+        action: "LEAD_CREATED",
+        after: { leadId: lead.id }
+      }
+    });
+
+    await expect(
+      prisma.contact.create({
+        data: {
+          companyId: company.id,
+          firstName: "Duplicate",
+          lastName: "Prospect",
+          normalizedEmail: `priya-${suffix}@example.local`
+        }
+      })
+    ).rejects.toThrow();
+  });
+});

@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "forceConsistentCasingInFileNames": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "baseUrl": ".",
+    "paths": {
+      "@shilabs/shared-types": ["packages/shared-types/src/index.ts"],
+      "@shilabs/shared-config": ["packages/shared-config/src/index.ts"],
+      "@shilabs/validation": ["packages/validation/src/index.ts"],
+      "@shilabs/ui": ["packages/ui/src/index.ts"]
+    }
+  }
+}

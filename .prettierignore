@@ -1,0 +1,7 @@
+node_modules
+dist
+coverage
+package-lock.json
+*.docx
+docs/03_ShilaBS_AI_Sales_Engine_Folder_Structure_and_Codex_Guide.md
+docs/04_ShilaBS_AI_Sales_Engine_Module_by_Module_Implementation_Playbook.md

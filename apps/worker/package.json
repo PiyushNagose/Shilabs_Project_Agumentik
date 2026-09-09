@@ -1,0 +1,20 @@
+{
+  "name": "@shilabs/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/worker.js",
+  "scripts": {
+    "dev": "tsx src/worker.ts",
+    "build": "tsc -b",
+    "type-check": "tsc -b --pretty false",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@shilabs/shared-config": "0.0.0",
+    "@shilabs/shared-types": "0.0.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0"
+  }
+}

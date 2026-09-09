@@ -1,0 +1,234 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  SALES_MANAGER
+  SALES_REP
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum LeadStatus {
+  OPEN
+  WON
+  LOST
+  NURTURE
+  DISQUALIFIED
+}
+
+enum LeadTemperature {
+  HOT
+  WARM
+  NURTURE
+}
+
+enum DealStatus {
+  OPEN
+  WON
+  LOST
+}
+
+enum ActivityType {
+  LEAD_CREATED
+  OWNER_CHANGED
+  STAGE_CHANGED
+  NOTE_ADDED
+  DEAL_CREATED
+  DEAL_UPDATED
+}
+
+enum AuditActorType {
+  USER
+  SYSTEM
+}
+
+model User {
+  id           String     @id @default(cuid())
+  email        String     @unique
+  passwordHash String
+  firstName    String
+  lastName     String
+  role         UserRole
+  status       UserStatus @default(ACTIVE)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  ownedLeads Lead[]     @relation("LeadOwner")
+  ownedDeals Deal[]     @relation("DealOwner")
+  activities Activity[]
+
+  @@index([role])
+  @@index([status])
+}
+
+model Company {
+  id            String   @id @default(cuid())
+  name          String
+  website       String?
+  industry      String?
+  location      String?
+  employeeRange String?
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  contacts Contact[]
+  leads    Lead[]
+
+  @@index([name])
+  @@index([website])
+}
+
+model Contact {
+  id               String   @id @default(cuid())
+  companyId        String
+  firstName        String
+  lastName         String
+  title            String?
+  email            String?
+  normalizedEmail  String?
+  phone            String?
+  normalizedPhone  String?
+  whatsappId       String?
+  source           String?
+  preferredChannel String?
+  doNotContact     Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  leads   Lead[]
+
+  @@unique([companyId, normalizedEmail])
+  @@unique([companyId, normalizedPhone])
+  @@unique([companyId, whatsappId])
+  @@index([companyId])
+  @@index([normalizedEmail])
+  @@index([normalizedPhone])
+  @@index([whatsappId])
+  @@index([doNotContact])
+}
+
+model PipelineStage {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  label       String
+  order       Int      @unique
+  probability Int
+  isClosed    Boolean  @default(false)
+  isWon       Boolean  @default(false)
+  isLost      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  leads Lead[]
+  deals Deal[]
+
+  @@index([isClosed])
+}
+
+model Lead {
+  id              String          @id @default(cuid())
+  companyId       String
+  contactId       String
+  ownerId         String?
+  source          String
+  status          LeadStatus      @default(OPEN)
+  stageId         String
+  requirement     String?
+  serviceInterest String?
+  score           Int             @default(0)
+  temperature     LeadTemperature @default(NURTURE)
+  estimatedValue  Decimal?        @db.Decimal(12, 2)
+  currency        String          @default("INR")
+  nextAction      String?
+  nextActionAt    DateTime?
+  lastActivityAt  DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  company    Company       @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  contact    Contact       @relation(fields: [contactId], references: [id], onDelete: Restrict)
+  owner      User?         @relation("LeadOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  stage      PipelineStage @relation(fields: [stageId], references: [id], onDelete: Restrict)
+  deal       Deal?
+  activities Activity[]
+
+  @@index([companyId])
+  @@index([contactId])
+  @@index([ownerId])
+  @@index([stageId])
+  @@index([status])
+  @@index([temperature])
+  @@index([source])
+  @@index([lastActivityAt])
+  @@index([createdAt])
+}
+
+model Deal {
+  id         String     @id @default(cuid())
+  leadId     String     @unique
+  stageId    String
+  ownerId    String?
+  value      Decimal?   @db.Decimal(12, 2)
+  currency   String     @default("INR")
+  probability Int
+  status     DealStatus @default(OPEN)
+  wonReason  String?
+  lostReason String?
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  lead  Lead          @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  stage PipelineStage @relation(fields: [stageId], references: [id], onDelete: Restrict)
+  owner User?         @relation("DealOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+
+  @@index([stageId])
+  @@index([ownerId])
+  @@index([status])
+}
+
+model Activity {
+  id          String       @id @default(cuid())
+  leadId      String
+  actorUserId String?
+  type        ActivityType
+  description String
+  createdAt   DateTime     @default(now())
+
+  lead      Lead  @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  actorUser User? @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([leadId])
+  @@index([actorUserId])
+  @@index([type])
+  @@index([createdAt])
+}
+
+model AuditEvent {
+  id         String         @id @default(cuid())
+  actorType  AuditActorType
+  actorId    String?
+  entityType String
+  entityId   String
+  action     String
+  before     Json?
+  after      Json?
+  createdAt  DateTime       @default(now())
+
+  @@index([actorType])
+  @@index([actorId])
+  @@index([entityType, entityId])
+  @@index([action])
+  @@index([createdAt])
+}

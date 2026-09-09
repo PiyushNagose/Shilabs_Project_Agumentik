@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "types": ["node", "vitest/globals"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext"
+  },
+  "include": ["src/**/*.ts"],
+  "references": [
+    { "path": "../../packages/shared-config" },
+    { "path": "../../packages/shared-types" }
+  ]
+}
