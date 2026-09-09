@@ -1,11 +1,12 @@
 import { PrismaClient, UserRole, UserStatus } from "@prisma/client";
+import bcrypt from "bcryptjs";
 import { pipelineStages } from "./seed-data.js";
 
 const prisma = new PrismaClient();
 
 const developmentAdminEmail = process.env.DEV_ADMIN_EMAIL ?? "admin@example.local";
-const developmentAdminPasswordHash =
-  process.env.DEV_ADMIN_PASSWORD_HASH ?? "development-only-placeholder-password-hash";
+const developmentAdminPassword = process.env.DEV_ADMIN_PASSWORD ?? "ChangeMe123!";
+const bcryptSaltRounds = Number(process.env.BCRYPT_SALT_ROUNDS ?? 12);
 
 async function seedPipelineStages(): Promise<void> {
   for (const stage of pipelineStages) {
@@ -25,17 +26,20 @@ async function seedPipelineStages(): Promise<void> {
 }
 
 async function seedDevelopmentAdmin(): Promise<void> {
+  const passwordHash = await bcrypt.hash(developmentAdminPassword, bcryptSaltRounds);
+
   await prisma.user.upsert({
     where: { email: developmentAdminEmail },
     create: {
       email: developmentAdminEmail,
-      passwordHash: developmentAdminPasswordHash,
+      passwordHash,
       firstName: "Development",
       lastName: "Admin",
       role: UserRole.ADMIN,
       status: UserStatus.ACTIVE
     },
     update: {
+      passwordHash,
       firstName: "Development",
       lastName: "Admin",
       role: UserRole.ADMIN,

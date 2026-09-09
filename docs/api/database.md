@@ -18,12 +18,20 @@ Required environment:
 
 - `DATABASE_URL`
 - `DEV_ADMIN_EMAIL`
-- `DEV_ADMIN_PASSWORD_HASH`
+- `DEV_ADMIN_PASSWORD`
+- `BCRYPT_SALT_ROUNDS`
 
-The seed is idempotent for pipeline stages and the development admin user.
+The seed is idempotent for pipeline stages and the development admin user. The development admin password is hashed before storage; do not commit real credentials.
 
 The default local Docker URL is:
 
 ```text
 postgresql://shilabs:shilabs_dev_password@localhost:5433/shilabs_sales
 ```
+
+Authentication also requires:
+
+- `JWT_SECRET`
+- `JWT_ACCESS_TOKEN_TTL_SECONDS`
+
+M3 adds `Company.normalizedWebsite` for domain-based duplicate detection. New company writes store the normalized domain separately from the submitted website value.

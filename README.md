@@ -51,9 +51,18 @@ The root scripts load `.env` automatically. The seed creates the canonical pipel
 
 - `DATABASE_URL`
 - `DEV_ADMIN_EMAIL`
-- `DEV_ADMIN_PASSWORD_HASH`
+- `DEV_ADMIN_PASSWORD`
+- `JWT_SECRET`
+- `JWT_ACCESS_TOKEN_TTL_SECONDS`
+- `BCRYPT_SALT_ROUNDS`
 
-The default development admin password hash is a placeholder only. It is not a production secret and is not a usable authentication flow.
+The default development admin password is for local development only. Set a real local value in `.env`, then run `npm run db:seed`.
+
+M2 adds authentication and user management. Manual developer entry points:
+
+- Web app: `npm run dev:web`, then open `http://localhost:5173`
+- API: `npm run dev:api`, then call `http://localhost:4000/health` or `/api/auth/login`
+- Worker: `npm run dev:worker` when later queue milestones need it
 
 Local Docker maps PostgreSQL to host port `5433` and Redis to host port `6380` to avoid collisions with developer machines already using the default ports.
 
