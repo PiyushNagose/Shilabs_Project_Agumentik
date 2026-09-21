@@ -5,7 +5,18 @@ import type { HealthResponse } from "@shilabs/shared-types";
 import { authRoutes } from "./modules/auth/auth.routes.js";
 import { companyRoutes } from "./modules/companies/company.routes.js";
 import { contactRoutes } from "./modules/contacts/contact.routes.js";
+import { conversationRoutes } from "./modules/conversations/conversation.routes.js";
+import { dealRoutes } from "./modules/deals/deal.routes.js";
+import { domainEventRoutes } from "./modules/domain-events/domain-events.routes.js";
+import { emailRoutes } from "./modules/email/email.routes.js";
+import { followUpRoutes } from "./modules/followups/followup.routes.js";
+import { knowledgeBaseRoutes } from "./modules/knowledge-base/knowledge-base.routes.js";
 import { leadRoutes } from "./modules/leads/lead.routes.js";
+import { pipelineRoutes } from "./modules/pipeline/pipeline.routes.js";
+import { proposalRoutes } from "./modules/proposals/proposal.routes.js";
+import { replyProcessingRoutes } from "./modules/reply-processing/reply-processing.routes.js";
+import { scoringRoutes } from "./modules/scoring/scoring.routes.js";
+import { zohoBiginRoutes } from "./modules/integrations/zoho-bigin/zoho-bigin.routes.js";
 import { userRoutes } from "./modules/users/user.routes.js";
 import { errorHandler, notFoundHandler } from "./middleware/error.middleware.js";
 
@@ -22,7 +33,13 @@ export function createApp(): Express {
       credentials: false
     })
   );
-  app.use(express.json());
+  app.use(
+    express.json({
+      verify: (request, _response, buffer) => {
+        (request as Request & { rawBody?: string }).rawBody = buffer.toString("utf8");
+      }
+    })
+  );
 
   app.get("/health", (_request: Request, response: Response<HealthResponse>) => {
     response.status(200).json({
@@ -54,6 +71,17 @@ export function createApp(): Express {
   app.use("/api/companies", companyRoutes);
   app.use("/api/contacts", contactRoutes);
   app.use("/api/leads", leadRoutes);
+  app.use("/api/deals", dealRoutes);
+  app.use("/api/email", emailRoutes);
+  app.use("/api/followups", followUpRoutes);
+  app.use("/api/knowledge-base", knowledgeBaseRoutes);
+  app.use("/api/pipeline", pipelineRoutes);
+  app.use("/api/proposals", proposalRoutes);
+  app.use("/api/conversations", conversationRoutes);
+  app.use("/api/reply-processing", replyProcessingRoutes);
+  app.use("/api/domain-events", domainEventRoutes);
+  app.use("/api/scoring", scoringRoutes);
+  app.use("/api/integrations/zoho-bigin", zohoBiginRoutes);
   app.use(notFoundHandler);
   app.use(errorHandler);
 

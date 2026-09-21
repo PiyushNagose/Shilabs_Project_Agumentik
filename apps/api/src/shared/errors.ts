@@ -4,6 +4,8 @@ export type ErrorCode =
   | "AUTHORIZATION_ERROR"
   | "NOT_FOUND"
   | "CONFLICT"
+  | "PROVIDER_ERROR"
+  | "RETRYABLE_PROVIDER_ERROR"
   | "INTERNAL_ERROR";
 
 export class AppError extends Error {

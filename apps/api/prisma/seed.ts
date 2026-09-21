@@ -1,6 +1,6 @@
 import { PrismaClient, UserRole, UserStatus } from "@prisma/client";
 import bcrypt from "bcryptjs";
-import { pipelineStages } from "./seed-data.js";
+import { defaultScoringConfig, pipelineStages } from "./seed-data.js";
 
 const prisma = new PrismaClient();
 
@@ -48,9 +48,18 @@ async function seedDevelopmentAdmin(): Promise<void> {
   });
 }
 
+async function seedScoringConfig(): Promise<void> {
+  await prisma.scoringConfig.upsert({
+    where: { key: defaultScoringConfig.key },
+    create: defaultScoringConfig,
+    update: defaultScoringConfig
+  });
+}
+
 async function main(): Promise<void> {
   await seedPipelineStages();
   await seedDevelopmentAdmin();
+  await seedScoringConfig();
 }
 
 main()

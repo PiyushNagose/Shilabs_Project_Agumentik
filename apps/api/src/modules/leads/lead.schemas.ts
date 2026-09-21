@@ -52,6 +52,10 @@ export const updateLeadStatusSchema = z.object({
   status: leadStatusSchema
 });
 
+export const updateLeadStageSchema = z.object({
+  stageId: z.string().trim().min(1)
+});
+
 export const listLeadsQuerySchema = z
   .object({
     page: z.coerce.number().int().positive().optional(),
@@ -81,4 +85,5 @@ export type CreateLeadInput = z.infer<typeof createLeadSchema>;
 export type UpdateLeadInput = z.infer<typeof updateLeadSchema>;
 export type AssignLeadInput = z.infer<typeof assignLeadSchema>;
 export type UpdateLeadStatusInput = z.infer<typeof updateLeadStatusSchema>;
+export type UpdateLeadStageInput = z.infer<typeof updateLeadStageSchema>;
 export type ListLeadsQuery = z.infer<typeof listLeadsQuerySchema>;

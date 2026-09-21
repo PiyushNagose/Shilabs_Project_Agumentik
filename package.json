@@ -16,7 +16,7 @@
     "lint": "eslint \"apps/*/src/**/*.{ts,tsx}\" \"apps/api/prisma/**/*.ts\" \"packages/*/src/**/*.{ts,tsx}\"",
     "format": "prettier --check .",
     "format:write": "prettier --write .",
-    "test": "dotenv -e .env -- vitest run",
+    "test": "dotenv -e .env -- vitest run --reporter=verbose --no-file-parallelism --maxWorkers=1 --testTimeout=45000 --hookTimeout=45000",
     "db:generate": "dotenv -e .env -- npm run db:generate -w @shilabs/api",
     "db:migrate": "dotenv -e .env -- npm run db:migrate -w @shilabs/api",
     "db:deploy": "dotenv -e .env -- npm run db:deploy -w @shilabs/api",

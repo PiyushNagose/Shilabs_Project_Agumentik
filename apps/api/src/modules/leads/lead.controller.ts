@@ -5,6 +5,7 @@ import type {
   AssignLeadInput,
   CreateLeadInput,
   ListLeadsQuery,
+  UpdateLeadStageInput,
   UpdateLeadInput,
   UpdateLeadStatusInput
 } from "./lead.schemas.js";
@@ -14,6 +15,7 @@ import {
   getLead,
   listLeads,
   updateLead,
+  updateLeadStage,
   updateLeadStatus
 } from "./lead.service.js";
 
@@ -63,4 +65,13 @@ export async function updateLeadStatusController(
   response
     .status(200)
     .json(await updateLeadStatus(getRequiredUser(request), request.params.id, request.body));
+}
+
+export async function updateLeadStageController(
+  request: Request<{ id: string }, LeadDto, UpdateLeadStageInput>,
+  response: Response<LeadDto>
+): Promise<void> {
+  response
+    .status(200)
+    .json(await updateLeadStage(getRequiredUser(request), request.params.id, request.body));
 }

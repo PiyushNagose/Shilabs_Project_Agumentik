@@ -2,6 +2,11 @@ generator client {
   provider = "prisma-client-js"
 }
 
+generator workerClient {
+  provider = "prisma-client-js"
+  output   = "../../worker/node_modules/@prisma/client"
+}
+
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
@@ -38,6 +43,40 @@ enum DealStatus {
   LOST
 }
 
+enum ProposalStatus {
+  DRAFT
+  SENT
+  ACCEPTED
+  DECLINED
+}
+
+enum ProposalWorkflowStatus {
+  DRAFT
+  WAITING_APPROVAL
+  APPROVED
+  SENT
+}
+
+enum ProposalGenerationKind {
+  GENERAL
+  SEO
+  WEB_DESIGN
+}
+
+enum ProposalGenerationStatus {
+  COMPLETED
+  NEEDS_INPUT
+  FAILED
+}
+
+enum ProposalZohoSyncStatus {
+  NOT_REQUIRED
+  PENDING
+  SYNCED
+  FAILED
+  NOT_CONFIGURED
+}
+
 enum ActivityType {
   LEAD_CREATED
   OWNER_CHANGED
@@ -45,11 +84,246 @@ enum ActivityType {
   NOTE_ADDED
   DEAL_CREATED
   DEAL_UPDATED
+  MESSAGE_RECEIVED
+  MESSAGE_SENT
+  QUALIFICATION_UPDATED
+  SCORE_CHANGED
+  PROPOSAL_CREATED
+  PROPOSAL_GENERATED
+  PROPOSAL_UPDATED
+  PROPOSAL_SUBMITTED
+  PROPOSAL_APPROVED
+  PROPOSAL_SENT
 }
 
 enum AuditActorType {
   USER
   SYSTEM
+}
+
+enum ConversationChannel {
+  WEBSITE
+  WHATSAPP
+  EMAIL
+  INTERNAL
+}
+
+enum ConversationMode {
+  AUTO
+  DRAFT_ONLY
+  HUMAN
+  PAUSED
+  CLOSED
+}
+
+enum ConversationStatus {
+  OPEN
+  CLOSED
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageSenderType {
+  PROSPECT
+  USER
+  AI
+  SYSTEM
+}
+
+enum MessageDeliveryStatus {
+  PENDING
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+enum IntegrationProvider {
+  ZOHO_BIGIN
+  AWS_SES
+  MAILPIT
+  SEMRUSH
+}
+
+enum IntegrationAccountStatus {
+  NOT_CONFIGURED
+  CONFIGURED
+  ERROR
+  DISABLED
+}
+
+enum ExternalRecordEntityType {
+  COMPANY
+  CONTACT
+  LEAD
+  DEAL
+  PIPELINE_STAGE
+  ACTIVITY
+  MESSAGE
+  MEETING
+  PROPOSAL
+}
+
+enum SyncDirection {
+  INBOUND
+  OUTBOUND
+  BIDIRECTIONAL
+}
+
+enum SyncStatus {
+  PENDING
+  SYNCED
+  FAILED
+  CONFLICT
+}
+
+enum IntegrationSyncRunStatus {
+  COMPLETED
+  PARTIAL
+  FAILED
+  SKIPPED
+}
+
+enum OutboundEmailStatus {
+  PENDING
+  BLOCKED
+  SENT
+  DELIVERED
+  BOUNCED
+  COMPLAINED
+  FAILED
+}
+
+enum FollowUpSequenceStatus {
+  ACTIVE
+  STOPPED
+  COMPLETED
+  ATTENTION_REQUIRED
+}
+
+enum FollowUpAttemptStatus {
+  SCHEDULED
+  SENDING
+  SENT
+  BLOCKED
+  FAILED
+  CANCELLED
+  SKIPPED
+}
+
+enum FollowUpAttemptKind {
+  FIRST_EMAIL
+  FOLLOW_UP
+}
+
+enum FollowUpZohoSyncStatus {
+  NOT_REQUIRED
+  PENDING
+  SYNCED
+  FAILED
+}
+
+enum EmailSuppressionReason {
+  MANUAL
+  INVALID
+  BOUNCE
+  COMPLAINT
+  UNSUBSCRIBE
+  PROVIDER
+}
+
+enum EmailDeliverabilityScanStatus {
+  COMPLETED
+  PARTIAL
+  FAILED
+}
+
+enum EmailProviderEventType {
+  DELIVERY
+  BOUNCE
+  COMPLAINT
+  INBOUND_RECEIVED
+}
+
+enum InboundEmailStatus {
+  PROCESSED
+  FAILED
+}
+
+enum ReplyProcessingStatus {
+  PENDING
+  PROCESSED
+  FAILED
+  SKIPPED
+}
+
+enum LeadScoreRunSource {
+  RULE_ENGINE
+  MANUAL_OVERRIDE
+}
+
+enum LeadScoreRunStatus {
+  COMPLETED
+  SKIPPED
+  FAILED
+}
+
+enum KnowledgeBaseCategory {
+  COMPANY
+  SERVICE
+  PROPOSAL
+  SEO
+  WEB_DESIGN
+  GENERAL
+}
+
+enum KnowledgeBaseStatus {
+  DRAFT
+  APPROVED
+  INACTIVE
+}
+
+enum ReplyIntent {
+  INTERESTED
+  NOT_INTERESTED
+  PROPOSAL_REQUEST
+  MEETING_REQUEST
+  NEGOTIATION
+  QUESTION
+  UNCLEAR
+}
+
+enum ReplyRecommendedAction {
+  DRAFT_RESPONSE
+  STOP_AUTOMATION
+  HUMAN_HANDOFF
+  PROPOSAL_REVIEW
+  MEETING_REVIEW
+  NO_ACTION
+}
+
+enum ReplyProcessingRunStatus {
+  COMPLETED
+  FAILED
+  SKIPPED
+}
+
+enum DomainEventStatus {
+  PENDING
+  QUEUED
+  PROCESSING
+  PROCESSED
+  FAILED
+  ATTENTION_REQUIRED
+}
+
+enum DomainEventPriority {
+  LOW
+  NORMAL
+  HIGH
 }
 
 model User {
@@ -63,13 +337,144 @@ model User {
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 
-  ownedLeads   Lead[]        @relation("LeadOwner")
-  ownedDeals   Deal[]        @relation("DealOwner")
-  activities   Activity[]
-  authSessions AuthSession[]
+  ownedLeads                  Lead[]                    @relation("LeadOwner")
+  scoreOverrideLeads          Lead[]                    @relation("LeadScoreOverrideBy")
+  ownedDeals                  Deal[]                    @relation("DealOwner")
+  activities                  Activity[]
+  messages                    Message[]
+  authSessions                AuthSession[]
+  IntegrationSyncRun          IntegrationSyncRun[]
+  outboundEmails              OutboundEmail[]
+  emailSuppressions           EmailSuppression[]
+  emailDeliverabilityScans    EmailDeliverabilityScan[]
+  leadScoreRuns               LeadScoreRun[]
+  createdKnowledgeEntries     KnowledgeBaseEntry[]      @relation("KnowledgeEntryCreatedBy")
+  updatedKnowledgeEntries     KnowledgeBaseEntry[]      @relation("KnowledgeEntryUpdatedBy")
+  createdKnowledgeVersions    KnowledgeBaseVersion[]    @relation("KnowledgeVersionCreatedBy")
+  approvedKnowledgeVersions   KnowledgeBaseVersion[]    @relation("KnowledgeVersionApprovedBy")
+  requestedDomainEventRetries DomainEventOutbox[]       @relation("DomainEventRetryRequestedBy")
+  createdProposals            Proposal[]                @relation("ProposalCreatedBy")
+  approvedProposals           Proposal[]                @relation("ProposalApprovedBy")
+  sentProposals               Proposal[]                @relation("ProposalSentBy")
+  createdProposalVersions     ProposalVersion[]         @relation("ProposalVersionCreatedBy")
+  proposalStatusChanges       ProposalStatusChange[]    @relation("ProposalStatusChangeActor")
+  proposalGenerationRuns      ProposalGenerationRun[]   @relation("ProposalGenerationActor")
 
   @@index([role])
   @@index([status])
+}
+
+model DomainEventOutbox {
+  id                     String              @id @default(cuid())
+  eventType              String
+  aggregateType          String
+  aggregateId            String
+  payload                Json
+  status                 DomainEventStatus   @default(PENDING)
+  priority               DomainEventPriority @default(NORMAL)
+  correlationId          String
+  idempotencyKey         String              @unique
+  attempts               Int                 @default(0)
+  maxAttempts            Int                 @default(5)
+  nextAttemptAt          DateTime            @default(now())
+  queueName              String?
+  queueJobId             String?
+  queuedAt               DateTime?
+  lockedAt               DateTime?
+  lockedBy               String?
+  processedAt            DateTime?
+  failedAt               DateTime?
+  deadLetteredAt         DateTime?
+  lastErrorCode          String?
+  lastErrorMessage       String?
+  retryRequestedByUserId String?
+  createdAt              DateTime            @default(now())
+  updatedAt              DateTime            @updatedAt
+
+  retryRequestedBy User? @relation("DomainEventRetryRequestedBy", fields: [retryRequestedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([eventType])
+  @@index([aggregateType, aggregateId])
+  @@index([status, nextAttemptAt])
+  @@index([queueName, queueJobId])
+  @@index([correlationId])
+  @@index([priority])
+  @@index([queuedAt])
+  @@index([lockedAt])
+  @@index([processedAt])
+  @@index([failedAt])
+  @@index([deadLetteredAt])
+  @@index([retryRequestedByUserId])
+  @@index([createdAt])
+}
+
+model KnowledgeBaseEntry {
+  id              String                @id @default(cuid())
+  key             String                @unique
+  title           String
+  category        KnowledgeBaseCategory
+  status          KnowledgeBaseStatus   @default(DRAFT)
+  activeVersionId String?
+  createdByUserId String?
+  updatedByUserId String?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+
+  createdBy User?                  @relation("KnowledgeEntryCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  updatedBy User?                  @relation("KnowledgeEntryUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+  versions  KnowledgeBaseVersion[]
+
+  @@index([category])
+  @@index([status])
+  @@index([activeVersionId])
+  @@index([createdByUserId])
+  @@index([updatedByUserId])
+  @@index([createdAt])
+}
+
+model KnowledgeBaseVersion {
+  id                    String    @id @default(cuid())
+  entryId               String
+  version               Int
+  content               String
+  sourceTitle           String
+  sourceUrl             String?
+  sourceType            String
+  correctionOfVersionId String?
+  createdByUserId       String?
+  approvedByUserId      String?
+  approvedAt            DateTime?
+  createdAt             DateTime  @default(now())
+
+  entry               KnowledgeBaseEntry     @relation(fields: [entryId], references: [id], onDelete: Restrict)
+  correctionOfVersion KnowledgeBaseVersion?  @relation("KnowledgeVersionCorrection", fields: [correctionOfVersionId], references: [id], onDelete: SetNull)
+  corrections         KnowledgeBaseVersion[] @relation("KnowledgeVersionCorrection")
+  createdBy           User?                  @relation("KnowledgeVersionCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  approvedBy          User?                  @relation("KnowledgeVersionApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([entryId, version])
+  @@index([entryId])
+  @@index([correctionOfVersionId])
+  @@index([createdByUserId])
+  @@index([approvedByUserId])
+  @@index([approvedAt])
+  @@index([createdAt])
+}
+
+model ScoringConfig {
+  id                String   @id @default(cuid())
+  key               String   @unique @default("default")
+  requirementWeight Int      @default(20)
+  authorityWeight   Int      @default(20)
+  budgetWeight      Int      @default(20)
+  timelineWeight    Int      @default(20)
+  businessFitWeight Int      @default(20)
+  warmThreshold     Int      @default(60)
+  hotThreshold      Int      @default(80)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([key])
 }
 
 model AuthSession {
@@ -125,8 +530,11 @@ model Contact {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  company Company @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  leads   Lead[]
+  company           Company            @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  leads             Lead[]
+  outboundEmails    OutboundEmail[]
+  inboundEmails     InboundEmail[]
+  followUpSequences FollowUpSequence[]
 
   @@unique([companyId, normalizedEmail])
   @@unique([companyId, normalizedPhone])
@@ -157,35 +565,50 @@ model PipelineStage {
 }
 
 model Lead {
-  id              String          @id @default(cuid())
-  companyId       String
-  contactId       String
-  ownerId         String?
-  source          String
-  status          LeadStatus      @default(OPEN)
-  stageId         String
-  requirement     String?
-  serviceInterest String?
-  score           Int             @default(0)
-  temperature     LeadTemperature @default(NURTURE)
-  estimatedValue  Decimal?        @db.Decimal(12, 2)
-  currency        String          @default("INR")
-  nextAction      String?
-  nextActionAt    DateTime?
-  lastActivityAt  DateTime?
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
+  id                    String          @id @default(cuid())
+  companyId             String
+  contactId             String
+  ownerId               String?
+  source                String
+  status                LeadStatus      @default(OPEN)
+  stageId               String
+  requirement           String?
+  serviceInterest       String?
+  score                 Int             @default(0)
+  temperature           LeadTemperature @default(NURTURE)
+  scoreOverrideAt       DateTime?
+  scoreOverrideByUserId String?
+  scoreOverrideReason   String?
+  estimatedValue        Decimal?        @db.Decimal(12, 2)
+  currency              String          @default("INR")
+  nextAction            String?
+  nextActionAt          DateTime?
+  lastActivityAt        DateTime?
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
 
-  company    Company       @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  contact    Contact       @relation(fields: [contactId], references: [id], onDelete: Restrict)
-  owner      User?         @relation("LeadOwner", fields: [ownerId], references: [id], onDelete: SetNull)
-  stage      PipelineStage @relation(fields: [stageId], references: [id], onDelete: Restrict)
-  deal       Deal?
-  activities Activity[]
+  company                Company                 @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  contact                Contact                 @relation(fields: [contactId], references: [id], onDelete: Restrict)
+  owner                  User?                   @relation("LeadOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  scoreOverrideBy        User?                   @relation("LeadScoreOverrideBy", fields: [scoreOverrideByUserId], references: [id], onDelete: SetNull)
+  stage                  PipelineStage           @relation(fields: [stageId], references: [id], onDelete: Restrict)
+  deal                   Deal?
+  qualification          LeadQualification?
+  activities             Activity[]
+  conversations          Conversation[]
+  outboundEmails         OutboundEmail[]
+  inboundEmails          InboundEmail[]
+  followUpSequences      FollowUpSequence[]
+  followUpAttempts       FollowUpAttempt[]
+  scoreRuns              LeadScoreRun[]
+  replyProcessingRuns    ReplyProcessingRun[]
+  proposals              Proposal[]
+  proposalGenerationRuns ProposalGenerationRun[]
 
   @@index([companyId])
   @@index([contactId])
   @@index([ownerId])
+  @@index([scoreOverrideByUserId])
   @@index([stageId])
   @@index([status])
   @@index([temperature])
@@ -194,27 +617,214 @@ model Lead {
   @@index([createdAt])
 }
 
-model Deal {
-  id          String     @id @default(cuid())
-  leadId      String     @unique
-  stageId     String
-  ownerId     String?
-  value       Decimal?   @db.Decimal(12, 2)
-  currency    String     @default("INR")
-  probability Int
-  status      DealStatus @default(OPEN)
-  wonReason   String?
-  lostReason  String?
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
+model LeadScoreRun {
+  id                    String             @id @default(cuid())
+  leadId                String
+  actorUserId           String?
+  source                LeadScoreRunSource
+  status                LeadScoreRunStatus
+  score                 Int?
+  temperature           LeadTemperature?
+  factors               Json?
+  config                Json?
+  qualificationSnapshot Json?
+  reason                String?
+  failureCode           String?
+  failureMessage        String?
+  idempotencyKey        String?
+  createdAt             DateTime           @default(now())
 
-  lead  Lead          @relation(fields: [leadId], references: [id], onDelete: Restrict)
-  stage PipelineStage @relation(fields: [stageId], references: [id], onDelete: Restrict)
-  owner User?         @relation("DealOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  lead  Lead  @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  actor User? @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@unique([idempotencyKey])
+  @@index([leadId])
+  @@index([actorUserId])
+  @@index([source])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model LeadQualification {
+  id                      String   @id @default(cuid())
+  leadId                  String   @unique
+  need                    String?
+  requirement             String?
+  budget                  String?
+  budgetBand              String?
+  authority               String?
+  timeline                String?
+  businessFit             String?
+  decisionMakerIdentified Boolean?
+  urgency                 String?
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  lead     Lead                        @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  evidence LeadQualificationEvidence[]
+
+  @@index([leadId])
+  @@index([updatedAt])
+}
+
+model LeadQualificationEvidence {
+  id              String   @id @default(cuid())
+  qualificationId String
+  messageId       String
+  quote           String
+  createdAt       DateTime @default(now())
+
+  qualification LeadQualification @relation(fields: [qualificationId], references: [id], onDelete: Cascade)
+  message       Message           @relation(fields: [messageId], references: [id], onDelete: Restrict)
+
+  @@unique([qualificationId, messageId, quote])
+  @@index([qualificationId])
+  @@index([messageId])
+}
+
+model Deal {
+  id             String          @id @default(cuid())
+  leadId         String          @unique
+  stageId        String
+  ownerId        String?
+  value          Decimal?        @db.Decimal(12, 2)
+  currency       String          @default("INR")
+  probability    Int
+  status         DealStatus      @default(OPEN)
+  proposalStatus ProposalStatus?
+  wonReason      String?
+  lostReason     String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  lead                   Lead                    @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  stage                  PipelineStage           @relation(fields: [stageId], references: [id], onDelete: Restrict)
+  owner                  User?                   @relation("DealOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  proposals              Proposal[]
+  proposalGenerationRuns ProposalGenerationRun[]
 
   @@index([stageId])
   @@index([ownerId])
   @@index([status])
+}
+
+model Proposal {
+  id                     String                 @id @default(cuid())
+  leadId                 String
+  dealId                 String?
+  title                  String
+  serviceType            String?
+  status                 ProposalWorkflowStatus @default(DRAFT)
+  currentVersionId       String?
+  approvedVersionId      String?
+  approvedByUserId       String?
+  approvedAt             DateTime?
+  sentByUserId           String?
+  sentAt                 DateTime?
+  sentOutboundEmailId    String?                @unique
+  zohoTimelineSyncStatus ProposalZohoSyncStatus @default(NOT_REQUIRED)
+  zohoTimelineLastError  String?
+  idempotencyKey         String?                @unique
+  createdByUserId        String
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
+
+  lead              Lead                    @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  deal              Deal?                   @relation(fields: [dealId], references: [id], onDelete: SetNull)
+  currentVersion    ProposalVersion?        @relation("ProposalCurrentVersion", fields: [currentVersionId], references: [id], onDelete: SetNull)
+  approvedVersion   ProposalVersion?        @relation("ProposalApprovedVersion", fields: [approvedVersionId], references: [id], onDelete: SetNull)
+  approvedBy        User?                   @relation("ProposalApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  sentBy            User?                   @relation("ProposalSentBy", fields: [sentByUserId], references: [id], onDelete: SetNull)
+  sentOutboundEmail OutboundEmail?          @relation(fields: [sentOutboundEmailId], references: [id], onDelete: SetNull)
+  createdBy         User                    @relation("ProposalCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  versions          ProposalVersion[]       @relation("ProposalVersions")
+  statusChanges     ProposalStatusChange[]
+  generationRuns    ProposalGenerationRun[]
+
+  @@index([leadId])
+  @@index([dealId])
+  @@index([status])
+  @@index([currentVersionId])
+  @@index([approvedVersionId])
+  @@index([approvedByUserId])
+  @@index([sentByUserId])
+  @@index([createdByUserId])
+  @@index([createdAt])
+  @@index([updatedAt])
+}
+
+model ProposalVersion {
+  id              String   @id @default(cuid())
+  proposalId      String
+  version         Int
+  title           String
+  content         String
+  editSummary     String?
+  createdByUserId String
+  createdAt       DateTime @default(now())
+
+  proposal             Proposal   @relation("ProposalVersions", fields: [proposalId], references: [id], onDelete: Cascade)
+  createdBy            User       @relation("ProposalVersionCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  currentForProposals  Proposal[] @relation("ProposalCurrentVersion")
+  approvedForProposals Proposal[] @relation("ProposalApprovedVersion")
+
+  @@unique([proposalId, version])
+  @@index([proposalId])
+  @@index([createdByUserId])
+  @@index([createdAt])
+}
+
+model ProposalGenerationRun {
+  id                String                   @id @default(cuid())
+  leadId            String
+  dealId            String?
+  proposalId        String?
+  actorUserId       String
+  kind              ProposalGenerationKind
+  status            ProposalGenerationStatus
+  provider          String?
+  model             String?
+  inputContext      Json
+  approvedKnowledge Json?
+  toolEvidence      Json?
+  aiOutput          Json?
+  missingFields     String[]
+  failureCode       String?
+  failureMessage    String?
+  idempotencyKey    String                   @unique
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
+
+  lead      Lead      @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  deal      Deal?     @relation(fields: [dealId], references: [id], onDelete: SetNull)
+  proposal  Proposal? @relation(fields: [proposalId], references: [id], onDelete: SetNull)
+  actorUser User      @relation("ProposalGenerationActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@index([leadId])
+  @@index([dealId])
+  @@index([proposalId])
+  @@index([actorUserId])
+  @@index([kind])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model ProposalStatusChange {
+  id          String                  @id @default(cuid())
+  proposalId  String
+  fromStatus  ProposalWorkflowStatus?
+  toStatus    ProposalWorkflowStatus
+  actorUserId String?
+  reason      String?
+  createdAt   DateTime                @default(now())
+
+  proposal Proposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+  actor    User?    @relation("ProposalStatusChangeActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([proposalId])
+  @@index([actorUserId])
+  @@index([toStatus])
+  @@index([createdAt])
 }
 
 model Activity {
@@ -249,5 +859,386 @@ model AuditEvent {
   @@index([actorId])
   @@index([entityType, entityId])
   @@index([action])
+  @@index([createdAt])
+}
+
+model Conversation {
+  id            String              @id @default(cuid())
+  leadId        String
+  channel       ConversationChannel
+  mode          ConversationMode    @default(AUTO)
+  status        ConversationStatus  @default(OPEN)
+  lastMessageAt DateTime?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  lead                Lead                 @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  messages            Message[]
+  inboundEmails       InboundEmail[]
+  replyProcessingRuns ReplyProcessingRun[]
+  followUpSequences   FollowUpSequence[]
+
+  @@index([leadId])
+  @@index([channel])
+  @@index([mode])
+  @@index([status])
+  @@index([lastMessageAt])
+  @@index([createdAt])
+}
+
+model FollowUpSequence {
+  id               String                 @id @default(cuid())
+  leadId           String
+  contactId        String
+  conversationId   String?
+  status           FollowUpSequenceStatus @default(ACTIVE)
+  cadenceDays      Int[]
+  currentStep      Int                    @default(0)
+  stopReason       String?
+  stoppedAt        DateTime?
+  completedAt      DateTime?
+  lastErrorCode    String?
+  lastErrorMessage String?
+  idempotencyKey   String                 @unique
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+
+  lead         Lead              @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  contact      Contact           @relation(fields: [contactId], references: [id], onDelete: Restrict)
+  conversation Conversation?     @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  attempts     FollowUpAttempt[]
+
+  @@index([leadId])
+  @@index([contactId])
+  @@index([conversationId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model FollowUpAttempt {
+  id              String                 @id @default(cuid())
+  sequenceId      String
+  leadId          String
+  stepIndex       Int
+  kind            FollowUpAttemptKind
+  status          FollowUpAttemptStatus  @default(SCHEDULED)
+  scheduledAt     DateTime
+  subject         String
+  textBody        String
+  idempotencyKey  String                 @unique
+  domainEventId   String?
+  outboundEmailId String?
+  zohoSyncStatus  FollowUpZohoSyncStatus @default(PENDING)
+  zohoLastError   String?
+  sentAt          DateTime?
+  failedAt        DateTime?
+  failureCode     String?
+  failureMessage  String?
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+
+  sequence      FollowUpSequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  lead          Lead             @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  outboundEmail OutboundEmail?   @relation(fields: [outboundEmailId], references: [id], onDelete: SetNull)
+
+  @@unique([sequenceId, stepIndex])
+  @@index([leadId])
+  @@index([status, scheduledAt])
+  @@index([domainEventId])
+  @@index([outboundEmailId])
+  @@index([zohoSyncStatus])
+}
+
+model Message {
+  id                String                @id @default(cuid())
+  conversationId    String
+  providerMessageId String?               @unique
+  direction         MessageDirection
+  senderType        MessageSenderType
+  senderUserId      String?
+  body              String
+  deliveryStatus    MessageDeliveryStatus @default(PENDING)
+  sentAt            DateTime?
+  deliveredAt       DateTime?
+  readAt            DateTime?
+  failedAt          DateTime?
+  metadata          Json?
+  createdAt         DateTime              @default(now())
+
+  conversation          Conversation                @relation(fields: [conversationId], references: [id], onDelete: Restrict)
+  senderUser            User?                       @relation(fields: [senderUserId], references: [id], onDelete: SetNull)
+  qualificationEvidence LeadQualificationEvidence[]
+  inboundEmail          InboundEmail?
+  replyProcessingRuns   ReplyProcessingRun[]
+
+  @@index([conversationId])
+  @@index([senderUserId])
+  @@index([direction])
+  @@index([senderType])
+  @@index([deliveryStatus])
+  @@index([createdAt])
+}
+
+model IntegrationAccount {
+  id            String                   @id @default(cuid())
+  provider      IntegrationProvider
+  key           String                   @default("default")
+  displayName   String
+  status        IntegrationAccountStatus @default(NOT_CONFIGURED)
+  secretRef     String?
+  publicConfig  Json?
+  lastCheckedAt DateTime?
+  lastError     String?
+  createdAt     DateTime                 @default(now())
+  updatedAt     DateTime                 @updatedAt
+
+  externalRecordMappings ExternalRecordMapping[]
+  syncRuns               IntegrationSyncRun[]
+
+  @@unique([provider, key])
+  @@index([provider])
+  @@index([status])
+}
+
+model ExternalRecordMapping {
+  id                   String                   @id @default(cuid())
+  integrationAccountId String?
+  provider             IntegrationProvider
+  entityType           ExternalRecordEntityType
+  localEntityId        String
+  externalRecordId     String
+  externalVersion      String?
+  externalUpdatedAt    DateTime?
+  lastSyncedAt         DateTime?
+  syncDirection        SyncDirection            @default(BIDIRECTIONAL)
+  syncStatus           SyncStatus               @default(PENDING)
+  lastErrorCode        String?
+  lastErrorMessage     String?
+  retryCount           Int                      @default(0)
+  idempotencyKey       String?
+  createdAt            DateTime                 @default(now())
+  updatedAt            DateTime                 @updatedAt
+
+  integrationAccount IntegrationAccount? @relation(fields: [integrationAccountId], references: [id], onDelete: SetNull)
+
+  @@unique([provider, entityType, localEntityId])
+  @@unique([provider, entityType, externalRecordId])
+  @@unique([provider, idempotencyKey])
+  @@index([integrationAccountId])
+  @@index([provider, entityType])
+  @@index([syncStatus])
+  @@index([lastSyncedAt])
+  @@index([externalUpdatedAt])
+}
+
+model IntegrationSyncRun {
+  id                   String                   @id @default(cuid())
+  integrationAccountId String?
+  provider             IntegrationProvider
+  operation            String
+  status               IntegrationSyncRunStatus
+  startedAt            DateTime                 @default(now())
+  finishedAt           DateTime?
+  requestedByUserId    String?
+  totalRecords         Int                      @default(0)
+  succeededRecords     Int                      @default(0)
+  failedRecords        Int                      @default(0)
+  skippedRecords       Int                      @default(0)
+  lastError            String?
+  createdAt            DateTime                 @default(now())
+  updatedAt            DateTime                 @updatedAt
+
+  integrationAccount IntegrationAccount? @relation(fields: [integrationAccountId], references: [id], onDelete: SetNull)
+  requestedBy        User?               @relation(fields: [requestedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([integrationAccountId])
+  @@index([provider, operation])
+  @@index([status])
+  @@index([startedAt])
+  @@index([requestedByUserId])
+}
+
+model OutboundEmail {
+  id                String              @id @default(cuid())
+  leadId            String
+  contactId         String
+  actorUserId       String?
+  toEmail           String
+  normalizedToEmail String
+  fromEmail         String
+  replyToEmail      String?
+  subject           String
+  textBody          String?
+  htmlBody          String?
+  provider          IntegrationProvider
+  providerMessageId String?             @unique
+  idempotencyKey    String              @unique
+  status            OutboundEmailStatus @default(PENDING)
+  failureCode       String?
+  failureMessage    String?
+  sentAt            DateTime?
+  deliveredAt       DateTime?
+  bouncedAt         DateTime?
+  complainedAt      DateTime?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  lead             Lead                 @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  contact          Contact              @relation(fields: [contactId], references: [id], onDelete: Restrict)
+  actor            User?                @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+  events           EmailProviderEvent[]
+  followUpAttempts FollowUpAttempt[]
+  proposal         Proposal?
+
+  @@index([leadId])
+  @@index([contactId])
+  @@index([actorUserId])
+  @@index([normalizedToEmail])
+  @@index([provider, status])
+  @@index([createdAt])
+}
+
+model EmailSuppression {
+  id              String                 @id @default(cuid())
+  email           String
+  normalizedEmail String                 @unique
+  reason          EmailSuppressionReason
+  source          String
+  provider        IntegrationProvider?
+  providerEventId String?
+  createdByUserId String?
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+
+  createdBy User? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([reason])
+  @@index([provider])
+  @@index([createdByUserId])
+  @@index([createdAt])
+}
+
+model EmailDeliverabilityScan {
+  id                   String                        @id @default(cuid())
+  status               EmailDeliverabilityScanStatus
+  requestedByUserId    String?
+  startedAt            DateTime                      @default(now())
+  finishedAt           DateTime?
+  totalContacts        Int                           @default(0)
+  eligibleContacts     Int                           @default(0)
+  suppressedContacts   Int                           @default(0)
+  invalidContacts      Int                           @default(0)
+  doNotContactContacts Int                           @default(0)
+  terminalLeadContacts Int                           @default(0)
+  createdSuppressions  Int                           @default(0)
+  lastError            String?
+  createdAt            DateTime                      @default(now())
+  updatedAt            DateTime                      @updatedAt
+
+  requestedBy User? @relation(fields: [requestedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([requestedByUserId])
+  @@index([startedAt])
+}
+
+model EmailProviderEvent {
+  id                String                 @id @default(cuid())
+  provider          IntegrationProvider
+  providerEventId   String
+  providerMessageId String?
+  outboundEmailId   String?
+  type              EmailProviderEventType
+  payload           Json
+  receivedAt        DateTime               @default(now())
+  processedAt       DateTime?
+  createdAt         DateTime               @default(now())
+
+  outboundEmail OutboundEmail? @relation(fields: [outboundEmailId], references: [id], onDelete: SetNull)
+
+  @@unique([provider, providerEventId])
+  @@index([provider, type])
+  @@index([providerMessageId])
+  @@index([outboundEmailId])
+  @@index([receivedAt])
+}
+
+model InboundEmail {
+  id                    String                 @id @default(cuid())
+  provider              IntegrationProvider
+  providerMessageId     String                 @unique
+  providerEventId       String?
+  leadId                String?
+  contactId             String?
+  conversationId        String?
+  messageId             String?                @unique
+  fromEmail             String
+  normalizedFromEmail   String
+  toEmails              String[]
+  subject               String?
+  textBody              String
+  htmlBody              String?
+  rawProviderPayload    Json
+  status                InboundEmailStatus
+  failureCode           String?
+  failureMessage        String?
+  replyProcessingStatus ReplyProcessingStatus?
+  receivedAt            DateTime
+  processedAt           DateTime?
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+
+  lead                Lead?                @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  contact             Contact?             @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  conversation        Conversation?        @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  message             Message?             @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  replyProcessingRuns ReplyProcessingRun[]
+
+  @@unique([provider, providerEventId])
+  @@index([leadId])
+  @@index([contactId])
+  @@index([conversationId])
+  @@index([normalizedFromEmail])
+  @@index([provider, status])
+  @@index([replyProcessingStatus])
+  @@index([receivedAt])
+}
+
+model ReplyProcessingRun {
+  id                   String                   @id @default(cuid())
+  leadId               String
+  conversationId       String
+  messageId            String
+  inboundEmailId       String?
+  status               ReplyProcessingRunStatus
+  intent               ReplyIntent?
+  recommendedAction    ReplyRecommendedAction?
+  confidence           Decimal?                 @db.Decimal(3, 2)
+  summary              String?
+  draftResponse        String?
+  requiresHumanReview  Boolean                  @default(true)
+  humanHandoffRequired Boolean                  @default(false)
+  provider             String?
+  model                String?
+  inputContext         Json?
+  output               Json?
+  failureCode          String?
+  failureMessage       String?
+  idempotencyKey       String                   @unique
+  createdAt            DateTime                 @default(now())
+  updatedAt            DateTime                 @updatedAt
+
+  lead         Lead          @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  conversation Conversation  @relation(fields: [conversationId], references: [id], onDelete: Restrict)
+  message      Message       @relation(fields: [messageId], references: [id], onDelete: Restrict)
+  inboundEmail InboundEmail? @relation(fields: [inboundEmailId], references: [id], onDelete: SetNull)
+
+  @@index([leadId])
+  @@index([conversationId])
+  @@index([messageId])
+  @@index([inboundEmailId])
+  @@index([status])
+  @@index([intent])
+  @@index([recommendedAction])
   @@index([createdAt])
 }

@@ -1,5 +1,5 @@
-import { Prisma } from "@prisma/client";
-import type { LeadDto, PaginatedResponse, PipelineStageDto } from "@shilabs/shared-types";
+import { LeadStatus, Prisma } from "@prisma/client";
+import type { LeadDto, PaginatedResponse } from "@shilabs/shared-types";
 import { AppError } from "../../shared/errors.js";
 import { getPagination, getTotalPages } from "../../shared/pagination.js";
 import { toPublicUser } from "../auth/auth.service.js";
@@ -11,6 +11,7 @@ import type {
   AssignLeadInput,
   CreateLeadInput,
   ListLeadsQuery,
+  UpdateLeadStageInput,
   UpdateLeadInput,
   UpdateLeadStatusInput
 } from "./lead.schemas.js";
@@ -22,26 +23,16 @@ import {
   findLeadById,
   findPipelineStageById,
   listLeads as listLeadRecords,
+  updateLeadStageWithActivityAndAudit,
   updateLeadWithAudit,
   type LeadRecord
 } from "./lead.repository.js";
 import { leadEvents } from "./lead.events.js";
 import { canAssignLead, canCreateLeadWithOwner } from "./lead.permissions.js";
+import { findPipelineStageById as findStageById } from "../pipeline/pipeline.repository.js";
+import { toPipelineStageDto } from "../pipeline/pipeline.service.js";
 
-function toPipelineStageDto(stage: LeadRecord["stage"]): PipelineStageDto {
-  return {
-    id: stage.id,
-    key: stage.key,
-    label: stage.label,
-    order: stage.order,
-    probability: stage.probability,
-    isClosed: stage.isClosed,
-    isWon: stage.isWon,
-    isLost: stage.isLost
-  };
-}
-
-function toLeadDto(lead: LeadRecord): LeadDto {
+export function toLeadDto(lead: LeadRecord): LeadDto {
   return {
     id: lead.id,
     companyId: lead.companyId,
@@ -54,6 +45,9 @@ function toLeadDto(lead: LeadRecord): LeadDto {
     serviceInterest: lead.serviceInterest,
     score: lead.score,
     temperature: lead.temperature,
+    scoreOverrideAt: lead.scoreOverrideAt?.toISOString() ?? null,
+    scoreOverrideByUserId: lead.scoreOverrideByUserId,
+    scoreOverrideReason: lead.scoreOverrideReason,
     estimatedValue: lead.estimatedValue?.toString() ?? null,
     currency: lead.currency,
     nextAction: lead.nextAction,
@@ -134,6 +128,31 @@ function getStatusSnapshot(lead: LeadRecord): Prisma.InputJsonObject {
     id: lead.id,
     status: lead.status
   };
+}
+
+function getStageSnapshot(lead: LeadRecord): Prisma.InputJsonObject {
+  return {
+    id: lead.id,
+    stageId: lead.stageId,
+    stageKey: lead.stage.key,
+    status: lead.status
+  };
+}
+
+function statusForStage(stage: { key: string; isWon: boolean; isLost: boolean }): LeadStatus {
+  if (stage.isWon) {
+    return LeadStatus.WON;
+  }
+
+  if (stage.isLost) {
+    return LeadStatus.LOST;
+  }
+
+  if (stage.key === "NURTURE") {
+    return LeadStatus.NURTURE;
+  }
+
+  return LeadStatus.OPEN;
 }
 
 function buildLeadWhere(query: ListLeadsQuery): Prisma.LeadWhereInput {
@@ -315,6 +334,34 @@ export async function updateLeadStatus(
     data: {
       status: input.status
     }
+  });
+
+  return toLeadDto(lead);
+}
+
+export async function updateLeadStage(
+  actor: AuthenticatedUser,
+  leadId: string,
+  input: UpdateLeadStageInput
+): Promise<LeadDto> {
+  const existing = requireLead(await findLeadById(leadId));
+  const targetStage = await findStageById(input.stageId);
+
+  if (!targetStage) {
+    throw new AppError(404, "NOT_FOUND", "Pipeline stage not found");
+  }
+
+  if (existing.stage.isClosed && !targetStage.isClosed) {
+    throw new AppError(409, "CONFLICT", "Closed leads cannot be reopened through this endpoint");
+  }
+
+  const lead = await updateLeadStageWithActivityAndAudit({
+    actorId: actor.id,
+    leadId,
+    stageId: targetStage.id,
+    status: statusForStage(targetStage),
+    before: getStageSnapshot(existing),
+    activityDescription: `Stage changed from ${existing.stage.label} to ${targetStage.label}`
   });
 
   return toLeadDto(lead);

@@ -16,6 +16,7 @@
     "db:reset": "prisma migrate reset --force"
   },
   "dependencies": {
+    "@aws-sdk/client-sesv2": "^3.1132.0",
     "@prisma/client": "6.12.0",
     "@shilabs/shared-config": "0.0.0",
     "@shilabs/shared-types": "0.0.0",
@@ -25,9 +26,11 @@
     "express": "^5.2.1",
     "express-rate-limit": "^8.7.0",
     "jose": "^6.2.12",
+    "nodemailer": "^10.0.10",
     "zod": "^4.5.4"
   },
   "devDependencies": {
+    "@types/nodemailer": "^8.0.2",
     "prisma": "6.12.0",
     "tsx": "^4.19.0"
   }

@@ -166,3 +166,55 @@ export async function updateLeadWithAudit(input: {
     { maxWait: 10000, timeout: 30000 }
   );
 }
+
+export async function updateLeadStageWithActivityAndAudit(input: {
+  leadId: string;
+  stageId: string;
+  status: Prisma.LeadUpdateInput["status"];
+  actorId: string;
+  activityDescription: string;
+  before: Prisma.InputJsonValue;
+}): Promise<LeadRecord> {
+  return prisma.$transaction(
+    async (transaction) => {
+      const lead = await transaction.lead.update({
+        where: { id: input.leadId },
+        data: {
+          stage: { connect: { id: input.stageId } },
+          status: input.status,
+          lastActivityAt: new Date()
+        },
+        include: leadInclude
+      });
+
+      await transaction.activity.create({
+        data: {
+          leadId: lead.id,
+          actorUserId: input.actorId,
+          type: "STAGE_CHANGED",
+          description: input.activityDescription
+        }
+      });
+
+      await transaction.auditEvent.create({
+        data: {
+          actorType: "USER",
+          actorId: input.actorId,
+          entityType: "Lead",
+          entityId: lead.id,
+          action: "STAGE_CHANGED",
+          before: input.before,
+          after: {
+            id: lead.id,
+            stageId: lead.stageId,
+            stageKey: lead.stage.key,
+            status: lead.status
+          }
+        }
+      });
+
+      return lead;
+    },
+    { maxWait: 10000, timeout: 30000 }
+  );
+}

@@ -90,3 +90,14 @@ export const pipelineStages = [
     isLost: false
   }
 ] as const;
+
+export const defaultScoringConfig = {
+  key: "default",
+  requirementWeight: 20,
+  authorityWeight: 20,
+  budgetWeight: 20,
+  timelineWeight: 20,
+  businessFitWeight: 20,
+  warmThreshold: 60,
+  hotThreshold: 80
+} as const;

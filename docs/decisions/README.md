@@ -1,7 +1,7 @@
 # Architecture Decision Records
 
-Record significant architecture decisions here using files such as:
+Record significant architecture decisions here.
 
-- `ADR-001-modular-monolith.md`
-- `ADR-002-bullmq-for-background-jobs.md`
-- `ADR-003-postgres-as-source-of-truth.md`
+- `ADR-001-database-foundation.md`
+- `ADR-002-postgres-backed-auth-sessions.md`
+- `ADR-003-zoho-bigin-crm-system-of-record.md`

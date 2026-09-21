@@ -8,6 +8,11 @@ export interface ApiConfig {
 export interface WorkerConfig {
   redisUrl: string;
   nodeEnv: string;
+  domainEventQueueName: string;
+  domainEventWorkerConcurrency: number;
+  domainEventDispatchLimit: number;
+  domainEventDispatchIntervalMs: number;
+  domainEventStaleAfterMs: number;
 }
 
 export interface AuthConfig {
@@ -28,7 +33,12 @@ export function getApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
 export function getWorkerConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   return {
     redisUrl: env.REDIS_URL ?? "",
-    nodeEnv: env.NODE_ENV ?? "development"
+    nodeEnv: env.NODE_ENV ?? "development",
+    domainEventQueueName: env.DOMAIN_EVENT_QUEUE_NAME ?? "domain-events",
+    domainEventWorkerConcurrency: Number(env.DOMAIN_EVENT_WORKER_CONCURRENCY ?? 5),
+    domainEventDispatchLimit: Number(env.DOMAIN_EVENT_DISPATCH_LIMIT ?? 25),
+    domainEventDispatchIntervalMs: Number(env.DOMAIN_EVENT_DISPATCH_INTERVAL_MS ?? 60000),
+    domainEventStaleAfterMs: Number(env.DOMAIN_EVENT_STALE_AFTER_MS ?? 900000)
   };
 }
 

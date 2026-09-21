@@ -11,8 +11,11 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@aws-sdk/client-sesv2": "^3.1134.0",
+    "@prisma/client": "^6.12.0",
     "@shilabs/shared-config": "0.0.0",
-    "@shilabs/shared-types": "0.0.0"
+    "@shilabs/shared-types": "0.0.0",
+    "bullmq": "^6.3.6"
   },
   "devDependencies": {
     "tsx": "^4.19.0"
