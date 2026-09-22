@@ -22,10 +22,14 @@ async function cleanup(): Promise<void> {
   await workerPrisma.emailSuppression.deleteMany({
     where: { normalizedEmail: { startsWith: "r12-" } }
   });
+  await workerPrisma.humanTakeover.deleteMany({
+    where: { lead: { source: "r12-worker-test" } }
+  });
   await workerPrisma.conversation.deleteMany({ where: { lead: { source: "r12-worker-test" } } });
   await workerPrisma.lead.deleteMany({ where: { source: "r12-worker-test" } });
   await workerPrisma.contact.deleteMany({ where: { source: "r12-worker-test" } });
   await workerPrisma.company.deleteMany({ where: { name: { startsWith: "R12 " } } });
+  await workerPrisma.user.deleteMany({ where: { email: "r12-worker-owner@example.local" } });
 }
 
 async function createEvent(input?: {
@@ -147,5 +151,47 @@ describe("R12 domain event worker", () => {
 
     await expect(workerPrisma.domainEventOutbox.findUniqueOrThrow({ where: { id: event.id } }))
       .resolves.toMatchObject({ status: "ATTENTION_REQUIRED", lastErrorCode: "DO_NOT_CONTACT" });
+  });
+
+  it("blocks communication events when human takeover is active", async () => {
+    const { lead, conversation } = await createBlockedLeadFixture();
+    await workerPrisma.contact.update({
+      where: { id: lead.contactId },
+      data: { doNotContact: false }
+    });
+    const user = await workerPrisma.user.create({
+      data: {
+        email: "r12-worker-owner@example.local",
+        passwordHash: "test-hash",
+        firstName: "Worker",
+        lastName: "Owner",
+        role: "SALES_REP",
+        status: "ACTIVE"
+      }
+    });
+    await workerPrisma.humanTakeover.create({
+      data: {
+        leadId: lead.id,
+        conversationId: conversation.id,
+        takenOverByUserId: user.id,
+        reason: "Execution-time block test"
+      }
+    });
+    const event = await createEvent({
+      eventType: "EMAIL_SEND_REQUESTED",
+      payload: { leadId: lead.id, conversationId: conversation.id }
+    });
+    const queue = new FakeQueue();
+    await dispatchDueDomainEvents({ queue, limit: 10, now: new Date() });
+
+    await expect(
+      processDomainEventJob({ eventId: event.id, queueJobId: event.id, workerId: "r12-worker" })
+    ).rejects.toThrow("human takeover");
+
+    await expect(workerPrisma.domainEventOutbox.findUniqueOrThrow({ where: { id: event.id } }))
+      .resolves.toMatchObject({
+        status: "ATTENTION_REQUIRED",
+        lastErrorCode: "HUMAN_TAKEOVER_ACTIVE"
+      });
   });
 });

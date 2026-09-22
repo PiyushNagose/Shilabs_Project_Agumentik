@@ -157,6 +157,20 @@ function statusForStage(stage: { key: string; isWon: boolean; isLost: boolean })
 
 function buildLeadWhere(query: ListLeadsQuery): Prisma.LeadWhereInput {
   const search = query.search;
+  const searchTokens =
+    search
+      ?.split(/\s+/u)
+      .map((token) => token.trim())
+      .filter(Boolean) ?? [];
+  const searchFields = (value: string): Prisma.LeadWhereInput[] => [
+    { requirement: { contains: value, mode: "insensitive" } },
+    { serviceInterest: { contains: value, mode: "insensitive" } },
+    { source: { contains: value, mode: "insensitive" } },
+    { company: { name: { contains: value, mode: "insensitive" } } },
+    { contact: { firstName: { contains: value, mode: "insensitive" } } },
+    { contact: { lastName: { contains: value, mode: "insensitive" } } },
+    { contact: { email: { contains: value, mode: "insensitive" } } }
+  ];
 
   return {
     source: query.source,
@@ -173,13 +187,16 @@ function buildLeadWhere(query: ListLeadsQuery): Prisma.LeadWhereInput {
         : undefined,
     OR: search
       ? [
-          { requirement: { contains: search, mode: "insensitive" } },
-          { serviceInterest: { contains: search, mode: "insensitive" } },
-          { source: { contains: search, mode: "insensitive" } },
-          { company: { name: { contains: search, mode: "insensitive" } } },
-          { contact: { firstName: { contains: search, mode: "insensitive" } } },
-          { contact: { lastName: { contains: search, mode: "insensitive" } } },
-          { contact: { email: { contains: search, mode: "insensitive" } } }
+          ...searchFields(search),
+          ...(searchTokens.length > 1
+            ? [
+                {
+                  AND: searchTokens.map((token) => ({
+                    OR: searchFields(token)
+                  }))
+                }
+              ]
+            : [])
         ]
       : undefined
   };

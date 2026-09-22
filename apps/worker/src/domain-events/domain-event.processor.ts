@@ -11,6 +11,7 @@ import { PermanentDomainEventError } from "./domain-event.errors.js";
 const INTERNAL_EVENT_TYPES = new Set([
   "REPLY_UNDERSTOOD",
   "NEGOTIATION_DETECTED",
+  "NEGOTIATION_HANDOFF_CREATED",
   "REPLY_PROCESSING_FAILED"
 ]);
 
@@ -67,6 +68,12 @@ async function assertExecutionEligible(event: DomainEventOutbox): Promise<void> 
     throw new PermanentDomainEventError(
       "AUTOMATION_PAUSED",
       "Communication blocked because conversation is paused or under human takeover"
+    );
+  }
+  if (context.activeHumanTakeover) {
+    throw new PermanentDomainEventError(
+      "HUMAN_TAKEOVER_ACTIVE",
+      "Communication blocked because human takeover is active"
     );
   }
 }

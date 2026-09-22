@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { UserRole, UserStatus } from "@prisma/client";
-import type { AuthResponse, ConversationDto, LeadDto, MessageDto } from "@shilabs/shared-types";
+import type {
+  AuthResponse,
+  ConversationDto,
+  HumanTakeoverBriefingDto,
+  HumanTakeoverDto,
+  LeadDto,
+  MessageDto
+} from "@shilabs/shared-types";
 import { createApp } from "../../app.js";
 import { prisma } from "../../shared/prisma.js";
 import { hashPassword } from "../auth/auth.service.js";
@@ -79,6 +86,9 @@ async function cleanup(): Promise<void> {
   await prisma.authSession.deleteMany({ where: { user: { email: adminEmail } } });
   await prisma.message.deleteMany({
     where: { conversation: { lead: { company: { name: { startsWith: companyNamePrefix } } } } }
+  });
+  await prisma.humanTakeover.deleteMany({
+    where: { lead: { company: { name: { startsWith: companyNamePrefix } } } }
   });
   await prisma.conversation.deleteMany({
     where: { lead: { company: { name: { startsWith: companyNamePrefix } } } }
@@ -232,6 +242,76 @@ describe("M7/M8 conversations API", () => {
         action: "AI_MODE_CHANGED"
       }
     });
+  }, 45000);
+
+  it("starts human takeover, pauses automation and returns a grounded briefing", async () => {
+    const token = await login();
+    const lead = await createLead(token);
+    const conversationResponse = await request(app)
+      .post("/api/conversations")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ leadId: lead.id, channel: "EMAIL" })
+      .expect(201);
+    const conversation = conversationResponse.body as unknown as ConversationDto;
+
+    await request(app)
+      .post(`/api/conversations/${conversation.id}/messages`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        direction: "INBOUND",
+        senderType: "PROSPECT",
+        body: "We need AI sales automation and pricing."
+      })
+      .expect(201);
+
+    const takeoverResponse = await request(app)
+      .post(`/api/conversations/${conversation.id}/takeover`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ reason: "Proposal and negotiation review" })
+      .expect(201);
+    const takeover = takeoverResponse.body as unknown as HumanTakeoverDto;
+
+    expect(takeover.status).toBe("ACTIVE");
+    expect(takeover.leadId).toBe(lead.id);
+    expect(takeover.conversationId).toBe(conversation.id);
+
+    await expect(
+      prisma.conversation.findUniqueOrThrow({ where: { id: conversation.id } })
+    ).resolves.toMatchObject({ mode: "HUMAN" });
+    const activity = await prisma.activity.findFirstOrThrow({
+      where: { leadId: lead.id, type: "HUMAN_TAKEOVER" }
+    });
+    expect(activity.description).toContain("Proposal");
+    await prisma.auditEvent.findFirstOrThrow({
+      where: {
+        entityType: "HumanTakeover",
+        entityId: takeover.id,
+        action: "HUMAN_TAKEOVER_STARTED"
+      }
+    });
+
+    const duplicateResponse = await request(app)
+      .post(`/api/conversations/${conversation.id}/takeover`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ reason: "Duplicate click" })
+      .expect(201);
+    const duplicate = duplicateResponse.body as unknown as HumanTakeoverDto;
+    expect(duplicate.id).toBe(takeover.id);
+    await expect(
+      prisma.humanTakeover.count({ where: { conversationId: conversation.id, status: "ACTIVE" } })
+    ).resolves.toBe(1);
+
+    const briefingResponse = await request(app)
+      .get(`/api/conversations/${conversation.id}/takeover/briefing`)
+      .set("Authorization", `Bearer ${token}`)
+      .expect(200);
+    const briefing = briefingResponse.body as unknown as HumanTakeoverBriefingDto;
+
+    expect(briefing.takeover.id).toBe(takeover.id);
+    expect(briefing.requirements.requirement).toBe("Needs a conversation inbox");
+    expect(briefing.conversationSummary.mode).toBe("HUMAN");
+    expect(briefing.conversationSummary.messageCount).toBe(1);
+    expect(briefing.latestActions.map((activity) => activity.type)).toContain("HUMAN_TAKEOVER");
   }, 45000);
 
   it("prevents duplicate provider message ids", async () => {

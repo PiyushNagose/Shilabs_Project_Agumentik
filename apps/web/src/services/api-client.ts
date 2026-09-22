@@ -3,6 +3,9 @@ import type {
   ConversationChannelName,
   ConversationDto,
   ConversationModeName,
+  HumanTakeoverBriefingDto,
+  HumanTakeoverDto,
+  InternalNotificationDto,
   LeadDto,
   MessageDirectionName,
   MessageDto,
@@ -12,7 +15,8 @@ import type {
   ProposalDto,
   ProposalSendResultDto,
   ProposalWorkflowStatusName,
-  PublicUser
+  PublicUser,
+  SalesActionDashboardDto
 } from "@shilabs/shared-types";
 
 const viteEnv = import.meta.env as Readonly<Record<string, string | undefined>>;
@@ -102,8 +106,18 @@ export interface SendApprovedProposalBody {
   idempotencyKey?: string;
 }
 
+export interface StartHumanTakeoverBody {
+  reason?: string;
+}
+
+export interface NotificationListParams {
+  leadId?: string;
+  status?: string;
+  limit?: number;
+}
+
 function toQueryString(
-  params: LeadListParams | ConversationListParams | ProposalListParams
+  params: LeadListParams | ConversationListParams | ProposalListParams | NotificationListParams
 ): string {
   const searchParams = new URLSearchParams();
 
@@ -136,6 +150,10 @@ export function listPipelineStages(accessToken: string): Promise<PipelineStageDt
   return apiRequest<PipelineStageDto[]>("/api/pipeline/stages", accessToken);
 }
 
+export function getSalesActionDashboard(accessToken: string): Promise<SalesActionDashboardDto> {
+  return apiRequest<SalesActionDashboardDto>("/api/action-dashboard", accessToken);
+}
+
 export function updateLeadStage(
   accessToken: string,
   leadId: string,
@@ -160,6 +178,16 @@ export function assignLead(
 
 export function listLeadActivities(accessToken: string, leadId: string): Promise<ActivityDto[]> {
   return apiRequest<ActivityDto[]>(`/api/leads/${leadId}/activities`, accessToken);
+}
+
+export function listNotifications(
+  accessToken: string,
+  params: NotificationListParams
+): Promise<InternalNotificationDto[]> {
+  return apiRequest<InternalNotificationDto[]>(
+    `/api/notifications${toQueryString(params)}`,
+    accessToken
+  );
 }
 
 export function listConversations(
@@ -206,6 +234,31 @@ export function updateConversationMode(
     method: "PATCH",
     body: JSON.stringify({ mode })
   });
+}
+
+export function startHumanTakeover(
+  accessToken: string,
+  conversationId: string,
+  body: StartHumanTakeoverBody = {}
+): Promise<HumanTakeoverDto> {
+  return apiRequest<HumanTakeoverDto>(
+    `/api/conversations/${conversationId}/takeover`,
+    accessToken,
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    }
+  );
+}
+
+export function getHumanTakeoverBriefing(
+  accessToken: string,
+  conversationId: string
+): Promise<HumanTakeoverBriefingDto> {
+  return apiRequest<HumanTakeoverBriefingDto>(
+    `/api/conversations/${conversationId}/takeover/briefing`,
+    accessToken
+  );
 }
 
 export function listProposals(

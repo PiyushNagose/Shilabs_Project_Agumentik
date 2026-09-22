@@ -8,5 +8,6 @@
     "types": ["vite/client", "vitest/globals"]
   },
   "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "exclude": ["dist"],
   "references": [{ "path": "../../packages/shared-types" }, { "path": "../../packages/ui" }]
 }

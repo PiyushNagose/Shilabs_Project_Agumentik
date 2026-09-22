@@ -28,7 +28,8 @@ async function login(email: string): Promise<string> {
 }
 
 async function createIdentity(
-  token: string
+  token: string,
+  contactOverrides: Partial<Record<string, unknown>> = {}
 ): Promise<{ company: CompanyDto; contact: ContactDto }> {
   const uniqueSlug = `m4-leads-${randomUUID()}`;
   const companyResponse = await request(app)
@@ -48,7 +49,8 @@ async function createIdentity(
       companyId: company.id,
       firstName: "Lead",
       lastName: "Contact",
-      email: `${uniqueSlug}@example.local`
+      email: `${uniqueSlug}@example.local`,
+      ...contactOverrides
     })
     .expect(201);
 
@@ -319,6 +321,23 @@ describe("leads API", () => {
       requirement: "Mobile app consultation",
       serviceInterest: "Mobile apps"
     });
+    const { company, contact } = await createIdentity(token, {
+      firstName: "E2E",
+      lastName: "Customer02",
+      email: "e2e-customer02-search-test@example.local"
+    });
+    const fullNameLeadResponse = await request(app)
+      .post("/api/leads")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        companyId: company.id,
+        contactId: contact.id,
+        source: "zoho-bigin",
+        requirement: "AI sales automation",
+        serviceInterest: "Sales automation"
+      })
+      .expect(201);
+    const fullNameLead = fullNameLeadResponse.body as unknown as LeadDto;
 
     const response = await request(app)
       .get("/api/leads")
@@ -340,6 +359,24 @@ describe("leads API", () => {
     expect(page.total).toBe(1);
     expect(page.page).toBe(1);
     expect(page.pageSize).toBe(1);
+
+    const fullNameResponse = await request(app)
+      .get("/api/leads")
+      .query({
+        search: "E2E Customer02",
+        page: 1,
+        pageSize: 10
+      })
+      .set("Authorization", `Bearer ${token}`)
+      .expect(200);
+    const fullNamePage = fullNameResponse.body as unknown as PaginatedResponse<LeadDto>;
+
+    expect(fullNamePage.items.some((lead) => lead.id === fullNameLead.id)).toBe(true);
+    expect(
+      fullNamePage.items.every(
+        (lead) => lead.contact.firstName === "E2E" || lead.contact.lastName === "Customer02"
+      )
+    ).toBe(true);
   }, 45000);
 
   it("validates lead creation input", async () => {

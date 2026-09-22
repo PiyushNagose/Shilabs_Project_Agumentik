@@ -5,6 +5,8 @@ import {
   type ActivityDto,
   type ConversationDto,
   type ConversationModeName,
+  type HumanTakeoverBriefingDto,
+  type InternalNotificationDto,
   type LeadDto,
   type LeadTemperatureName,
   type MessageDto,
@@ -14,6 +16,7 @@ import {
   type ProposalSendResultDto,
   type PublicUser
 } from "@shilabs/shared-types";
+import { Icon } from "../../components/Icon.js";
 import { StateBlock } from "../../components/StateBlock.js";
 import { StatusBadge } from "../../components/StatusBadge.js";
 import {
@@ -22,14 +25,17 @@ import {
   approveProposal,
   createConversation,
   getLead,
+  getHumanTakeoverBriefing,
   listConversationMessages,
   listConversations,
   listLeadActivities,
   listLeads,
+  listNotifications,
   listPipelineStages,
   listProposals,
   listUsers,
   sendApprovedProposal,
+  startHumanTakeover,
   updateConversationMode,
   updateLeadStage,
   updateProposalDraft,
@@ -37,7 +43,7 @@ import {
 } from "../../services/api-client.js";
 
 type WorkspaceView = "leads" | "pipeline";
-type DetailTab =
+export type DetailTab =
   | "Overview"
   | "Conversation"
   | "Qualification"
@@ -61,6 +67,8 @@ const detailTabs: DetailTab[] = [
 interface CrmWorkspaceProps {
   accessToken: string;
   currentUser: PublicUser;
+  initialLeadId?: string | null;
+  initialTab?: DetailTab;
 }
 
 interface WorkspaceState {
@@ -69,6 +77,7 @@ interface WorkspaceState {
   users: PublicUser[];
   selectedLead: LeadDto | null;
   activities: ActivityDto[];
+  notifications: InternalNotificationDto[];
   loading: boolean;
   error: string | null;
 }
@@ -77,6 +86,7 @@ interface ConversationState {
   conversations: ConversationDto[];
   selectedConversation: ConversationDto | null;
   messages: MessageDto[];
+  takeoverBriefing: HumanTakeoverBriefingDto | null;
   input: string;
   loading: boolean;
   saving: boolean;
@@ -105,6 +115,7 @@ const initialConversationState: ConversationState = {
   conversations: [],
   selectedConversation: null,
   messages: [],
+  takeoverBriefing: null,
   input: "",
   loading: false,
   saving: false,
@@ -156,7 +167,12 @@ function temperatureTone(temperature: LeadTemperatureName): "hot" | "warm" | "ne
   return "neutral";
 }
 
-export function CrmWorkspace({ accessToken, currentUser }: CrmWorkspaceProps): React.JSX.Element {
+export function CrmWorkspace({
+  accessToken,
+  currentUser,
+  initialLeadId = null,
+  initialTab
+}: CrmWorkspaceProps): React.JSX.Element {
   const [view, setView] = useState<WorkspaceView>("leads");
   const [activeTab, setActiveTab] = useState<DetailTab>("Overview");
   const [filters, setFilters] = useState<LeadListParams>(initialFilters);
@@ -166,6 +182,7 @@ export function CrmWorkspace({ accessToken, currentUser }: CrmWorkspaceProps): R
     users: [],
     selectedLead: null,
     activities: [],
+    notifications: [],
     loading: true,
     error: null
   });
@@ -175,7 +192,7 @@ export function CrmWorkspace({ accessToken, currentUser }: CrmWorkspaceProps): R
 
   async function loadWorkspace(
     nextFilters = filters,
-    leadId = state.selectedLead?.id
+    leadId: string | null | undefined = state.selectedLead?.id
   ): Promise<void> {
     setState((current) => ({ ...current, loading: true, error: null }));
 
@@ -185,12 +202,16 @@ export function CrmWorkspace({ accessToken, currentUser }: CrmWorkspaceProps): R
         listPipelineStages(accessToken),
         listUsers(accessToken).catch(() => [currentUser])
       ]);
-      const selectedLead =
-        leadId !== undefined
-          ? await getLead(accessToken, leadId).catch(() => leadsPage.items[0] ?? null)
-          : (leadsPage.items[0] ?? null);
+      const selectedLead = leadId
+        ? await getLead(accessToken, leadId).catch(() => leadsPage.items[0] ?? null)
+        : (leadsPage.items[0] ?? null);
       const activities = selectedLead
         ? await listLeadActivities(accessToken, selectedLead.id).catch(() => [])
+        : [];
+      const notifications = selectedLead
+        ? await listNotifications(accessToken, { leadId: selectedLead.id, limit: 10 }).catch(
+            () => []
+          )
         : [];
 
       setState({
@@ -199,6 +220,7 @@ export function CrmWorkspace({ accessToken, currentUser }: CrmWorkspaceProps): R
         users,
         selectedLead,
         activities,
+        notifications,
         loading: false,
         error: null
       });
@@ -212,8 +234,17 @@ export function CrmWorkspace({ accessToken, currentUser }: CrmWorkspaceProps): R
   }
 
   useEffect(() => {
-    void loadWorkspace(initialFilters);
+    void loadWorkspace(initialFilters, initialLeadId);
   }, [accessToken]);
+
+  useEffect(() => {
+    if (initialLeadId) {
+      if (initialTab) {
+        setActiveTab(initialTab);
+      }
+      void selectLead(initialLeadId);
+    }
+  }, [initialLeadId, initialTab]);
 
   useEffect(() => {
     if (activeTab === "Conversation" && state.selectedLead) {
@@ -236,12 +267,17 @@ export function CrmWorkspace({ accessToken, currentUser }: CrmWorkspaceProps): R
       const messages = selectedConversation
         ? await listConversationMessages(accessToken, selectedConversation.id)
         : [];
+      const takeoverBriefing =
+        selectedConversation?.mode === "HUMAN"
+          ? await getHumanTakeoverBriefing(accessToken, selectedConversation.id).catch(() => null)
+          : null;
 
       setConversationState((current) => ({
         ...current,
         conversations,
         selectedConversation,
         messages,
+        takeoverBriefing,
         loading: false,
         error: null
       }));
@@ -298,13 +334,16 @@ export function CrmWorkspace({ accessToken, currentUser }: CrmWorkspaceProps): R
   async function applyFilters(nextFilters: LeadListParams): Promise<void> {
     const merged = { ...filters, ...nextFilters, page: nextFilters.page ?? 1 };
     setFilters(merged);
-    await loadWorkspace(merged);
+    await loadWorkspace(merged, null);
   }
 
   async function selectLead(leadId: string): Promise<void> {
     const lead = await getLead(accessToken, leadId);
     const activities = await listLeadActivities(accessToken, leadId).catch(() => []);
-    setState((current) => ({ ...current, selectedLead: lead, activities }));
+    const notifications = await listNotifications(accessToken, { leadId, limit: 10 }).catch(
+      () => []
+    );
+    setState((current) => ({ ...current, selectedLead: lead, activities, notifications }));
     setConversationState(initialConversationState);
     setProposalState(initialProposalState);
   }
@@ -394,9 +433,14 @@ export function CrmWorkspace({ accessToken, currentUser }: CrmWorkspaceProps): R
 
     try {
       const messages = await listConversationMessages(accessToken, selectedConversation.id);
+      const takeoverBriefing =
+        selectedConversation.mode === "HUMAN"
+          ? await getHumanTakeoverBriefing(accessToken, selectedConversation.id).catch(() => null)
+          : null;
       setConversationState((current) => ({
         ...current,
         messages,
+        takeoverBriefing,
         loading: false,
         error: null
       }));
@@ -424,8 +468,52 @@ export function CrmWorkspace({ accessToken, currentUser }: CrmWorkspaceProps): R
       selectedConversation: conversation,
       conversations: current.conversations.map((item) =>
         item.id === conversation.id ? conversation : item
-      )
+      ),
+      takeoverBriefing: conversation.mode === "HUMAN" ? current.takeoverBriefing : null
     }));
+  }
+
+  async function startSelectedHumanTakeover(): Promise<void> {
+    if (!conversationState.selectedConversation) {
+      return;
+    }
+
+    setConversationState((current) => ({ ...current, saving: true, error: null }));
+    try {
+      await startHumanTakeover(accessToken, conversationState.selectedConversation.id, {
+        reason: "Manual takeover from Sales Workspace"
+      });
+      const briefing = await getHumanTakeoverBriefing(
+        accessToken,
+        conversationState.selectedConversation.id
+      );
+      const conversation = { ...conversationState.selectedConversation, mode: "HUMAN" as const };
+      const activities = state.selectedLead
+        ? await listLeadActivities(accessToken, state.selectedLead.id).catch(() => state.activities)
+        : state.activities;
+      const notifications = state.selectedLead
+        ? await listNotifications(accessToken, { leadId: state.selectedLead.id, limit: 10 }).catch(
+            () => state.notifications
+          )
+        : state.notifications;
+      setState((current) => ({ ...current, activities, notifications }));
+      setConversationState((current) => ({
+        ...current,
+        selectedConversation: conversation,
+        conversations: current.conversations.map((item) =>
+          item.id === conversation.id ? conversation : item
+        ),
+        takeoverBriefing: briefing,
+        saving: false,
+        error: null
+      }));
+    } catch {
+      setConversationState((current) => ({
+        ...current,
+        saving: false,
+        error: "Human takeover could not be started"
+      }));
+    }
   }
 
   async function sendProspectMessage(): Promise<void> {
@@ -592,6 +680,7 @@ export function CrmWorkspace({ accessToken, currentUser }: CrmWorkspaceProps): R
             onClick={() => setView("leads")}
             type="button"
           >
+            <Icon name="layout-list" size={16} />
             Leads
           </button>
           <button
@@ -599,6 +688,7 @@ export function CrmWorkspace({ accessToken, currentUser }: CrmWorkspaceProps): R
             onClick={() => setView("pipeline")}
             type="button"
           >
+            <Icon name="bar-chart" size={16} />
             Pipeline
           </button>
         </div>
@@ -620,6 +710,7 @@ export function CrmWorkspace({ accessToken, currentUser }: CrmWorkspaceProps): R
               detail={state.error}
               action={
                 <button onClick={() => void loadWorkspace(filters)} type="button">
+                  <Icon name="refresh" size={16} />
                   Retry
                 </button>
               }
@@ -639,6 +730,7 @@ export function CrmWorkspace({ accessToken, currentUser }: CrmWorkspaceProps): R
         <LeadDetail
           activeTab={activeTab}
           activities={state.activities}
+          notifications={state.notifications}
           lead={state.selectedLead}
           stages={state.stages}
           users={state.users}
@@ -663,6 +755,7 @@ export function CrmWorkspace({ accessToken, currentUser }: CrmWorkspaceProps): R
           onProposalSend={sendSelectedProposal}
           onSendProspectMessage={sendProspectMessage}
           onStartConversation={startSimulatorConversation}
+          onStartHumanTakeover={startSelectedHumanTakeover}
           onTabChange={setActiveTab}
           proposalState={proposalState}
         />
@@ -684,13 +777,16 @@ function LeadFilters({
 }): React.JSX.Element {
   return (
     <form className="lead-filters" onSubmit={(event) => event.preventDefault()}>
-      <input
-        aria-label="Search leads"
-        onChange={(event) => void onChange({ search: event.target.value })}
-        placeholder="Search leads"
-        type="search"
-        value={filters.search ?? ""}
-      />
+      <div className="filter-search">
+        <Icon name="filter" size={16} />
+        <input
+          aria-label="Search leads"
+          onChange={(event) => void onChange({ search: event.target.value })}
+          placeholder="Search leads"
+          type="search"
+          value={filters.search ?? ""}
+        />
+      </div>
       <select
         aria-label="Filter by stage"
         onChange={(event) => void onChange({ stageId: event.target.value })}
@@ -821,6 +917,7 @@ function LeadDetail({
   conversationState,
   currentUser,
   lead,
+  notifications,
   proposalState,
   stages,
   users,
@@ -837,6 +934,7 @@ function LeadDetail({
   onProposalSend,
   onSendProspectMessage,
   onStartConversation,
+  onStartHumanTakeover,
   onTabChange
 }: {
   activeTab: DetailTab;
@@ -844,6 +942,7 @@ function LeadDetail({
   conversationState: ConversationState;
   currentUser: PublicUser;
   lead: LeadDto | null;
+  notifications: InternalNotificationDto[];
   proposalState: ProposalState;
   stages: PipelineStageDto[];
   users: PublicUser[];
@@ -862,6 +961,7 @@ function LeadDetail({
   onProposalSend: () => Promise<void>;
   onSendProspectMessage: () => Promise<void>;
   onStartConversation: () => Promise<void>;
+  onStartHumanTakeover: () => Promise<void>;
   onTabChange: (tab: DetailTab) => void;
 }): React.JSX.Element {
   if (!lead) {
@@ -930,6 +1030,8 @@ function LeadDetail({
         <span>{lead.nextAction ?? "No next action"}</span>
       </div>
 
+      <NotificationAlerts notifications={notifications} />
+
       <div className="detail-tabs" role="tablist" aria-label="Lead sections">
         {detailTabs.map((tab) => (
           <button
@@ -963,8 +1065,40 @@ function LeadDetail({
         onProposalSend={onProposalSend}
         onSendProspectMessage={onSendProspectMessage}
         onStartConversation={onStartConversation}
+        onStartHumanTakeover={onStartHumanTakeover}
       />
     </aside>
+  );
+}
+
+function NotificationAlerts({
+  notifications
+}: {
+  notifications: InternalNotificationDto[];
+}): React.JSX.Element | null {
+  const handoffAlerts = notifications.filter(
+    (notification) =>
+      notification.status === "UNREAD" || notification.status === "ATTENTION_REQUIRED"
+  );
+
+  if (handoffAlerts.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="notification-alerts" aria-label="Lead alerts">
+      {handoffAlerts.slice(0, 3).map((notification) => (
+        <article className="notification-alert" key={notification.id}>
+          <div>
+            <strong>{notification.title}</strong>
+            <span>{notification.body}</span>
+          </div>
+          <StatusBadge tone={notification.severity === "CRITICAL" ? "hot" : "warm"}>
+            {notification.status.replaceAll("_", " ")}
+          </StatusBadge>
+        </article>
+      ))}
+    </section>
   );
 }
 
@@ -985,7 +1119,8 @@ function DetailTabPanel({
   onProposalSelect,
   onProposalSend,
   onSendProspectMessage,
-  onStartConversation
+  onStartConversation,
+  onStartHumanTakeover
 }: {
   activities: ActivityDto[];
   conversationState: ConversationState;
@@ -1006,6 +1141,7 @@ function DetailTabPanel({
   onProposalSend: () => Promise<void>;
   onSendProspectMessage: () => Promise<void>;
   onStartConversation: () => Promise<void>;
+  onStartHumanTakeover: () => Promise<void>;
 }): React.JSX.Element {
   if (tab === "Conversation") {
     return (
@@ -1018,6 +1154,7 @@ function DetailTabPanel({
         onModeChange={onModeChange}
         onSendProspectMessage={onSendProspectMessage}
         onStartConversation={onStartConversation}
+        onStartHumanTakeover={onStartHumanTakeover}
       />
     );
   }
@@ -1129,6 +1266,7 @@ function ProposalReviewPanel({
           detail="Proposal generation or manual creation must create records before review."
           action={
             <button onClick={() => void onRefresh()} type="button">
+              <Icon name="refresh" size={16} />
               Refresh
             </button>
           }
@@ -1216,6 +1354,7 @@ function ProposalReviewPanel({
               onClick={() => void onSave()}
               type="button"
             >
+              <Icon name="check" size={16} />
               Save draft
             </button>
             <button
@@ -1228,6 +1367,7 @@ function ProposalReviewPanel({
               onClick={() => void onApprove()}
               type="button"
             >
+              <Icon name="check" size={16} />
               Approve
             </button>
             <button
@@ -1235,9 +1375,11 @@ function ProposalReviewPanel({
               onClick={() => void onSend()}
               type="button"
             >
+              <Icon name="send" size={16} />
               Send approved
             </button>
             <button disabled={proposalState.saving} onClick={() => void onRefresh()} type="button">
+              <Icon name="refresh" size={16} />
               Refresh
             </button>
           </div>
@@ -1275,7 +1417,8 @@ function ConversationSimulator({
   onConversationInputChange,
   onModeChange,
   onSendProspectMessage,
-  onStartConversation
+  onStartConversation,
+  onStartHumanTakeover
 }: {
   activities: ActivityDto[];
   conversationState: ConversationState;
@@ -1285,6 +1428,7 @@ function ConversationSimulator({
   onModeChange: (mode: ConversationModeName) => Promise<void>;
   onSendProspectMessage: () => Promise<void>;
   onStartConversation: () => Promise<void>;
+  onStartHumanTakeover: () => Promise<void>;
 }): React.JSX.Element {
   const selectedConversation = conversationState.selectedConversation;
   const messageActivities = activities
@@ -1311,6 +1455,7 @@ function ConversationSimulator({
                 onClick={() => void onStartConversation()}
                 type="button"
               >
+                <Icon name="sparkles" size={16} />
                 Start simulator
               </button>
             }
@@ -1346,9 +1491,20 @@ function ConversationSimulator({
             </option>
           ))}
         </select>
+        <button
+          disabled={conversationState.saving || selectedConversation.mode === "HUMAN"}
+          onClick={() => void onStartHumanTakeover()}
+          type="button"
+        >
+          <Icon name="users" size={16} />
+          Take over
+        </button>
       </div>
 
       {conversationState.error ? <p className="form-error">{conversationState.error}</p> : null}
+      {conversationState.takeoverBriefing ? (
+        <HumanTakeoverBriefing briefing={conversationState.takeoverBriefing} />
+      ) : null}
 
       <div className="simulator-grid">
         <section className="conversation-thread" aria-label="Conversation thread">
@@ -1410,9 +1566,63 @@ function ConversationSimulator({
           disabled={conversationState.saving || conversationState.input.trim().length === 0}
           type="submit"
         >
+          <Icon name="send" size={16} />
           Save inbound
         </button>
       </form>
     </div>
+  );
+}
+
+function HumanTakeoverBriefing({
+  briefing
+}: {
+  briefing: HumanTakeoverBriefingDto;
+}): React.JSX.Element {
+  const qualification = briefing.qualification;
+  const latestProposal = briefing.proposalContext.proposals[0] ?? null;
+
+  return (
+    <section className="takeover-briefing" aria-label="Human takeover briefing">
+      <header>
+        <div>
+          <strong>Human takeover active</strong>
+          <span>
+            {briefing.takeover.takenOverBy.firstName} {briefing.takeover.takenOverBy.lastName}
+          </span>
+        </div>
+        <StatusBadge tone="warm">{briefing.takeover.status}</StatusBadge>
+      </header>
+      <div className="briefing-grid">
+        <section>
+          <strong>Requirements</strong>
+          <span>{briefing.requirements.requirement ?? "No requirement captured"}</span>
+          <span>{briefing.requirements.serviceInterest ?? "No service interest captured"}</span>
+        </section>
+        <section>
+          <strong>Qualification</strong>
+          <span>{qualification.need ?? "Need unknown"}</span>
+          <span>{qualification.timeline ?? "Timeline unknown"}</span>
+          <span>{qualification.budget ?? qualification.budgetBand ?? "Budget unknown"}</span>
+        </section>
+        <section>
+          <strong>Proposal / deal</strong>
+          <span>{latestProposal ? latestProposal.status.replaceAll("_", " ") : "No proposal"}</span>
+          <span>
+            {briefing.dealContext.deal
+              ? `${briefing.dealContext.deal.status} at ${String(
+                  briefing.dealContext.deal.probability
+                )}%`
+              : "No deal record"}
+          </span>
+        </section>
+        <section>
+          <strong>Latest actions</strong>
+          {briefing.latestActions.slice(0, 4).map((activity) => (
+            <span key={activity.id}>{activity.type.replaceAll("_", " ")}</span>
+          ))}
+        </section>
+      </div>
+    </section>
   );
 }

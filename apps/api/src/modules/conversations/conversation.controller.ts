@@ -1,18 +1,26 @@
 import type { Request, Response } from "express";
-import type { ConversationDto, MessageDto } from "@shilabs/shared-types";
+import type {
+  ConversationDto,
+  HumanTakeoverBriefingDto,
+  HumanTakeoverDto,
+  MessageDto
+} from "@shilabs/shared-types";
 import { AppError } from "../../shared/errors.js";
 import {
   appendMessage,
   createConversation,
   getConversation,
+  getHumanTakeoverBriefing,
   listConversations,
   listMessages,
+  startHumanTakeover,
   updateConversationMode
 } from "./conversation.service.js";
 import type {
   CreateConversationInput,
   CreateMessageInput,
   ListConversationsQuery,
+  StartHumanTakeoverInput,
   UpdateConversationModeInput
 } from "./conversation.schemas.js";
 
@@ -72,4 +80,20 @@ export async function updateConversationModeController(
     .json(
       await updateConversationMode(requireRequestUser(request), request.params.id, request.body)
     );
+}
+
+export async function startHumanTakeoverController(
+  request: Request<{ id: string }, HumanTakeoverDto, StartHumanTakeoverInput>,
+  response: Response<HumanTakeoverDto>
+): Promise<void> {
+  response
+    .status(201)
+    .json(await startHumanTakeover(requireRequestUser(request), request.params.id, request.body));
+}
+
+export async function getHumanTakeoverBriefingController(
+  request: Request<{ id: string }>,
+  response: Response<HumanTakeoverBriefingDto>
+): Promise<void> {
+  response.status(200).json(await getHumanTakeoverBriefing(request.params.id));
 }

@@ -44,7 +44,12 @@ export const updateConversationModeSchema = z.object({
   mode: conversationModeSchema
 });
 
+export const startHumanTakeoverSchema = z.object({
+  reason: z.string().trim().min(1).max(500).optional()
+});
+
 export type ListConversationsQuery = z.infer<typeof listConversationsQuerySchema>;
 export type CreateConversationInput = z.infer<typeof createConversationSchema>;
 export type CreateMessageInput = z.infer<typeof createMessageSchema>;
 export type UpdateConversationModeInput = z.infer<typeof updateConversationModeSchema>;
+export type StartHumanTakeoverInput = z.infer<typeof startHumanTakeoverSchema>;

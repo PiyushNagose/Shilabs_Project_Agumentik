@@ -21,6 +21,7 @@ import {
 
 const actorEmail = "r5-email-admin@example.local";
 const configuredEnv = {
+  ALLOW_EXTERNAL_EMAIL_IN_NON_PRODUCTION: "true",
   AWS_SES_REGION: "us-east-1",
   AWS_SES_FROM_EMAIL: "sales@example.com",
   AWS_SES_ACCESS_KEY_ID: "test-access-key",

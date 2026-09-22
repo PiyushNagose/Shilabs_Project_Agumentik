@@ -187,6 +187,7 @@ export async function getExecutionContext(input: { event: DomainEventRecord }): 
   } | null;
   conversation?: { mode: string } | null;
   suppressedEmail?: boolean;
+  activeHumanTakeover?: boolean;
 }> {
   const payload = input.event.payload as Prisma.JsonObject;
   const leadId = typeof payload.leadId === "string" ? payload.leadId : null;
@@ -214,6 +215,19 @@ export async function getExecutionContext(input: { event: DomainEventRecord }): 
   const suppression = normalizedEmail
     ? await workerPrisma.emailSuppression.findUnique({ where: { normalizedEmail } })
     : null;
+  const activeTakeover =
+    leadId || conversationId
+      ? await workerPrisma.humanTakeover.findFirst({
+          where: {
+            status: "ACTIVE",
+            OR: [
+              ...(leadId ? [{ leadId }] : []),
+              ...(conversationId ? [{ conversationId }] : [])
+            ]
+          },
+          select: { id: true }
+        })
+      : null;
 
-  return { lead, conversation, suppressedEmail: suppression !== null };
+  return { lead, conversation, suppressedEmail: suppression !== null, activeHumanTakeover: activeTakeover !== null };
 }

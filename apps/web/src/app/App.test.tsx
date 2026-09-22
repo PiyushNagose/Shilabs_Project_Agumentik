@@ -1,8 +1,8 @@
 /**
  * @vitest-environment happy-dom
  */
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { MockInstance } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { App } from "./App.js";
 
 const adminUser = {
@@ -131,6 +131,224 @@ const inboundMessage = {
   senderUser: null
 };
 
+const humanConversation = {
+  ...conversation,
+  mode: "HUMAN"
+};
+
+const takeoverBriefing = {
+  takeover: {
+    id: "takeover_1",
+    leadId: lead.id,
+    conversationId: conversation.id,
+    takenOverByUserId: adminUser.id,
+    status: "ACTIVE",
+    reason: "Manual review",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    takenOverBy: adminUser
+  },
+  lead,
+  requirements: {
+    requirement: "Needs a production CRM workspace",
+    serviceInterest: "CRM",
+    nextAction: "Schedule discovery",
+    nextActionAt: null
+  },
+  conversationSummary: {
+    conversationId: conversation.id,
+    mode: "HUMAN",
+    status: "OPEN",
+    lastMessageAt: conversation.lastMessageAt,
+    messageCount: 1,
+    recentMessages: [inboundMessage]
+  },
+  qualification: {
+    id: "qualification_1",
+    leadId: lead.id,
+    need: "CRM workflow automation",
+    requirement: "Production CRM workspace with automation",
+    budget: "Custom pricing",
+    budgetBand: null,
+    authority: "Founder",
+    timeline: "This quarter",
+    businessFit: "Strong fit",
+    decisionMakerIdentified: true,
+    urgency: "High",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    evidence: []
+  },
+  proposalContext: {
+    proposals: [
+      {
+        id: "proposal_1",
+        leadId: lead.id,
+        dealId: null,
+        title: "CRM Automation Proposal",
+        serviceType: "GENERAL",
+        status: "WAITING_APPROVAL",
+        currentVersionId: null,
+        approvedVersionId: null,
+        approvedByUserId: null,
+        approvedAt: null,
+        sentByUserId: null,
+        sentAt: null,
+        sentOutboundEmailId: null,
+        zohoTimelineSyncStatus: "NOT_REQUIRED",
+        zohoTimelineLastError: null,
+        idempotencyKey: null,
+        createdByUserId: adminUser.id,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        lead,
+        deal: null,
+        currentVersion: null,
+        approvedVersion: null,
+        versions: [],
+        statusChanges: []
+      }
+    ]
+  },
+  dealContext: {
+    deal: {
+      id: "deal_1",
+      leadId: lead.id,
+      stageId: qualifiedStage.id,
+      ownerId: adminUser.id,
+      value: "12000",
+      currency: "USD",
+      probability: 50,
+      status: "OPEN",
+      proposalStatus: null,
+      wonReason: null,
+      lostReason: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      lead,
+      stage: qualifiedStage,
+      owner: adminUser
+    }
+  },
+  latestActions: [
+    {
+      id: "activity_takeover",
+      leadId: lead.id,
+      actorUserId: adminUser.id,
+      type: "HUMAN_TAKEOVER",
+      description: "Human takeover started",
+      createdAt: new Date().toISOString(),
+      actorUser: adminUser
+    }
+  ]
+};
+
+const negotiationNotification = {
+  id: "notification_1",
+  type: "NEGOTIATION_HANDOFF",
+  status: "UNREAD",
+  severity: "WARNING",
+  title: "Negotiation handoff required",
+  body: "Prospect is negotiating price and needs the assigned owner to respond.",
+  assignedToUserId: adminUser.id,
+  leadId: lead.id,
+  conversationId: conversation.id,
+  negotiationHandoffId: "handoff_1",
+  sourceEntityType: "NegotiationHandoff",
+  sourceEntityId: "handoff_1",
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+  negotiationHandoff: {
+    id: "handoff_1",
+    leadId: lead.id,
+    conversationId: conversation.id,
+    replyProcessingRunId: "reply_run_1",
+    assignedOwnerId: adminUser.id,
+    status: "ACTIVE",
+    summary: "Prospect is negotiating price and needs the assigned owner to respond.",
+    failureCode: null,
+    failureMessage: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    assignedOwner: adminUser
+  }
+};
+
+const actionDashboard = {
+  generatedAt: new Date().toISOString(),
+  pendingProposalApprovals: [
+    {
+      id: "proposal:proposal_1",
+      type: "PROPOSAL_APPROVAL",
+      severity: "WARNING",
+      title: "Proposal waiting for approval",
+      detail: "CRM Automation Proposal",
+      status: "WAITING_APPROVAL",
+      leadId: lead.id,
+      conversationId: null,
+      proposalId: "proposal_1",
+      sourceEntityType: "Proposal",
+      sourceEntityId: "proposal_1",
+      occurredAt: new Date().toISOString(),
+      lead
+    }
+  ],
+  negotiationAndTakeoverAlerts: [
+    {
+      id: "notification:notification_1",
+      type: "NEGOTIATION_HANDOFF",
+      severity: "WARNING",
+      title: "Negotiation handoff required",
+      detail: "Prospect is negotiating price and needs the assigned owner to respond.",
+      status: "UNREAD",
+      leadId: lead.id,
+      conversationId: conversation.id,
+      proposalId: null,
+      sourceEntityType: "NegotiationHandoff",
+      sourceEntityId: "handoff_1",
+      occurredAt: new Date().toISOString(),
+      lead
+    }
+  ],
+  failuresRequiringAttention: [
+    {
+      id: "follow-up-sequence:sequence_1",
+      type: "FAILURE",
+      severity: "CRITICAL",
+      title: "Follow-up sequence requires attention",
+      detail: "PROVIDER_ERROR: Provider rejected follow-up dispatch.",
+      status: "ATTENTION_REQUIRED",
+      leadId: lead.id,
+      conversationId: conversation.id,
+      proposalId: null,
+      sourceEntityType: "FollowUpSequence",
+      sourceEntityId: "sequence_1",
+      occurredAt: new Date().toISOString(),
+      lead
+    }
+  ],
+  meetings: {
+    status: "NOT_AVAILABLE",
+    items: [],
+    message:
+      "Meeting and calendar orchestration starts in R20/R21; no persisted meeting action source exists yet."
+  },
+  actionItems: [] as unknown[],
+  summary: {
+    pendingProposalApprovals: 1,
+    negotiationAndTakeoverAlerts: 1,
+    failuresRequiringAttention: 1,
+    meetings: 0,
+    totalActionItems: 3
+  }
+};
+
+actionDashboard.actionItems = [
+  ...actionDashboard.pendingProposalApprovals,
+  ...actionDashboard.negotiationAndTakeoverAlerts,
+  ...actionDashboard.failuresRequiringAttention
+];
+
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status: 200,
@@ -162,6 +380,10 @@ function requestUrl(input: RequestInfo | URL): string {
 
 function crmFetch(input: RequestInfo | URL): Promise<Response> {
   const url = requestUrl(input);
+
+  if (url.endsWith("/api/action-dashboard")) {
+    return Promise.resolve(jsonResponse(actionDashboard));
+  }
 
   if (url.includes("/api/leads?")) {
     return Promise.resolve(jsonResponse(leadPage()));
@@ -204,6 +426,10 @@ function crmFetch(input: RequestInfo | URL): Promise<Response> {
     );
   }
 
+  if (url.includes("/api/notifications?")) {
+    return Promise.resolve(jsonResponse([negotiationNotification]));
+  }
+
   if (url.includes("/api/conversations?")) {
     return Promise.resolve(jsonResponse([conversation]));
   }
@@ -233,10 +459,18 @@ function mockCrmFetch(): MockInstance<typeof window.fetch> {
   return vi.spyOn(window, "fetch").mockImplementation(crmFetch);
 }
 
+async function openCrm(): Promise<void> {
+  fireEvent.click(await screen.findByText("CRM"));
+}
+
 describe("web app", () => {
   beforeEach(() => {
     window.localStorage.clear();
     vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    cleanup();
   });
 
   it("shows the login page when no user is authenticated", () => {
@@ -279,6 +513,9 @@ describe("web app", () => {
       expect(screen.getByText("Development Admin")).toBeTruthy();
     });
     expect(screen.getByText("Users")).toBeTruthy();
+    expect(await screen.findByText("Sales Engineer Actions")).toBeTruthy();
+    expect(screen.getAllByText("Proposal waiting for approval").length).toBeGreaterThan(0);
+    await openCrm();
     expect(await screen.findAllByText("Shilabs Prospect")).toHaveLength(2);
   });
 
@@ -307,7 +544,7 @@ describe("web app", () => {
 
     render(<App />);
 
-    expect(screen.getByText("CRM")).toBeTruthy();
+    expect(screen.getByText("Dashboard")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Logout" }));
 
     await waitFor(() => {
@@ -322,6 +559,7 @@ describe("web app", () => {
     const fetchSpy = mockCrmFetch();
 
     render(<App />);
+    await openCrm();
 
     expect(await screen.findAllByText("Shilabs Prospect")).toHaveLength(2);
     fireEvent.change(screen.getByLabelText("Search leads"), {
@@ -336,12 +574,33 @@ describe("web app", () => {
     });
   });
 
+  it("surfaces negotiation handoff alerts in the sales workspace", async () => {
+    window.localStorage.setItem("shilabs.accessToken", "header.payload.signature");
+    window.localStorage.setItem("shilabs.user", JSON.stringify(adminUser));
+    const fetchSpy = mockCrmFetch();
+
+    render(<App />);
+    await openCrm();
+
+    expect(await screen.findByText("Negotiation handoff required")).toBeTruthy();
+    expect(
+      screen.getByText("Prospect is negotiating price and needs the assigned owner to respond.")
+    ).toBeTruthy();
+    expect(screen.getByText("UNREAD")).toBeTruthy();
+    expect(
+      fetchSpy.mock.calls.some(([input]) =>
+        requestUrl(input).includes("/api/notifications?leadId=lead_1")
+      )
+    ).toBe(true);
+  });
+
   it("loads lead detail and persists stage and owner changes", async () => {
     window.localStorage.setItem("shilabs.accessToken", "header.payload.signature");
     window.localStorage.setItem("shilabs.user", JSON.stringify(adminUser));
     const fetchSpy = mockCrmFetch();
 
     render(<App />);
+    await openCrm();
 
     expect(await screen.findByText("Needs a production CRM workspace")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Change lead stage"), {
@@ -383,6 +642,7 @@ describe("web app", () => {
     });
 
     render(<App />);
+    await openCrm();
 
     fireEvent.click(await screen.findByRole("tab", { name: "Conversation" }));
     expect(await screen.findByText("We need a new real-estate website.")).toBeTruthy();
@@ -414,6 +674,7 @@ describe("web app", () => {
     const fetchSpy = mockCrmFetch();
 
     render(<App />);
+    await openCrm();
 
     fireEvent.click(await screen.findByRole("tab", { name: "Conversation" }));
     fireEvent.change(await screen.findByLabelText("AI mode"), {
@@ -429,5 +690,62 @@ describe("web app", () => {
         })
       );
     });
+  });
+
+  it("shows persisted human takeover briefing for an already-human conversation", async () => {
+    window.localStorage.setItem("shilabs.accessToken", "header.payload.signature");
+    window.localStorage.setItem("shilabs.user", JSON.stringify(adminUser));
+    const fetchSpy = vi.spyOn(window, "fetch").mockImplementation((input) => {
+      const url = requestUrl(input);
+
+      if (url.includes("/api/conversations?")) {
+        return Promise.resolve(jsonResponse([humanConversation]));
+      }
+
+      if (url.endsWith("/api/conversations/conversation_1/takeover/briefing")) {
+        return Promise.resolve(jsonResponse(takeoverBriefing));
+      }
+
+      return crmFetch(input);
+    });
+
+    render(<App />);
+    await openCrm();
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Conversation" }));
+
+    const briefing = await screen.findByRole("region", { name: "Human takeover briefing" });
+    expect(within(briefing).getByText("Human takeover active")).toBeTruthy();
+    expect(within(briefing).getByText("Needs a production CRM workspace")).toBeTruthy();
+    expect(within(briefing).getByText("CRM workflow automation")).toBeTruthy();
+    expect(within(briefing).getByText("WAITING APPROVAL")).toBeTruthy();
+    expect(within(briefing).getByText("OPEN at 50%")).toBeTruthy();
+    expect(within(briefing).getByText("HUMAN TAKEOVER")).toBeTruthy();
+    expect(
+      fetchSpy.mock.calls.some(([input]) =>
+        requestUrl(input).endsWith("/api/conversations/conversation_1/takeover/briefing")
+      )
+    ).toBe(true);
+  });
+
+  it("opens the CRM workspace from a dashboard action item", async () => {
+    window.localStorage.setItem("shilabs.accessToken", "header.payload.signature");
+    window.localStorage.setItem("shilabs.user", JSON.stringify(adminUser));
+    const fetchSpy = mockCrmFetch();
+
+    render(<App />);
+
+    expect(await screen.findByText("Sales Engineer Actions")).toBeTruthy();
+    const openWorkspaceButton = screen.getAllByRole("button", { name: "Open workspace" })[0];
+    if (!openWorkspaceButton) {
+      throw new Error("Expected dashboard open workspace button");
+    }
+    fireEvent.click(openWorkspaceButton);
+
+    expect(await screen.findByText("Sales Workspace")).toBeTruthy();
+    expect(await screen.findAllByText("Shilabs Prospect")).toHaveLength(2);
+    expect(
+      fetchSpy.mock.calls.some(([input]) => requestUrl(input).endsWith("/api/leads/lead_1"))
+    ).toBe(true);
   });
 });

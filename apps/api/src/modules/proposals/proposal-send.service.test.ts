@@ -9,6 +9,14 @@ import { sendApprovedProposal } from "./proposal-send.service.js";
 
 const actorEmail = "r16-proposal-admin@example.local";
 const source = "r16-proposal-test";
+const configuredSesTestEnv = {
+  ALLOW_EXTERNAL_EMAIL_IN_NON_PRODUCTION: "true",
+  AWS_SES_REGION: "us-east-1",
+  AWS_SES_FROM_EMAIL: "sales@example.com",
+  AWS_SES_WEBHOOK_SECRET: "secret",
+  AWS_SES_ACCESS_KEY_ID: "key",
+  AWS_SES_SECRET_ACCESS_KEY: "secret"
+};
 
 class TestEmailProvider implements EmailProvider {
   public sendEmailMock = vi.fn((input: EmailSendInput) =>
@@ -45,6 +53,13 @@ function zohoSuccessTransport(): typeof fetch {
 }
 
 async function cleanup(): Promise<void> {
+  const testProposalIds = (
+    await prisma.proposal.findMany({
+      where: { lead: { source } },
+      select: { id: true }
+    })
+  ).map((proposal) => proposal.id);
+
   await prisma.externalRecordMapping.deleteMany({
     where: {
       OR: [
@@ -54,9 +69,14 @@ async function cleanup(): Promise<void> {
       ]
     }
   });
-  await prisma.domainEventOutbox.deleteMany({
-    where: { eventType: { in: ["PROPOSAL_APPROVED", "PROPOSAL_SENT"] } }
-  });
+  if (testProposalIds.length > 0) {
+    await prisma.domainEventOutbox.deleteMany({
+      where: {
+        eventType: { in: ["PROPOSAL_APPROVED", "PROPOSAL_SENT"] },
+        aggregateId: { in: testProposalIds }
+      }
+    });
+  }
   await prisma.proposal.updateMany({
     where: { lead: { source } },
     data: { currentVersionId: null, approvedVersionId: null, sentOutboundEmailId: null }
@@ -193,11 +213,7 @@ describe("R16 proposal send service", () => {
         emailProvider: provider,
         zohoTransport: zohoSuccessTransport(),
         env: {
-          AWS_SES_REGION: "us-east-1",
-          AWS_SES_FROM_EMAIL: "sales@example.local",
-          AWS_SES_WEBHOOK_SECRET: "secret",
-          AWS_SES_ACCESS_KEY_ID: "key",
-          AWS_SES_SECRET_ACCESS_KEY: "secret",
+          ...configuredSesTestEnv,
           ZOHO_BIGIN_CLIENT_ID: "client",
           ZOHO_BIGIN_CLIENT_SECRET: "secret",
           ZOHO_BIGIN_REFRESH_TOKEN: "refresh"
@@ -237,13 +253,7 @@ describe("R16 proposal send service", () => {
       { idempotencyKey: `r16-send-no-zoho-${approved.id}` },
       {
         emailProvider: provider,
-        env: {
-          AWS_SES_REGION: "us-east-1",
-          AWS_SES_FROM_EMAIL: "sales@example.local",
-          AWS_SES_WEBHOOK_SECRET: "secret",
-          AWS_SES_ACCESS_KEY_ID: "key",
-          AWS_SES_SECRET_ACCESS_KEY: "secret"
-        }
+        env: configuredSesTestEnv
       }
     );
 
@@ -256,13 +266,7 @@ describe("R16 proposal send service", () => {
   it("retries Zoho only after an already confirmed proposal email send", async () => {
     const { actor, lead, approved } = await seedApprovedProposal();
     const provider = new TestEmailProvider();
-    const baseEnv = {
-      AWS_SES_REGION: "us-east-1",
-      AWS_SES_FROM_EMAIL: "sales@example.local",
-      AWS_SES_WEBHOOK_SECRET: "secret",
-      AWS_SES_ACCESS_KEY_ID: "key",
-      AWS_SES_SECRET_ACCESS_KEY: "secret"
-    };
+    const baseEnv = configuredSesTestEnv;
 
     await sendApprovedProposal(
       actor,

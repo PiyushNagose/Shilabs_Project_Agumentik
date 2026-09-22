@@ -156,6 +156,24 @@ export async function startFollowUpSequence(
       message: `Conversation mode ${conversation.mode} blocks follow-up automation`
     });
   }
+  const activeTakeover = await prisma.humanTakeover.findFirst({
+    where: {
+      leadId,
+      status: "ACTIVE",
+      conversationId: conversation?.id
+    },
+    select: { id: true }
+  });
+  if (activeTakeover) {
+    return createAttentionSequence({
+      leadId,
+      contactId: lead.contactId,
+      conversationId: conversation?.id ?? null,
+      idempotencyKey,
+      code: "HUMAN_TAKEOVER_ACTIVE",
+      message: "Human takeover blocks follow-up automation"
+    });
+  }
 
   const approvedKnowledge = await listApprovedKnowledge({ limit: 20 });
   const messages = conversation

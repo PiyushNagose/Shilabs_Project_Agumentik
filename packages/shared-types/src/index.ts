@@ -167,7 +167,9 @@ export const ACTIVITY_TYPES = [
   "PROPOSAL_UPDATED",
   "PROPOSAL_SUBMITTED",
   "PROPOSAL_APPROVED",
-  "PROPOSAL_SENT"
+  "PROPOSAL_SENT",
+  "HUMAN_TAKEOVER",
+  "NEGOTIATION_HANDOFF"
 ] as const;
 export type ActivityTypeName = (typeof ACTIVITY_TYPES)[number];
 
@@ -334,6 +336,136 @@ export interface MessageDto {
   metadata: unknown;
   createdAt: string;
   senderUser: PublicUser | null;
+}
+
+export const HUMAN_TAKEOVER_STATUSES = ["ACTIVE"] as const;
+export type HumanTakeoverStatusName = (typeof HUMAN_TAKEOVER_STATUSES)[number];
+
+export interface HumanTakeoverDto {
+  id: string;
+  leadId: string;
+  conversationId: string;
+  takenOverByUserId: string;
+  status: HumanTakeoverStatusName;
+  reason: string | null;
+  createdAt: string;
+  updatedAt: string;
+  takenOverBy: PublicUser;
+}
+
+export interface HumanTakeoverBriefingDto {
+  takeover: HumanTakeoverDto;
+  lead: LeadDto;
+  requirements: {
+    requirement: string | null;
+    serviceInterest: string | null;
+    nextAction: string | null;
+    nextActionAt: string | null;
+  };
+  conversationSummary: {
+    conversationId: string;
+    mode: ConversationModeName;
+    status: ConversationStatusName;
+    lastMessageAt: string | null;
+    messageCount: number;
+    recentMessages: MessageDto[];
+  };
+  qualification: LeadQualificationDto;
+  proposalContext: {
+    proposals: ProposalDto[];
+  };
+  dealContext: {
+    deal: DealDto | null;
+  };
+  latestActions: ActivityDto[];
+}
+
+export const NEGOTIATION_HANDOFF_STATUSES = ["ACTIVE", "ATTENTION_REQUIRED"] as const;
+export type NegotiationHandoffStatusName = (typeof NEGOTIATION_HANDOFF_STATUSES)[number];
+
+export const INTERNAL_NOTIFICATION_TYPES = ["NEGOTIATION_HANDOFF"] as const;
+export type InternalNotificationTypeName = (typeof INTERNAL_NOTIFICATION_TYPES)[number];
+
+export const INTERNAL_NOTIFICATION_STATUSES = ["UNREAD", "READ", "ATTENTION_REQUIRED"] as const;
+export type InternalNotificationStatusName = (typeof INTERNAL_NOTIFICATION_STATUSES)[number];
+
+export const INTERNAL_NOTIFICATION_SEVERITIES = ["INFO", "WARNING", "CRITICAL"] as const;
+export type InternalNotificationSeverityName = (typeof INTERNAL_NOTIFICATION_SEVERITIES)[number];
+
+export interface NegotiationHandoffDto {
+  id: string;
+  leadId: string;
+  conversationId: string;
+  replyProcessingRunId: string;
+  assignedOwnerId: string | null;
+  status: NegotiationHandoffStatusName;
+  summary: string;
+  failureCode: string | null;
+  failureMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+  assignedOwner: PublicUser | null;
+}
+
+export interface InternalNotificationDto {
+  id: string;
+  type: InternalNotificationTypeName;
+  status: InternalNotificationStatusName;
+  severity: InternalNotificationSeverityName;
+  title: string;
+  body: string;
+  assignedToUserId: string | null;
+  leadId: string | null;
+  conversationId: string | null;
+  negotiationHandoffId: string | null;
+  sourceEntityType: string;
+  sourceEntityId: string;
+  createdAt: string;
+  updatedAt: string;
+  negotiationHandoff: NegotiationHandoffDto | null;
+}
+
+export type SalesActionDashboardItemType =
+  "PROPOSAL_APPROVAL" | "NEGOTIATION_HANDOFF" | "INTERNAL_ALERT" | "HUMAN_TAKEOVER" | "FAILURE";
+
+export type SalesActionDashboardItemSeverity = "INFO" | "WARNING" | "CRITICAL";
+
+export interface SalesActionDashboardItemDto {
+  id: string;
+  type: SalesActionDashboardItemType;
+  severity: SalesActionDashboardItemSeverity;
+  title: string;
+  detail: string;
+  status: string;
+  leadId: string | null;
+  conversationId: string | null;
+  proposalId: string | null;
+  sourceEntityType: string;
+  sourceEntityId: string;
+  occurredAt: string;
+  lead: LeadDto | null;
+}
+
+export interface SalesActionDashboardMeetingSectionDto {
+  status: "AVAILABLE" | "NOT_AVAILABLE";
+  items: SalesActionDashboardItemDto[];
+  message: string;
+}
+
+export interface SalesActionDashboardDto {
+  generatedAt: string;
+  pendingProposalApprovals: SalesActionDashboardItemDto[];
+  negotiationAndTakeoverAlerts: SalesActionDashboardItemDto[];
+  failuresRequiringAttention: SalesActionDashboardItemDto[];
+  meetings: SalesActionDashboardMeetingSectionDto;
+  actionItems: SalesActionDashboardItemDto[];
+  summary: {
+    pendingProposalApprovals: number;
+    negotiationAndTakeoverAlerts: number;
+    failuresRequiringAttention: number;
+    meetings: number;
+    totalActionItems: number;
+  };
 }
 
 export interface LeadQualificationEvidenceDto {

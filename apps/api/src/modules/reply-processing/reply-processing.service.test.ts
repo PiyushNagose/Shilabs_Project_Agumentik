@@ -55,6 +55,20 @@ class ReplyTestProvider implements AIProvider {
 }
 
 async function cleanup(): Promise<void> {
+  await prisma.domainEventOutbox.deleteMany({
+    where: {
+      OR: [
+        { idempotencyKey: { startsWith: "domain-event:negotiation-handoff:" } },
+        { idempotencyKey: { startsWith: "domain-event:reply-processing:" } }
+      ]
+    }
+  });
+  await prisma.internalNotification.deleteMany({
+    where: { sourceEntityType: "NegotiationHandoff" }
+  });
+  await prisma.negotiationHandoff.deleteMany({
+    where: { lead: { source: "r10-reply-test" } }
+  });
   await prisma.replyProcessingRun.deleteMany({
     where: { inboundEmail: { providerMessageId: { startsWith: "ses-r10-" } } }
   });
@@ -134,8 +148,13 @@ async function createInboundFixture(input?: {
   body?: string;
   senderType?: MessageSenderType;
   leadStatus?: "OPEN" | "WON" | "LOST" | "NURTURE" | "DISQUALIFIED";
+  assignOwner?: boolean;
 }) {
   const stage = await prisma.pipelineStage.findFirstOrThrow({ where: { key: "NEW" } });
+  const owner =
+    input?.assignOwner === false
+      ? null
+      : await prisma.user.findUniqueOrThrow({ where: { email: actorEmail } });
   const company = await prisma.company.create({ data: { name: `R10 Company ${crypto.randomUUID()}` } });
   const contact = await prisma.contact.create({
     data: {
@@ -151,6 +170,7 @@ async function createInboundFixture(input?: {
     data: {
       companyId: company.id,
       contactId: contact.id,
+      ownerId: owner?.id,
       stageId: stage.id,
       source: "r10-reply-test",
       status: input?.leadStatus ?? "OPEN",
@@ -253,7 +273,9 @@ describe("R10 reply processing", () => {
     });
 
     const result = await processInboundReply(fixture.inbound.id, { provider });
+    const second = await processInboundReply(fixture.inbound.id, { provider });
 
+    expect(second.id).toBe(result.id);
     expect(result.intent).toBe("NEGOTIATION");
     expect(result.recommendedAction).toBe("HUMAN_HANDOFF");
     expect(result.draftResponse).toBeNull();
@@ -261,6 +283,87 @@ describe("R10 reply processing", () => {
     await expect(
       prisma.conversation.findUniqueOrThrow({ where: { id: fixture.conversation.id } })
     ).resolves.toMatchObject({ mode: "HUMAN" });
+    const handoffs = await prisma.negotiationHandoff.findMany({
+      where: { replyProcessingRunId: result.id }
+    });
+    expect(handoffs).toHaveLength(1);
+    const handoff = handoffs[0];
+    if (!handoff) {
+      throw new Error("Expected negotiation handoff to be created");
+    }
+    expect(handoff).toMatchObject({
+      leadId: fixture.lead.id,
+      conversationId: fixture.conversation.id,
+      assignedOwnerId: actorId,
+      status: "ACTIVE",
+      failureCode: null
+    });
+    await expect(
+      prisma.internalNotification.findUniqueOrThrow({
+        where: { idempotencyKey: `notification:negotiation-handoff:${handoff.id}` }
+      })
+    ).resolves.toMatchObject({
+      type: "NEGOTIATION_HANDOFF",
+      status: "UNREAD",
+      assignedToUserId: actorId
+    });
+    await expect(
+      prisma.activity.findFirstOrThrow({
+        where: { leadId: fixture.lead.id, type: "NEGOTIATION_HANDOFF" }
+      })
+    ).resolves.toMatchObject({ description: "Negotiation detected and routed to the assigned owner" });
+    await expect(
+      prisma.auditEvent.findFirstOrThrow({
+        where: { entityType: "NegotiationHandoff", action: "NEGOTIATION_HANDOFF_CREATED" }
+      })
+    ).resolves.toBeTruthy();
+    await expect(
+      prisma.domainEventOutbox.findFirstOrThrow({
+        where: { aggregateType: "NegotiationHandoff", eventType: "NEGOTIATION_HANDOFF_CREATED" }
+      })
+    ).resolves.toMatchObject({ priority: "HIGH" });
+  }, 45000);
+
+  it("creates visible attention state when negotiation has no assigned owner", async () => {
+    const actorId = await prisma.user.findUniqueOrThrow({ where: { email: actorEmail } }).then((u) => u.id);
+    await createApprovedKnowledge(actorId);
+    const fixture = await createInboundFixture({
+      body: "Can you negotiate the price with us?",
+      assignOwner: false
+    });
+    const provider = new ReplyTestProvider({
+      intent: "NEGOTIATION",
+      confidence: 0.9,
+      summary: "Prospect asked to negotiate price.",
+      draftResponse: "I can negotiate.",
+      requiresHumanReview: true,
+      recommendedAction: "DRAFT_RESPONSE",
+      evidence: [{ messageId: fixture.message.id, quote: "negotiate" }],
+      usedKnowledgeIds: []
+    });
+
+    const result = await processInboundReply(fixture.inbound.id, { provider });
+
+    expect(result.intent).toBe("NEGOTIATION");
+    expect(result.draftResponse).toBeNull();
+    await expect(
+      prisma.negotiationHandoff.findUniqueOrThrow({
+        where: { idempotencyKey: `negotiation-handoff:reply:${result.id}` }
+      })
+    ).resolves.toMatchObject({
+      status: "ATTENTION_REQUIRED",
+      assignedOwnerId: null,
+      failureCode: "OWNER_NOT_ASSIGNED"
+    });
+    await expect(
+      prisma.internalNotification.findFirstOrThrow({
+        where: { leadId: fixture.lead.id, type: "NEGOTIATION_HANDOFF" }
+      })
+    ).resolves.toMatchObject({
+      status: "ATTENTION_REQUIRED",
+      severity: "CRITICAL",
+      assignedToUserId: null
+    });
   }, 45000);
 
   it("persists failure when AI evidence is not grounded", async () => {

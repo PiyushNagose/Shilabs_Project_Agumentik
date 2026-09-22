@@ -6,14 +6,17 @@ import {
   appendMessageController,
   createConversationController,
   getConversationController,
+  getHumanTakeoverBriefingController,
   listConversationsController,
   listMessagesController,
+  startHumanTakeoverController,
   updateConversationModeController
 } from "./conversation.controller.js";
 import {
   createConversationSchema,
   createMessageSchema,
   listConversationsQuerySchema,
+  startHumanTakeoverSchema,
   updateConversationModeSchema
 } from "./conversation.schemas.js";
 
@@ -35,6 +38,15 @@ conversationRoutes.post(
   "/:id/messages",
   validateBody(createMessageSchema),
   asyncHandler(appendMessageController)
+);
+conversationRoutes.post(
+  "/:id/takeover",
+  validateBody(startHumanTakeoverSchema),
+  asyncHandler(startHumanTakeoverController)
+);
+conversationRoutes.get(
+  "/:id/takeover/briefing",
+  asyncHandler(getHumanTakeoverBriefingController)
 );
 conversationRoutes.patch(
   "/:id/mode",

@@ -94,6 +94,8 @@ enum ActivityType {
   PROPOSAL_SUBMITTED
   PROPOSAL_APPROVED
   PROPOSAL_SENT
+  HUMAN_TAKEOVER
+  NEGOTIATION_HANDOFF
 }
 
 enum AuditActorType {
@@ -119,6 +121,31 @@ enum ConversationMode {
 enum ConversationStatus {
   OPEN
   CLOSED
+}
+
+enum HumanTakeoverStatus {
+  ACTIVE
+}
+
+enum NegotiationHandoffStatus {
+  ACTIVE
+  ATTENTION_REQUIRED
+}
+
+enum InternalNotificationType {
+  NEGOTIATION_HANDOFF
+}
+
+enum InternalNotificationStatus {
+  UNREAD
+  READ
+  ATTENTION_REQUIRED
+}
+
+enum InternalNotificationSeverity {
+  INFO
+  WARNING
+  CRITICAL
 }
 
 enum MessageDirection {
@@ -359,6 +386,9 @@ model User {
   createdProposalVersions     ProposalVersion[]         @relation("ProposalVersionCreatedBy")
   proposalStatusChanges       ProposalStatusChange[]    @relation("ProposalStatusChangeActor")
   proposalGenerationRuns      ProposalGenerationRun[]   @relation("ProposalGenerationActor")
+  humanTakeovers              HumanTakeover[]           @relation("HumanTakeoverActor")
+  negotiationHandoffs         NegotiationHandoff[]      @relation("NegotiationHandoffAssignee")
+  assignedNotifications       InternalNotification[]    @relation("InternalNotificationAssignee")
 
   @@index([role])
   @@index([status])
@@ -600,8 +630,11 @@ model Lead {
   inboundEmails          InboundEmail[]
   followUpSequences      FollowUpSequence[]
   followUpAttempts       FollowUpAttempt[]
+  humanTakeovers         HumanTakeover[]
   scoreRuns              LeadScoreRun[]
   replyProcessingRuns    ReplyProcessingRun[]
+  negotiationHandoffs    NegotiationHandoff[]
+  internalNotifications  InternalNotification[]
   proposals              Proposal[]
   proposalGenerationRuns ProposalGenerationRun[]
 
@@ -872,17 +905,102 @@ model Conversation {
   createdAt     DateTime            @default(now())
   updatedAt     DateTime            @updatedAt
 
-  lead                Lead                 @relation(fields: [leadId], references: [id], onDelete: Restrict)
-  messages            Message[]
-  inboundEmails       InboundEmail[]
-  replyProcessingRuns ReplyProcessingRun[]
-  followUpSequences   FollowUpSequence[]
+  lead                  Lead                   @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  messages              Message[]
+  inboundEmails         InboundEmail[]
+  replyProcessingRuns   ReplyProcessingRun[]
+  followUpSequences     FollowUpSequence[]
+  humanTakeovers        HumanTakeover[]
+  negotiationHandoffs   NegotiationHandoff[]
+  internalNotifications InternalNotification[]
 
   @@index([leadId])
   @@index([channel])
   @@index([mode])
   @@index([status])
   @@index([lastMessageAt])
+  @@index([createdAt])
+}
+
+model HumanTakeover {
+  id                String              @id @default(cuid())
+  leadId            String
+  conversationId    String
+  takenOverByUserId String
+  status            HumanTakeoverStatus @default(ACTIVE)
+  reason            String?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  lead         Lead         @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Restrict)
+  takenOverBy  User         @relation("HumanTakeoverActor", fields: [takenOverByUserId], references: [id], onDelete: Restrict)
+
+  @@unique([conversationId, status])
+  @@index([leadId])
+  @@index([conversationId])
+  @@index([takenOverByUserId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model NegotiationHandoff {
+  id                   String                   @id @default(cuid())
+  leadId               String
+  conversationId       String
+  replyProcessingRunId String                   @unique
+  assignedOwnerId      String?
+  status               NegotiationHandoffStatus @default(ACTIVE)
+  summary              String
+  failureCode          String?
+  failureMessage       String?
+  idempotencyKey       String                   @unique
+  createdAt            DateTime                 @default(now())
+  updatedAt            DateTime                 @updatedAt
+
+  lead               Lead                   @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  conversation       Conversation           @relation(fields: [conversationId], references: [id], onDelete: Restrict)
+  replyProcessingRun ReplyProcessingRun     @relation(fields: [replyProcessingRunId], references: [id], onDelete: Restrict)
+  assignedOwner      User?                  @relation("NegotiationHandoffAssignee", fields: [assignedOwnerId], references: [id], onDelete: SetNull)
+  notifications      InternalNotification[]
+
+  @@index([leadId])
+  @@index([conversationId])
+  @@index([assignedOwnerId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model InternalNotification {
+  id                   String                       @id @default(cuid())
+  type                 InternalNotificationType
+  status               InternalNotificationStatus   @default(UNREAD)
+  severity             InternalNotificationSeverity @default(INFO)
+  title                String
+  body                 String
+  assignedToUserId     String?
+  leadId               String?
+  conversationId       String?
+  negotiationHandoffId String?
+  sourceEntityType     String
+  sourceEntityId       String
+  idempotencyKey       String                       @unique
+  createdAt            DateTime                     @default(now())
+  updatedAt            DateTime                     @updatedAt
+
+  assignedTo         User?               @relation("InternalNotificationAssignee", fields: [assignedToUserId], references: [id], onDelete: SetNull)
+  lead               Lead?               @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  conversation       Conversation?       @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  negotiationHandoff NegotiationHandoff? @relation(fields: [negotiationHandoffId], references: [id], onDelete: SetNull)
+
+  @@index([type])
+  @@index([status])
+  @@index([severity])
+  @@index([assignedToUserId])
+  @@index([leadId])
+  @@index([conversationId])
+  @@index([negotiationHandoffId])
+  @@index([sourceEntityType, sourceEntityId])
   @@index([createdAt])
 }
 
@@ -1228,10 +1346,11 @@ model ReplyProcessingRun {
   createdAt            DateTime                 @default(now())
   updatedAt            DateTime                 @updatedAt
 
-  lead         Lead          @relation(fields: [leadId], references: [id], onDelete: Restrict)
-  conversation Conversation  @relation(fields: [conversationId], references: [id], onDelete: Restrict)
-  message      Message       @relation(fields: [messageId], references: [id], onDelete: Restrict)
-  inboundEmail InboundEmail? @relation(fields: [inboundEmailId], references: [id], onDelete: SetNull)
+  lead               Lead                @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  conversation       Conversation        @relation(fields: [conversationId], references: [id], onDelete: Restrict)
+  message            Message             @relation(fields: [messageId], references: [id], onDelete: Restrict)
+  inboundEmail       InboundEmail?       @relation(fields: [inboundEmailId], references: [id], onDelete: SetNull)
+  negotiationHandoff NegotiationHandoff?
 
   @@index([leadId])
   @@index([conversationId])

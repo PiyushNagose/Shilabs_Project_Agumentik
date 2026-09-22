@@ -8,6 +8,7 @@ import type { AIProvider, ReplyUnderstandingResult } from "../ai/ai.provider.js"
 import { replyUnderstandingResultSchema } from "../ai/ai.schemas.js";
 import { publishDomainEvent } from "../domain-events/domain-events.service.js";
 import { listApprovedKnowledge } from "../knowledge-base/knowledge-base.service.js";
+import { createNegotiationHandoffForReply } from "../notifications/notification.service.js";
 
 interface ProcessReplyOptions {
   provider?: AIProvider;
@@ -15,6 +16,18 @@ interface ProcessReplyOptions {
 }
 
 type ReplyRunRecord = Prisma.ReplyProcessingRunGetPayload<Record<string, never>>;
+type ReplyInboundRecord = Prisma.InboundEmailGetPayload<{
+  include: {
+    lead: { include: { company: true; contact: true } };
+    conversation: true;
+    message: true;
+  };
+}>;
+type EligibleReplyInboundRecord = ReplyInboundRecord & {
+  lead: NonNullable<ReplyInboundRecord["lead"]>;
+  conversation: NonNullable<ReplyInboundRecord["conversation"]>;
+  message: NonNullable<ReplyInboundRecord["message"]>;
+};
 
 function toDto(run: ReplyRunRecord): ReplyProcessingRunDto {
   return {
@@ -112,30 +125,31 @@ export async function processInboundReply(
   if (!inbound?.lead || !inbound.conversation || !inbound.message) {
     throw new AppError(409, "CONFLICT", "Inbound email is not eligible for reply processing");
   }
+  const eligibleInbound: EligibleReplyInboundRecord = inbound as EligibleReplyInboundRecord;
 
   const messages = await prisma.message.findMany({
-    where: { conversationId: inbound.conversationId ?? "" },
+    where: { conversationId: eligibleInbound.conversationId ?? "" },
     select: { id: true, senderType: true, body: true, createdAt: true },
     orderBy: { createdAt: "asc" },
     take: 80
   });
   const qualification = await prisma.leadQualification.findUnique({
-    where: { leadId: inbound.leadId ?? "" },
+    where: { leadId: eligibleInbound.leadId ?? "" },
     include: { evidence: true }
   });
   const approvedKnowledge = await listApprovedKnowledge({ limit: 20 });
   const approvedKnowledgeIds = new Set(approvedKnowledge.map((item) => item.versionId));
   const inputContext = {
-    inboundEmailId: inbound.id,
+    inboundEmailId: eligibleInbound.id,
     lead: {
-      id: inbound.lead.id,
-      status: inbound.lead.status,
-      source: inbound.lead.source,
-      requirement: inbound.lead.requirement,
-      serviceInterest: inbound.lead.serviceInterest,
-      company: inbound.lead.company.name,
-      contact: `${inbound.lead.contact.firstName} ${inbound.lead.contact.lastName}`.trim(),
-      doNotContact: inbound.lead.contact.doNotContact
+      id: eligibleInbound.lead.id,
+      status: eligibleInbound.lead.status,
+      source: eligibleInbound.lead.source,
+      requirement: eligibleInbound.lead.requirement,
+      serviceInterest: eligibleInbound.lead.serviceInterest,
+      company: eligibleInbound.lead.company.name,
+      contact: `${eligibleInbound.lead.contact.firstName} ${eligibleInbound.lead.contact.lastName}`.trim(),
+      doNotContact: eligibleInbound.lead.contact.doNotContact
     },
     qualification,
     approvedKnowledgeIds: approvedKnowledge.map((item) => item.versionId),
@@ -147,7 +161,7 @@ export async function processInboundReply(
     metadata = providerMetadata(options?.env, options?.provider);
   } catch (error) {
     const run = await createFailedRun({
-      inbound,
+      inbound: eligibleInbound,
       idempotencyKey,
       inputContext,
       code: "AI_NOT_CONFIGURED",
@@ -175,7 +189,7 @@ export async function processInboundReply(
     });
     const output = safeOutput(parsed);
     const run = await persistSuccessfulRun({
-      inbound,
+      inbound: eligibleInbound,
       idempotencyKey,
       inputContext,
       output,
@@ -184,7 +198,7 @@ export async function processInboundReply(
     return toDto(run);
   } catch (error) {
     const run = await createFailedRun({
-      inbound,
+      inbound: eligibleInbound,
       idempotencyKey,
       inputContext,
       code: error instanceof AppError ? error.code : "PROVIDER_ERROR",
@@ -196,7 +210,7 @@ export async function processInboundReply(
 }
 
 async function createFailedRun(input: {
-  inbound: NonNullable<Awaited<ReturnType<typeof prisma.inboundEmail.findUnique>>>;
+  inbound: EligibleReplyInboundRecord;
   idempotencyKey: string;
   inputContext: Prisma.InputJsonObject;
   code: string;
@@ -251,13 +265,17 @@ async function createFailedRun(input: {
 }
 
 async function persistSuccessfulRun(input: {
-  inbound: NonNullable<Awaited<ReturnType<typeof prisma.inboundEmail.findUnique>>>;
+  inbound: EligibleReplyInboundRecord;
   idempotencyKey: string;
   inputContext: Prisma.InputJsonObject;
   output: ReplyUnderstandingResult;
   metadata: { providerName: string; model: string };
 }): Promise<ReplyRunRecord> {
   return prisma.$transaction(async (tx) => {
+    const conversationId = input.inbound.conversationId;
+    if (!conversationId) {
+      throw new AppError(409, "CONFLICT", "Inbound email is missing conversation context");
+    }
     const humanHandoffRequired = input.output.recommendedAction === "HUMAN_HANDOFF";
     const run = await tx.replyProcessingRun.create({
       data: {
@@ -286,14 +304,24 @@ async function persistSuccessfulRun(input: {
     });
     if (input.output.intent === "NOT_INTERESTED") {
       await tx.conversation.update({
-        where: { id: input.inbound.conversationId ?? "" },
+        where: { id: conversationId },
         data: { mode: "PAUSED" }
       });
     }
     if (humanHandoffRequired) {
       await tx.conversation.update({
-        where: { id: input.inbound.conversationId ?? "" },
+        where: { id: conversationId },
         data: { mode: "HUMAN" }
+      });
+    }
+    if (input.output.intent === "NEGOTIATION") {
+      await createNegotiationHandoffForReply({
+        client: tx,
+        lead: input.inbound.lead,
+        conversationId,
+        replyProcessingRunId: run.id,
+        summary: input.output.summary,
+        inboundEmailId: input.inbound.id
       });
     }
     await tx.auditEvent.create({

@@ -1,7 +1,9 @@
 import express, { type Express, type Request, type Response } from "express";
 import cors from "cors";
 import { getApiConfig } from "@shilabs/shared-config";
+import type { ApiConfig } from "@shilabs/shared-config";
 import type { HealthResponse } from "@shilabs/shared-types";
+import { actionDashboardRoutes } from "./modules/action-dashboard/action-dashboard.routes.js";
 import { authRoutes } from "./modules/auth/auth.routes.js";
 import { companyRoutes } from "./modules/companies/company.routes.js";
 import { contactRoutes } from "./modules/contacts/contact.routes.js";
@@ -12,6 +14,7 @@ import { emailRoutes } from "./modules/email/email.routes.js";
 import { followUpRoutes } from "./modules/followups/followup.routes.js";
 import { knowledgeBaseRoutes } from "./modules/knowledge-base/knowledge-base.routes.js";
 import { leadRoutes } from "./modules/leads/lead.routes.js";
+import { notificationRoutes } from "./modules/notifications/notification.routes.js";
 import { pipelineRoutes } from "./modules/pipeline/pipeline.routes.js";
 import { proposalRoutes } from "./modules/proposals/proposal.routes.js";
 import { replyProcessingRoutes } from "./modules/reply-processing/reply-processing.routes.js";
@@ -22,6 +25,26 @@ import { errorHandler, notFoundHandler } from "./middleware/error.middleware.js"
 
 const startedAt = new Date();
 
+function isLocalDevelopmentOrigin(origin: string): boolean {
+  try {
+    const parsed = new URL(origin);
+    return (
+      (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1") &&
+      (parsed.protocol === "http:" || parsed.protocol === "https:")
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function isCorsOriginAllowed(origin: string | undefined, config: ApiConfig): boolean {
+  if (!origin || origin === config.webOrigin) {
+    return true;
+  }
+
+  return config.nodeEnv === "development" && isLocalDevelopmentOrigin(origin);
+}
+
 export function createApp(): Express {
   const app = express();
   const config = getApiConfig();
@@ -29,7 +52,9 @@ export function createApp(): Express {
   app.disable("x-powered-by");
   app.use(
     cors({
-      origin: config.webOrigin,
+      origin: (origin, callback) => {
+        callback(null, isCorsOriginAllowed(origin, config));
+      },
       credentials: false
     })
   );
@@ -67,6 +92,7 @@ export function createApp(): Express {
   });
 
   app.use("/api/auth", authRoutes);
+  app.use("/api/action-dashboard", actionDashboardRoutes);
   app.use("/api/users", userRoutes);
   app.use("/api/companies", companyRoutes);
   app.use("/api/contacts", contactRoutes);
@@ -75,6 +101,7 @@ export function createApp(): Express {
   app.use("/api/email", emailRoutes);
   app.use("/api/followups", followUpRoutes);
   app.use("/api/knowledge-base", knowledgeBaseRoutes);
+  app.use("/api/notifications", notificationRoutes);
   app.use("/api/pipeline", pipelineRoutes);
   app.use("/api/proposals", proposalRoutes);
   app.use("/api/conversations", conversationRoutes);

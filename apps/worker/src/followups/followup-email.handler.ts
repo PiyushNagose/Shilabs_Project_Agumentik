@@ -2,8 +2,12 @@ import type { DomainEventOutbox, Prisma } from "@prisma/client";
 import type { DomainEventHandlerMap } from "../domain-events/domain-event.processor.js";
 import { PermanentDomainEventError } from "../domain-events/domain-event.errors.js";
 import { workerPrisma } from "../domain-events/domain-event.repository.js";
-import { getWorkerAwsSesConfig } from "../integrations/aws-ses.config.js";
-import { WorkerAwsSesProvider, type WorkerEmailProvider } from "../integrations/aws-ses.provider.js";
+import {
+  WorkerAwsSesProvider,
+  type WorkerEmailProvider
+} from "../integrations/aws-ses.provider.js";
+import { getWorkerSelectedEmailConfig } from "../integrations/email.config.js";
+import { WorkerMailpitProvider } from "../integrations/mailpit.provider.js";
 import { ZohoTimelineSyncer, type TimelineSyncer } from "./zoho-timeline.syncer.js";
 
 function normalizeEmail(value: string | null): string | null {
@@ -24,6 +28,13 @@ function payloadString(event: DomainEventOutbox, key: string): string | null {
 function providerErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   return "Provider operation failed";
+}
+
+function buildWorkerEmailProvider(
+  config: ReturnType<typeof getWorkerSelectedEmailConfig>
+): WorkerEmailProvider {
+  if (config.provider === "MAILPIT") return new WorkerMailpitProvider(config);
+  return new WorkerAwsSesProvider(config);
 }
 
 async function markAttemptFailed(input: {
@@ -79,7 +90,10 @@ async function sendFollowUpEmail(input: {
 }): Promise<void> {
   const attemptId = payloadString(input.event, "followUpAttemptId");
   if (!attemptId) {
-    throw new PermanentDomainEventError("FOLLOW_UP_ATTEMPT_MISSING", "Follow-up attempt id missing");
+    throw new PermanentDomainEventError(
+      "FOLLOW_UP_ATTEMPT_MISSING",
+      "Follow-up attempt id missing"
+    );
   }
 
   const attempt = await workerPrisma.followUpAttempt.findUnique({
@@ -90,7 +104,10 @@ async function sendFollowUpEmail(input: {
     }
   });
   if (!attempt) {
-    throw new PermanentDomainEventError("FOLLOW_UP_ATTEMPT_NOT_FOUND", "Follow-up attempt not found");
+    throw new PermanentDomainEventError(
+      "FOLLOW_UP_ATTEMPT_NOT_FOUND",
+      "Follow-up attempt not found"
+    );
   }
   if (attempt.status === "CANCELLED" || attempt.status === "SKIPPED") return;
   if (attempt.sequence.status !== "ACTIVE") {
@@ -115,18 +132,29 @@ async function sendFollowUpEmail(input: {
   const inboundAfterSequence = await workerPrisma.inboundEmail.count({
     where: { leadId: lead.id, status: "PROCESSED", receivedAt: { gte: attempt.sequence.createdAt } }
   });
+  const activeTakeover = await workerPrisma.humanTakeover.findFirst({
+    where: {
+      status: "ACTIVE",
+      OR: [
+        { leadId: lead.id },
+        ...(conversation ? [{ conversationId: conversation.id }] : [])
+      ]
+    },
+    select: { id: true }
+  });
 
-  const blocked: [string, string] | null =
-    !validEmail(normalizedEmail)
-      ? ["CONTACT_EMAIL_INVALID", "Lead contact email is missing or invalid"]
-      : lead.contact.doNotContact
-        ? ["CONTACT_DO_NOT_CONTACT", "Contact is marked doNotContact"]
-        : ["WON", "LOST", "DISQUALIFIED"].includes(lead.status)
-          ? ["LEAD_STATUS_FORBIDS_OUTREACH", `Lead status ${lead.status} forbids outreach`]
-          : suppression
-            ? ["EMAIL_SUPPRESSED", `Email address is suppressed: ${suppression.reason}`]
-            : conversation && ["HUMAN", "PAUSED", "CLOSED"].includes(conversation.mode)
-              ? ["AUTOMATION_PAUSED", `Conversation mode ${conversation.mode} blocks automation`]
+  const blocked: [string, string] | null = !validEmail(normalizedEmail)
+    ? ["CONTACT_EMAIL_INVALID", "Lead contact email is missing or invalid"]
+    : lead.contact.doNotContact
+      ? ["CONTACT_DO_NOT_CONTACT", "Contact is marked doNotContact"]
+      : ["WON", "LOST", "DISQUALIFIED"].includes(lead.status)
+        ? ["LEAD_STATUS_FORBIDS_OUTREACH", `Lead status ${lead.status} forbids outreach`]
+        : suppression
+          ? ["EMAIL_SUPPRESSED", `Email address is suppressed: ${suppression.reason}`]
+          : conversation && ["HUMAN", "PAUSED", "CLOSED"].includes(conversation.mode)
+            ? ["AUTOMATION_PAUSED", `Conversation mode ${conversation.mode} blocks automation`]
+            : activeTakeover
+              ? ["HUMAN_TAKEOVER_ACTIVE", "Human takeover blocks follow-up automation"]
               : inboundAfterSequence > 0
                 ? ["INBOUND_REPLY_RECEIVED", "Inbound reply stopped follow-up automation"]
                 : null;
@@ -154,7 +182,7 @@ async function sendFollowUpEmail(input: {
     throw new PermanentDomainEventError("CONTACT_EMAIL_INVALID", "Lead contact email is missing");
   }
   if (!outbound) {
-    const config = getWorkerAwsSesConfig(input.env);
+    const config = getWorkerSelectedEmailConfig(input.env);
     outbound = await workerPrisma.outboundEmail.create({
       data: {
         leadId: lead.id,
@@ -165,7 +193,7 @@ async function sendFollowUpEmail(input: {
         replyToEmail: config.replyToEmail,
         subject: attempt.subject,
         textBody: attempt.textBody,
-        provider: "AWS_SES",
+        provider: config.provider,
         idempotencyKey: attempt.idempotencyKey,
         status: "PENDING"
       }
@@ -176,35 +204,36 @@ async function sendFollowUpEmail(input: {
     });
     const outboundId = outbound.id;
     if (config.status === "NOT_CONFIGURED") {
+      const failureCode = `${config.provider}_NOT_CONFIGURED`;
       await workerPrisma.outboundEmail.update({
         where: { id: outboundId },
         data: {
           status: "FAILED",
-          failureCode: "AWS_SES_NOT_CONFIGURED",
+          failureCode,
           failureMessage: `Missing configuration: ${config.missing.join(", ")}`
         }
       });
       await markAttemptFailed({
         attemptId,
         status: "FAILED",
-        code: "AWS_SES_NOT_CONFIGURED",
+        code: failureCode,
         message: `Missing configuration: ${config.missing.join(", ")}`
       });
       throw new PermanentDomainEventError(
-        "AWS_SES_NOT_CONFIGURED",
+        failureCode,
         `Missing configuration: ${config.missing.join(", ")}`
       );
     }
 
     try {
-      const provider = input.provider ?? new WorkerAwsSesProvider(config);
+      const provider = input.provider ?? buildWorkerEmailProvider(config);
       const sent = await provider.sendEmail({
         to: outbound.toEmail,
         from: config.fromEmail,
         replyTo: config.replyToEmail,
         subject: outbound.subject,
         textBody: outbound.textBody ?? attempt.textBody,
-        configurationSet: config.configurationSet,
+        configurationSet: config.provider === "AWS_SES" ? config.configurationSet : null,
         idempotencyKey: outbound.idempotencyKey
       });
       const now = new Date();
@@ -265,18 +294,19 @@ async function sendFollowUpEmail(input: {
       outbound = result.updated;
       activityId = result.activityId;
     } catch (error) {
+      const failureCode = `${config.provider}_SEND_FAILED`;
       await workerPrisma.outboundEmail.update({
         where: { id: outboundId },
         data: {
           status: "FAILED",
-          failureCode: "AWS_SES_SEND_FAILED",
+          failureCode,
           failureMessage: providerErrorMessage(error)
         }
       });
       await markAttemptFailed({
         attemptId,
         status: "FAILED",
-        code: "AWS_SES_SEND_FAILED",
+        code: failureCode,
         message: providerErrorMessage(error)
       });
       throw error;
