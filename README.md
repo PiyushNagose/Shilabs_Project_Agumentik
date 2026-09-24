@@ -68,6 +68,36 @@ M2 adds authentication and user management. Manual developer entry points:
 
 Local Docker maps PostgreSQL to host port `5433` and Redis to host port `6380` to avoid collisions with developer machines already using the default ports.
 
+## Local E2E Environment
+
+The normal `.env` may point at Neon or another shared development database. For local E2E
+testing, use the explicit `dev:e2e:*` commands. They load `.env` first for existing real
+test integration credentials, then `.env.e2e.local` for local-only overrides:
+
+- local PostgreSQL: `localhost:5433`
+- Redis: `localhost:6380`
+- Mailpit: `localhost:1025` / `http://localhost:8025`
+- API: `http://localhost:4010`
+- Web: `http://localhost:5174`
+
+Start dependencies:
+
+```bash
+docker compose up -d postgres redis mailpit
+```
+
+Then start each long-running process in its own terminal:
+
+```bash
+npm run dev:e2e:api
+npm run dev:e2e:worker
+npm run dev:e2e:web
+```
+
+Do not mix `dev:*` and `dev:e2e:*` processes for the same manual test run. The E2E scripts
+force API and worker to use the same local Docker PostgreSQL database and a separate local
+BullMQ queue name.
+
 ## Architecture Rules
 
 PostgreSQL is the Shilabs source of truth for local automation state, not a replacement
@@ -244,6 +274,55 @@ matching is missing, ambiguous, mismatched or terminal, the inbound provider eve
 persisted as failed state and no message is created by guessing. Successful ingestion
 creates/updates an `EMAIL` conversation, stores an inbound `Message`, writes activity/audit
 history and marks reply processing as `PENDING` for later reply-engine milestones.
+
+# R20/R21 Calendar And Meeting Foundation
+
+R20 adds a provider-neutral calendar boundary. R21 adds persisted meeting requests,
+provider-derived slot proposals and explicit human confirmation for one selected slot.
+
+Protected endpoints:
+
+```text
+GET /api/calendar/health
+POST /api/calendar/availability
+GET /api/meetings/requests
+POST /api/meetings/requests
+POST /api/meetings/requests/:id/confirm
+```
+
+Use `CALENDAR_PROVIDER=none` until a real calendar adapter is configured. Health reports
+`NOT_CONFIGURED`, and availability returns no slots with an explicit unavailable reason.
+It does not fake availability.
+
+Google Calendar E2E requires OAuth credentials with both free/busy and event-write scopes.
+R21 creates provider meetings only after an authorized user confirms a proposed slot and
+the provider confirms event creation. It does not send customer notifications or fake Zoho
+meeting sync while those client rules remain open.
+
+Shared calendar settings:
+
+- `CALENDAR_PROVIDER`
+- `CALENDAR_DEFAULT_TIME_ZONE`
+- `CALENDAR_WORKDAY_START`
+- `CALENDAR_WORKDAY_END`
+- `CALENDAR_SLOT_MINUTES`
+- `CALENDAR_LOOKAHEAD_DAYS`
+
+Google provider settings:
+
+- `GOOGLE_CALENDAR_CLIENT_ID`
+- `GOOGLE_CALENDAR_CLIENT_SECRET`
+- `GOOGLE_CALENDAR_REFRESH_TOKEN`
+- `GOOGLE_CALENDAR_TOKEN_URL`
+- `GOOGLE_CALENDAR_API_BASE_URL`
+- `GOOGLE_CALENDAR_ID`
+- `GOOGLE_CALENDAR_SCOPE`
+
+For R21 confirmation, `GOOGLE_CALENDAR_SCOPE` must include:
+
+```text
+https://www.googleapis.com/auth/calendar.freebusy https://www.googleapis.com/auth/calendar.events
+```
 
 # M11 Lead Scoring
 

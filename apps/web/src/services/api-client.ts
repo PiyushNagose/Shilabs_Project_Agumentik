@@ -1,5 +1,7 @@
 import type {
   ActivityDto,
+  AgentCorrectionDto,
+  BriefingRunDto,
   ConversationChannelName,
   ConversationDto,
   ConversationModeName,
@@ -7,6 +9,8 @@ import type {
   HumanTakeoverDto,
   InternalNotificationDto,
   LeadDto,
+  MeetingRequestDto,
+  OperationsDashboardDto,
   MessageDirectionName,
   MessageDto,
   MessageSenderTypeName,
@@ -31,6 +35,12 @@ export class ApiClientError extends Error {
   }
 }
 
+function notifyAuthInvalid(): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event("shilabs:auth-invalid"));
+  }
+}
+
 async function apiRequest<TResponse>(
   path: string,
   accessToken: string,
@@ -46,6 +56,9 @@ async function apiRequest<TResponse>(
   });
 
   if (!response.ok) {
+    if (response.status === 401) {
+      notifyAuthInvalid();
+    }
     throw new ApiClientError("Request failed", response.status);
   }
 
@@ -76,6 +89,20 @@ export interface ProposalListParams {
   dealId?: string;
   status?: ProposalWorkflowStatusName;
   limit?: number;
+}
+
+export interface AgentCorrectionListParams {
+  sourceEntityType?: string;
+  sourceEntityId?: string;
+  leadId?: string;
+  proposalId?: string;
+  limit?: number;
+}
+
+export interface CreateProposalCorrectionBody {
+  correctedOutcome: unknown;
+  correctionSummary: string;
+  supersedesCorrectionId?: string;
 }
 
 export interface CreateConversationBody {
@@ -116,8 +143,47 @@ export interface NotificationListParams {
   limit?: number;
 }
 
+export interface MeetingListParams {
+  leadId?: string;
+  status?: string;
+  limit?: number;
+}
+
+export interface BriefingListParams {
+  leadId?: string;
+  meetingRequestId?: string;
+  kind?: string;
+  status?: string;
+  limit?: number;
+}
+
+export interface CreateMeetingRequestBody {
+  leadId: string;
+  conversationId?: string;
+  ownerId?: string;
+  title: string;
+  description?: string;
+  timeZone: string;
+  windowStart: string;
+  windowEnd: string;
+  durationMinutes: number;
+  slotMinutes?: number;
+  idempotencyKey?: string;
+}
+
+export interface ConfirmMeetingRequestBody {
+  slotId: string;
+  idempotencyKey?: string;
+}
+
 function toQueryString(
-  params: LeadListParams | ConversationListParams | ProposalListParams | NotificationListParams
+  params:
+    | LeadListParams
+    | ConversationListParams
+    | ProposalListParams
+    | NotificationListParams
+    | MeetingListParams
+    | BriefingListParams
 ): string {
   const searchParams = new URLSearchParams();
 
@@ -154,6 +220,10 @@ export function getSalesActionDashboard(accessToken: string): Promise<SalesActio
   return apiRequest<SalesActionDashboardDto>("/api/action-dashboard", accessToken);
 }
 
+export function getOperationsDashboard(accessToken: string): Promise<OperationsDashboardDto> {
+  return apiRequest<OperationsDashboardDto>("/api/operations/dashboard", accessToken);
+}
+
 export function updateLeadStage(
   accessToken: string,
   leadId: string,
@@ -187,6 +257,99 @@ export function listNotifications(
   return apiRequest<InternalNotificationDto[]>(
     `/api/notifications${toQueryString(params)}`,
     accessToken
+  );
+}
+
+export function markNotificationRead(
+  accessToken: string,
+  notificationId: string
+): Promise<InternalNotificationDto> {
+  return apiRequest<InternalNotificationDto>(`/api/notifications/${notificationId}/read`, accessToken, {
+    method: "PATCH",
+    body: JSON.stringify({})
+  });
+}
+
+export function acknowledgeNotification(
+  accessToken: string,
+  notificationId: string,
+  body: { note?: string } = {}
+): Promise<InternalNotificationDto> {
+  return apiRequest<InternalNotificationDto>(
+    `/api/notifications/${notificationId}/acknowledge`,
+    accessToken,
+    {
+      method: "PATCH",
+      body: JSON.stringify(body)
+    }
+  );
+}
+
+export function listMeetingRequests(
+  accessToken: string,
+  params: MeetingListParams
+): Promise<MeetingRequestDto[]> {
+  return apiRequest<MeetingRequestDto[]>(
+    `/api/meetings/requests${toQueryString(params)}`,
+    accessToken
+  );
+}
+
+export function createMeetingRequest(
+  accessToken: string,
+  body: CreateMeetingRequestBody
+): Promise<MeetingRequestDto> {
+  return apiRequest<MeetingRequestDto>("/api/meetings/requests", accessToken, {
+    method: "POST",
+    body: JSON.stringify(body)
+  });
+}
+
+export function confirmMeetingRequest(
+  accessToken: string,
+  meetingRequestId: string,
+  body: ConfirmMeetingRequestBody
+): Promise<MeetingRequestDto> {
+  return apiRequest<MeetingRequestDto>(
+    `/api/meetings/requests/${meetingRequestId}/confirm`,
+    accessToken,
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    }
+  );
+}
+
+export function listBriefings(
+  accessToken: string,
+  params: BriefingListParams
+): Promise<BriefingRunDto[]> {
+  return apiRequest<BriefingRunDto[]>(`/api/briefings${toQueryString(params)}`, accessToken);
+}
+
+export function generateLeadBriefing(
+  accessToken: string,
+  leadId: string,
+  body: { idempotencyKey?: string } = {}
+): Promise<BriefingRunDto> {
+  return apiRequest<BriefingRunDto>(`/api/briefings/leads/${leadId}/generate`, accessToken, {
+    method: "POST",
+    body: JSON.stringify(body)
+  });
+}
+
+export function generateMeetingBriefing(
+  accessToken: string,
+  meetingRequestId: string,
+  body: { idempotencyKey?: string } = {}
+): Promise<BriefingRunDto> {
+  return apiRequest<BriefingRunDto>(
+    `/api/briefings/meetings/${meetingRequestId}/generate`,
+    accessToken,
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    }
   );
 }
 
@@ -299,4 +462,29 @@ export function sendApprovedProposal(
     method: "POST",
     body: JSON.stringify(body)
   });
+}
+
+export function listAgentCorrections(
+  accessToken: string,
+  params: AgentCorrectionListParams
+): Promise<AgentCorrectionDto[]> {
+  return apiRequest<AgentCorrectionDto[]>(
+    `/api/agent-feedback/corrections${toQueryString(params)}`,
+    accessToken
+  );
+}
+
+export function createProposalAgentCorrection(
+  accessToken: string,
+  proposalId: string,
+  body: CreateProposalCorrectionBody
+): Promise<AgentCorrectionDto> {
+  return apiRequest<AgentCorrectionDto>(
+    `/api/agent-feedback/proposals/${proposalId}/corrections`,
+    accessToken,
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    }
+  );
 }

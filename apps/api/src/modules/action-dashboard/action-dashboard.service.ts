@@ -77,8 +77,10 @@ export async function getSalesActionDashboard(
     notifications,
     handoffs,
     takeovers,
+    meetingRequests,
     failedFollowUpSequences,
     failedFollowUpAttempts,
+    failedWhatsAppMessages,
     failedProposals,
     failedDomainEvents
   ] = await Promise.all([
@@ -90,7 +92,7 @@ export async function getSalesActionDashboard(
     }),
     prisma.internalNotification.findMany({
       where: {
-        status: { in: ["UNREAD", "ATTENTION_REQUIRED"] },
+        status: { in: ["UNREAD", "ATTENTION_REQUIRED", "ESCALATED"] },
         ...notificationWhere
       },
       include: {
@@ -118,6 +120,18 @@ export async function getSalesActionDashboard(
       orderBy: [{ createdAt: "desc" }],
       take: DASHBOARD_LIMIT
     }),
+    prisma.meetingRequest.findMany({
+      where: {
+        status: { in: ["CONFIRMATION_REQUIRED", "ATTENTION_REQUIRED", "PROVIDER_PENDING"] },
+        lead: leadWhere
+      },
+      include: {
+        lead: { include: { company: true, contact: true, owner: true, stage: true } },
+        slots: { orderBy: { startsAt: "asc" } }
+      },
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+      take: DASHBOARD_LIMIT
+    }),
     prisma.followUpSequence.findMany({
       where: { status: "ATTENTION_REQUIRED", lead: leadWhere },
       include: { lead: { include: { company: true, contact: true, owner: true, stage: true } } },
@@ -127,6 +141,15 @@ export async function getSalesActionDashboard(
     prisma.followUpAttempt.findMany({
       where: {
         status: { in: ["FAILED", "BLOCKED"] },
+        lead: leadWhere
+      },
+      include: { lead: { include: { company: true, contact: true, owner: true, stage: true } } },
+      orderBy: [{ updatedAt: "desc" }],
+      take: DASHBOARD_LIMIT
+    }),
+    prisma.outboundWhatsAppMessage.findMany({
+      where: {
+        status: { in: ["FAILED", "BLOCKED", "NOT_CONFIGURED"] },
         lead: leadWhere
       },
       include: { lead: { include: { company: true, contact: true, owner: true, stage: true } } },
@@ -173,7 +196,7 @@ export async function getSalesActionDashboard(
     const dto = toInternalNotificationDto(notification);
     return {
       id: `notification:${dto.id}`,
-      type: "NEGOTIATION_HANDOFF",
+      type: dto.type === "MEETING_CONFIRMATION" ? "MEETING_CONFIRMATION" : "NEGOTIATION_HANDOFF",
       severity: dto.severity,
       title: dto.title,
       detail: dto.body,
@@ -230,6 +253,30 @@ export async function getSalesActionDashboard(
     };
   });
 
+  const meetingItems: SalesActionDashboardItemDto[] = meetingRequests.map((request) => ({
+    id: `meeting-request:${request.id}`,
+    type: "MEETING_CONFIRMATION",
+    severity: request.status === "ATTENTION_REQUIRED" ? "CRITICAL" : "WARNING",
+    title:
+      request.status === "ATTENTION_REQUIRED"
+        ? "Meeting scheduling needs attention"
+        : "Meeting slots need confirmation",
+    detail:
+      request.status === "ATTENTION_REQUIRED"
+        ? (request.providerLastError ?? request.zohoLastError ?? "Meeting workflow requires review")
+        : `${String(
+            request.slots.filter((slot) => slot.status === "PROPOSED").length
+          )} proposed slot(s) waiting for confirmation`,
+    status: request.status,
+    leadId: request.leadId,
+    conversationId: request.conversationId,
+    proposalId: null,
+    sourceEntityType: "MeetingRequest",
+    sourceEntityId: request.id,
+    occurredAt: request.updatedAt.toISOString(),
+    lead: toLeadDto(request.lead)
+  }));
+
   const sequenceFailures: SalesActionDashboardItemDto[] = failedFollowUpSequences.map(
     (sequence) => ({
       id: `follow-up-sequence:${sequence.id}`,
@@ -280,6 +327,22 @@ export async function getSalesActionDashboard(
     lead: toLeadDto(proposal.lead)
   }));
 
+  const whatsAppFailures: SalesActionDashboardItemDto[] = failedWhatsAppMessages.map((message) => ({
+    id: `whatsapp-message:${message.id}`,
+    type: "FAILURE",
+    severity: message.status === "BLOCKED" ? "WARNING" : "CRITICAL",
+    title: "WhatsApp message requires attention",
+    detail: failureDetail(message.failureCode, message.failureMessage),
+    status: message.status,
+    leadId: message.leadId,
+    conversationId: message.conversationId,
+    proposalId: null,
+    sourceEntityType: "OutboundWhatsAppMessage",
+    sourceEntityId: message.id,
+    occurredAt: message.updatedAt.toISOString(),
+    lead: toLeadDto(message.lead)
+  }));
+
   const outboxFailures: SalesActionDashboardItemDto[] = failedDomainEvents.map((event) => ({
     id: `domain-event:${event.id}`,
     type: "FAILURE",
@@ -304,12 +367,14 @@ export async function getSalesActionDashboard(
   const failuresRequiringAttention = sortItems([
     ...sequenceFailures,
     ...attemptFailures,
+    ...whatsAppFailures,
     ...proposalFailures,
     ...outboxFailures
   ]).slice(0, DASHBOARD_LIMIT);
   const actionItems = sortItems([
     ...pendingProposalApprovals,
     ...negotiationAndTakeoverAlerts,
+    ...meetingItems,
     ...failuresRequiringAttention
   ]).slice(0, 75);
 
@@ -319,17 +384,19 @@ export async function getSalesActionDashboard(
     negotiationAndTakeoverAlerts,
     failuresRequiringAttention,
     meetings: {
-      status: "NOT_AVAILABLE",
-      items: [],
+      status: "AVAILABLE",
+      items: sortItems(meetingItems),
       message:
-        "Meeting and calendar orchestration starts in R20/R21; no persisted meeting action source exists yet."
+        meetingItems.length === 0
+          ? "No persisted meeting request requires action."
+          : "Persisted meeting requests are awaiting confirmation or attention."
     },
     actionItems,
     summary: {
       pendingProposalApprovals: pendingProposalApprovals.length,
       negotiationAndTakeoverAlerts: negotiationAndTakeoverAlerts.length,
       failuresRequiringAttention: failuresRequiringAttention.length,
-      meetings: 0,
+      meetings: meetingItems.length,
       totalActionItems: actionItems.length
     }
   };

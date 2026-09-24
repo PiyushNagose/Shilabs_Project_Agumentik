@@ -3,7 +3,7 @@ import { getAIConfig } from "../../../config/ai.js";
 import { GeminiProvider } from "../../integrations/gemini/gemini.provider.js";
 import { OpenAIProvider } from "../../integrations/openai/openai.provider.js";
 import { createAIProvider } from "../ai.factory.js";
-import type { AIProvider, SalesReplyInput } from "../ai.provider.js";
+import type { AIProvider, BriefingResult, SalesReplyInput } from "../ai.provider.js";
 import { MockAIProvider } from "./mock-ai.provider.js";
 
 const env = {
@@ -59,6 +59,22 @@ const replyUnderstanding = {
   evidence: [{ messageId: "m1", quote: "need a website" }],
   usedKnowledgeIds: []
 };
+const briefing: BriefingResult = {
+  summary: "Website briefing",
+  requirements: "We need a website",
+  budget: null,
+  timeline: null,
+  decisionContext: null,
+  recentCommunication: "Prospect said they need a website",
+  qualification: null,
+  proposalDealContext: null,
+  meetingContext: null,
+  recommendedNextAction: "Ask for requirements",
+  usedKnowledgeIds: [],
+  evidence: [{ sourceId: "m1", quote: "need a website" }],
+  requiresHumanReview: true,
+  unknowns: ["budget", "timeline"]
+};
 function completion(value: unknown, finish = "stop") {
   return Response.json({
     choices: [{ finish_reason: finish, message: { content: JSON.stringify(value) } }]
@@ -101,6 +117,7 @@ describe("M9 AI provider", () => {
       .mockResolvedValueOnce(completion(summary))
       .mockResolvedValueOnce(completion(reply))
       .mockResolvedValueOnce(completion(replyUnderstanding))
+      .mockResolvedValueOnce(completion(briefing))
       .mockResolvedValueOnce(Response.json({ data: [{ index: 0, embedding: [0.1, -0.2] }] }));
     const real: AIProvider = provider;
     const results = [
@@ -109,6 +126,7 @@ describe("M9 AI provider", () => {
       await real.summarizeLead(input),
       await real.generateFollowUp(input),
       await real.understandReply(input),
+      await real.generateBriefing(input),
       await real.createEmbedding("website")
     ];
     const mock: AIProvider = new MockAIProvider({
@@ -127,6 +145,7 @@ describe("M9 AI provider", () => {
           missingInformation: []
         }),
       understandReply: () => Promise.resolve(replyUnderstanding),
+      generateBriefing: () => Promise.resolve(briefing),
       createEmbedding: () => Promise.resolve([0.1, -0.2])
     });
     expect(results).toEqual([
@@ -135,6 +154,7 @@ describe("M9 AI provider", () => {
       await mock.summarizeLead(input),
       await mock.generateFollowUp(input),
       await mock.understandReply(input),
+      await mock.generateBriefing(input),
       await mock.createEmbedding("website")
     ]);
     expect(transport.mock.calls[0]?.[1]?.body).toContain('"strict":true');
@@ -291,12 +311,14 @@ describe("Gemini AI provider", () => {
       .mockResolvedValueOnce(geminiCompletion(qualification))
       .mockResolvedValueOnce(geminiCompletion(summary))
       .mockResolvedValueOnce(geminiCompletion(reply))
+      .mockResolvedValueOnce(geminiCompletion(briefing))
       .mockResolvedValueOnce(Response.json({ embedding: { values: [0.1, -0.2] } }));
     const real: AIProvider = provider;
     expect(await real.generateSalesReply(input)).toEqual(reply);
     expect(await real.extractQualification(input)).toEqual(qualification);
     expect(await real.summarizeLead(input)).toEqual(summary);
     expect(await real.generateFollowUp(input)).toEqual(reply);
+    expect(await real.generateBriefing(input)).toEqual(briefing);
     expect(await real.createEmbedding("website")).toEqual([0.1, -0.2]);
     const rawBody = transport.mock.calls[0]?.[1]?.body;
     expect(typeof rawBody).toBe("string");

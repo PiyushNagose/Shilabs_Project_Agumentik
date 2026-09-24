@@ -6,7 +6,8 @@ import type {
   leadSummaryResultSchema,
   followUpResultSchema,
   proposalDraftResultSchema,
-  replyUnderstandingResultSchema
+  replyUnderstandingResultSchema,
+  briefingResultSchema
 } from "./ai.schemas.js";
 
 export type SalesReplyInput = z.infer<typeof aiInputSchema>;
@@ -21,6 +22,8 @@ export type ProposalDraftInput = SalesReplyInput;
 export type ProposalDraftResult = z.infer<typeof proposalDraftResultSchema>;
 export type ReplyUnderstandingInput = SalesReplyInput;
 export type ReplyUnderstandingResult = z.infer<typeof replyUnderstandingResultSchema>;
+export type BriefingInput = SalesReplyInput;
+export type BriefingResult = z.infer<typeof briefingResultSchema>;
 
 export interface AIProvider {
   generateSalesReply(input: SalesReplyInput): Promise<SalesReplyResult>;
@@ -29,5 +32,6 @@ export interface AIProvider {
   generateFollowUp(input: FollowUpInput): Promise<FollowUpResult>;
   generateProposalDraft(input: ProposalDraftInput): Promise<ProposalDraftResult>;
   understandReply(input: ReplyUnderstandingInput): Promise<ReplyUnderstandingResult>;
+  generateBriefing(input: BriefingInput): Promise<BriefingResult>;
   createEmbedding(text: string): Promise<number[]>;
 }

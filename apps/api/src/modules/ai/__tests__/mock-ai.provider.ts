@@ -15,6 +15,8 @@ export class MockAIProvider implements AIProvider {
     this.implementation.generateProposalDraft(input);
   public understandReply: AIProvider["understandReply"] = (input) =>
     this.implementation.understandReply(input);
+  public generateBriefing: AIProvider["generateBriefing"] = (input) =>
+    this.implementation.generateBriefing(input);
   public createEmbedding: AIProvider["createEmbedding"] = (text) =>
     this.implementation.createEmbedding(text);
 }

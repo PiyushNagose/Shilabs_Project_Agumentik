@@ -4,10 +4,19 @@ import type { UserRoleName } from "@shilabs/shared-types";
 import { Icon } from "../../components/Icon.js";
 import { SalesActionDashboard } from "../dashboard/SalesActionDashboard.js";
 import { CrmWorkspace, type DetailTab } from "../leads/CrmWorkspace.js";
+import { OperationsDashboard } from "../operations/OperationsDashboard.js";
 import { useAuth } from "./AuthProvider.js";
 
 type NavIcon = "bar-chart" | "briefcase" | "settings" | "users";
-type ShellView = "Dashboard" | "CRM" | "Users" | "Settings" | "Team" | "Reports" | "My Workspace";
+type ShellView =
+  | "Dashboard"
+  | "CRM"
+  | "Operations"
+  | "Users"
+  | "Settings"
+  | "Team"
+  | "Reports"
+  | "My Workspace";
 
 interface NavItem {
   label: ShellView;
@@ -18,12 +27,14 @@ const navigationByRole: Record<UserRoleName, readonly NavItem[]> = {
   ADMIN: [
     { label: "Dashboard", icon: "briefcase" },
     { label: "CRM", icon: "bar-chart" },
+    { label: "Operations", icon: "settings" },
     { label: "Users", icon: "users" },
     { label: "Settings", icon: "settings" }
   ],
   SALES_MANAGER: [
     { label: "Dashboard", icon: "briefcase" },
     { label: "CRM", icon: "bar-chart" },
+    { label: "Operations", icon: "settings" },
     { label: "Team", icon: "users" },
     { label: "Reports", icon: "bar-chart" }
   ],
@@ -36,6 +47,12 @@ const navigationByRole: Record<UserRoleName, readonly NavItem[]> = {
 
 function getInitials(firstName: string, lastName: string): string {
   return `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase();
+}
+
+function viewTitle(view: ShellView): string {
+  if (view === "Dashboard") return "Sales Engineer Action Dashboard";
+  if (view === "Operations") return "Operations Dashboard";
+  return "Sales Workspace";
 }
 
 export function AuthenticatedShell(): React.JSX.Element {
@@ -94,9 +111,7 @@ export function AuthenticatedShell(): React.JSX.Element {
         ))}
       </nav>
       <section className="access-summary" aria-labelledby="access-title">
-        <h2 id="access-title">
-          {activeView === "Dashboard" ? "Sales Engineer Action Dashboard" : "Sales Workspace"}
-        </h2>
+        <h2 id="access-title">{viewTitle(activeView)}</h2>
         <p>{user.role.replace("_", " ")} permissions are active for this account.</p>
       </section>
       {activeView === "Dashboard" ? (
@@ -107,6 +122,8 @@ export function AuthenticatedShell(): React.JSX.Element {
             setActiveView("CRM");
           }}
         />
+      ) : activeView === "Operations" ? (
+        <OperationsDashboard accessToken={accessToken} />
       ) : activeView === "CRM" || activeView === "My Workspace" ? (
         <CrmWorkspace
           accessToken={accessToken}

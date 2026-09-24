@@ -51,6 +51,23 @@ class ProposalTestProvider implements AIProvider {
       evidence: [],
       usedKnowledgeIds: []
     });
+  public generateBriefing: AIProvider["generateBriefing"] = () =>
+    Promise.resolve({
+      summary: "Briefing",
+      requirements: null,
+      budget: null,
+      timeline: null,
+      decisionContext: null,
+      recentCommunication: "No recent communication",
+      qualification: null,
+      proposalDealContext: null,
+      meetingContext: null,
+      recommendedNextAction: null,
+      usedKnowledgeIds: [],
+      evidence: [],
+      requiresHumanReview: true,
+      unknowns: []
+    });
   public createEmbedding: AIProvider["createEmbedding"] = () => Promise.resolve([0.1]);
 }
 

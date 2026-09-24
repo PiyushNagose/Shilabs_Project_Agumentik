@@ -849,6 +849,102 @@ nav a.active-nav::after,
   white-space: nowrap;
 }
 
+.operations-dashboard {
+  display: grid;
+  gap: var(--sp-5);
+  padding: var(--sp-5) var(--sp-8) var(--sp-10);
+}
+
+.operations-hero {
+  min-height: 138px;
+}
+
+.operations-summary-grid strong {
+  color: var(--accent);
+}
+
+.operations-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--sp-3);
+}
+
+.operations-card,
+.operations-row-card {
+  min-width: 0;
+  padding: var(--sp-3);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+}
+
+.operations-card {
+  display: grid;
+  gap: var(--sp-3);
+  min-height: 150px;
+}
+
+.operations-card header,
+.operations-row-card {
+  display: flex;
+  gap: var(--sp-3);
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.operations-card header div,
+.operations-row-card div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.operations-card strong,
+.operations-row-card strong {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.operations-card span,
+.operations-row-card span,
+.operations-card p,
+.operations-row-card p,
+.operations-card footer {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.operations-card p,
+.operations-row-card p {
+  display: -webkit-box;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.operations-row-card p {
+  flex: 1;
+}
+
+.operations-count {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: baseline;
+}
+
+.operations-count strong {
+  color: var(--accent);
+  font-size: 28px;
+  line-height: 1;
+}
+
 .workspace-rail {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -1344,6 +1440,28 @@ nav a.active-nav::after,
   gap: var(--sp-1);
 }
 
+.notification-alert .notification-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+
+.notification-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-1);
+  min-height: 30px;
+  padding: 0 var(--sp-2);
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 800;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+}
+
 .notification-alert span {
   color: var(--text-secondary);
   font-size: 13px;
@@ -1491,6 +1609,48 @@ nav a.active-nav::after,
   line-height: 1.45;
 }
 
+.briefing-card {
+  display: grid;
+  gap: var(--sp-3);
+  min-width: 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-elevated);
+}
+
+.briefing-card.failed {
+  border-color: rgba(239, 68, 68, 0.5);
+}
+
+.briefing-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.briefing-card header div {
+  display: grid;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.briefing-card details {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.briefing-card summary {
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ai-insights-panel {
+  align-content: start;
+}
+
 .simulator-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(220px, 0.58fr);
@@ -1615,6 +1775,40 @@ nav a.active-nav::after,
   grid-template-columns: minmax(160px, 0.36fr) minmax(0, 1fr);
 }
 
+.meeting-panel {
+  align-items: start;
+  grid-template-columns: minmax(300px, 0.72fr) minmax(260px, 1fr);
+}
+
+.meeting-editor {
+  display: grid;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+
+.meeting-time-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-3);
+}
+
+.meeting-time-grid .proposal-field:last-child {
+  max-width: 132px;
+}
+
+.meeting-panel .proposal-field {
+  min-width: 0;
+}
+
+.meeting-panel .proposal-field input {
+  width: 100%;
+  min-width: 0;
+}
+
+.meeting-actions button {
+  min-width: 142px;
+}
+
 .proposal-list-item {
   display: grid;
   gap: var(--sp-1);
@@ -1703,6 +1897,56 @@ nav a.active-nav::after,
   display: flex;
   flex-wrap: wrap;
   gap: var(--sp-2);
+}
+
+.correction-panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: var(--sp-3);
+  display: grid;
+  gap: var(--sp-3);
+  background: color-mix(in srgb, var(--surface-muted) 62%, transparent);
+}
+
+.correction-panel header,
+.correction-history article {
+  display: flex;
+  gap: var(--sp-3);
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.correction-panel h4 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 15px;
+}
+
+.correction-history {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.correction-history article {
+  border-top: 1px solid var(--border);
+  padding-top: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+@media (max-width: 1280px) {
+  .meeting-panel {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .meeting-time-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .meeting-time-grid .proposal-field:last-child {
+    max-width: none;
+  }
 }
 
 .state-block {
@@ -1860,7 +2104,8 @@ nav::-webkit-scrollbar-corner {
 @media (max-width: 1180px) {
   .dashboard-card-list-compact,
   .dashboard-grid,
-  .dashboard-summary-grid {
+  .dashboard-summary-grid,
+  .operations-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -1909,7 +2154,8 @@ nav::-webkit-scrollbar-corner {
   .proposal-send-result,
   .simulator-toolbar,
   .simulator-grid,
-  .simulator-composer {
+  .simulator-composer,
+  .operations-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1929,7 +2175,8 @@ nav::-webkit-scrollbar-corner {
   .topbar,
   .access-summary,
   .crm-workspace,
-  .action-dashboard {
+  .action-dashboard,
+  .operations-dashboard {
     padding: var(--sp-5);
   }
 

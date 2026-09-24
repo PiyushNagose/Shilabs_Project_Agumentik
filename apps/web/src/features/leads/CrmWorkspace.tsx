@@ -3,12 +3,15 @@ import { useEffect, useMemo, useState } from "react";
 import {
   CONVERSATION_MODES,
   type ActivityDto,
+  type AgentCorrectionDto,
+  type BriefingRunDto,
   type ConversationDto,
   type ConversationModeName,
   type HumanTakeoverBriefingDto,
   type InternalNotificationDto,
   type LeadDto,
   type LeadTemperatureName,
+  type MeetingRequestDto,
   type MessageDto,
   type PaginatedResponse,
   type PipelineStageDto,
@@ -22,18 +25,28 @@ import { StatusBadge } from "../../components/StatusBadge.js";
 import {
   assignLead,
   appendConversationMessage,
+  acknowledgeNotification,
   approveProposal,
+  confirmMeetingRequest,
+  createProposalAgentCorrection,
   createConversation,
+  createMeetingRequest,
+  generateLeadBriefing,
+  generateMeetingBriefing,
   getLead,
   getHumanTakeoverBriefing,
+  listBriefings,
   listConversationMessages,
   listConversations,
   listLeadActivities,
   listLeads,
+  listMeetingRequests,
   listNotifications,
   listPipelineStages,
   listProposals,
+  listAgentCorrections,
   listUsers,
+  markNotificationRead,
   sendApprovedProposal,
   startHumanTakeover,
   updateConversationMode,
@@ -96,12 +109,34 @@ interface ConversationState {
 interface ProposalState {
   proposals: ProposalDto[];
   selectedProposalId: string | null;
+  corrections: AgentCorrectionDto[];
+  correctionSummary: string;
   draftTitle: string;
   draftContent: string;
   loading: boolean;
   saving: boolean;
+  correctionSaving: boolean;
   error: string | null;
   sendResult: ProposalSendResultDto | null;
+}
+
+interface MeetingState {
+  requests: MeetingRequestDto[];
+  title: string;
+  windowStart: string;
+  windowEnd: string;
+  durationMinutes: number;
+  loading: boolean;
+  saving: boolean;
+  error: string | null;
+}
+
+interface BriefingState {
+  leadBriefings: BriefingRunDto[];
+  meetingBriefings: BriefingRunDto[];
+  loading: boolean;
+  saving: boolean;
+  error: string | null;
 }
 
 const initialFilters: LeadListParams = {
@@ -125,12 +160,34 @@ const initialConversationState: ConversationState = {
 const initialProposalState: ProposalState = {
   proposals: [],
   selectedProposalId: null,
+  corrections: [],
+  correctionSummary: "",
   draftTitle: "",
   draftContent: "",
   loading: false,
   saving: false,
+  correctionSaving: false,
   error: null,
   sendResult: null
+};
+
+const initialMeetingState: MeetingState = {
+  requests: [],
+  title: "",
+  windowStart: "",
+  windowEnd: "",
+  durationMinutes: 30,
+  loading: false,
+  saving: false,
+  error: null
+};
+
+const initialBriefingState: BriefingState = {
+  leadBriefings: [],
+  meetingBriefings: [],
+  loading: false,
+  saving: false,
+  error: null
 };
 
 function formatDate(value: string | null): string {
@@ -189,6 +246,8 @@ export function CrmWorkspace({
   const [conversationState, setConversationState] =
     useState<ConversationState>(initialConversationState);
   const [proposalState, setProposalState] = useState<ProposalState>(initialProposalState);
+  const [meetingState, setMeetingState] = useState<MeetingState>(initialMeetingState);
+  const [briefingState, setBriefingState] = useState<BriefingState>(initialBriefingState);
 
   async function loadWorkspace(
     nextFilters = filters,
@@ -258,6 +317,18 @@ export function CrmWorkspace({
     }
   }, [accessToken, activeTab, state.selectedLead?.id]);
 
+  useEffect(() => {
+    if (activeTab === "Meetings" && state.selectedLead) {
+      void loadLeadMeetings(state.selectedLead.id);
+    }
+  }, [accessToken, activeTab, state.selectedLead?.id]);
+
+  useEffect(() => {
+    if (activeTab === "AI Insights" && state.selectedLead) {
+      void loadLeadBriefings(state.selectedLead.id);
+    }
+  }, [accessToken, activeTab, state.selectedLead?.id]);
+
   async function loadLeadConversations(leadId: string): Promise<void> {
     setConversationState((current) => ({ ...current, loading: true, error: null }));
 
@@ -299,15 +370,21 @@ export function CrmWorkspace({
         proposals.find((proposal) => proposal.id === proposalState.selectedProposalId) ??
         proposals[0] ??
         null;
+      const corrections = selectedProposal
+        ? await listAgentCorrections(accessToken, { proposalId: selectedProposal.id, limit: 10 })
+        : [];
 
       setProposalState((current) => ({
         ...current,
         proposals,
         selectedProposalId: selectedProposal?.id ?? null,
+        corrections,
+        correctionSummary: "",
         draftTitle: selectedProposal?.title ?? "",
         draftContent: selectedProposal?.currentVersion?.content ?? "",
         loading: false,
         saving: false,
+        correctionSaving: false,
         error: null,
         sendResult: null
       }));
@@ -316,7 +393,60 @@ export function CrmWorkspace({
         ...current,
         loading: false,
         saving: false,
+        correctionSaving: false,
         error: "Proposals could not be loaded"
+      }));
+    }
+  }
+
+  async function loadProposalCorrections(proposalId: string): Promise<AgentCorrectionDto[]> {
+    return listAgentCorrections(accessToken, { proposalId, limit: 10 });
+  }
+
+  async function loadLeadMeetings(leadId: string): Promise<void> {
+    setMeetingState((current) => ({ ...current, loading: true, error: null }));
+
+    try {
+      const requests = await listMeetingRequests(accessToken, { leadId, limit: 50 });
+      setMeetingState((current) => ({
+        ...current,
+        requests,
+        loading: false,
+        saving: false,
+        error: null
+      }));
+    } catch {
+      setMeetingState((current) => ({
+        ...current,
+        loading: false,
+        saving: false,
+        error: "Meeting requests could not be loaded"
+      }));
+    }
+  }
+
+  async function loadLeadBriefings(leadId: string): Promise<void> {
+    setBriefingState((current) => ({ ...current, loading: true, error: null }));
+
+    try {
+      const [leadBriefings, meetingBriefings] = await Promise.all([
+        listBriefings(accessToken, { leadId, kind: "LEAD", limit: 10 }),
+        listBriefings(accessToken, { leadId, kind: "MEETING", limit: 20 })
+      ]);
+      setBriefingState((current) => ({
+        ...current,
+        leadBriefings,
+        meetingBriefings,
+        loading: false,
+        saving: false,
+        error: null
+      }));
+    } catch {
+      setBriefingState((current) => ({
+        ...current,
+        loading: false,
+        saving: false,
+        error: "Briefings could not be loaded"
       }));
     }
   }
@@ -346,6 +476,8 @@ export function CrmWorkspace({
     setState((current) => ({ ...current, selectedLead: lead, activities, notifications }));
     setConversationState(initialConversationState);
     setProposalState(initialProposalState);
+    setMeetingState(initialMeetingState);
+    setBriefingState(initialBriefingState);
   }
 
   async function persistStage(stageId: string): Promise<void> {
@@ -567,11 +699,66 @@ export function CrmWorkspace({
     setProposalState((current) => ({
       ...current,
       selectedProposalId: proposal.id,
+      corrections: [],
+      correctionSummary: "",
       draftTitle: proposal.title,
       draftContent: proposal.currentVersion?.content ?? "",
       sendResult: null,
       error: null
     }));
+    void loadProposalCorrections(proposal.id)
+      .then((corrections) => {
+        setProposalState((current) =>
+          current.selectedProposalId === proposal.id ? { ...current, corrections } : current
+        );
+      })
+      .catch(() => {
+        setProposalState((current) =>
+          current.selectedProposalId === proposal.id
+            ? { ...current, error: "Correction history could not be loaded" }
+            : current
+        );
+      });
+  }
+
+  async function recordProposalCorrection(): Promise<void> {
+    if (!proposalState.selectedProposalId) return;
+    const summary = proposalState.correctionSummary.trim();
+    if (!summary) {
+      setProposalState((current) => ({ ...current, error: "Correction summary is required" }));
+      return;
+    }
+    const selectedProposal = proposalState.proposals.find(
+      (proposal) => proposal.id === proposalState.selectedProposalId
+    );
+    if (!selectedProposal) return;
+
+    setProposalState((current) => ({ ...current, correctionSaving: true, error: null }));
+    try {
+      const correction = await createProposalAgentCorrection(accessToken, selectedProposal.id, {
+        correctionSummary: summary,
+        correctedOutcome: {
+          title: proposalState.draftTitle,
+          content: proposalState.draftContent,
+          note: summary,
+          source: "proposal-review-ui"
+        },
+        supersedesCorrectionId: proposalState.corrections[0]?.id
+      });
+      setProposalState((current) => ({
+        ...current,
+        corrections: [correction, ...current.corrections.filter((item) => item.id !== correction.id)],
+        correctionSummary: "",
+        correctionSaving: false,
+        error: null
+      }));
+    } catch {
+      setProposalState((current) => ({
+        ...current,
+        correctionSaving: false,
+        error: "Correction could not be recorded"
+      }));
+    }
   }
 
   async function saveProposalDraft(): Promise<void> {
@@ -671,6 +858,145 @@ export function CrmWorkspace({
     }
   }
 
+  function updateMeetingDraft(patch: Partial<MeetingState>): void {
+    setMeetingState((current) => ({ ...current, ...patch }));
+  }
+
+  async function requestMeetingSlots(): Promise<void> {
+    if (!state.selectedLead) return;
+    setMeetingState((current) => ({ ...current, saving: true, error: null }));
+
+    try {
+      const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Kolkata";
+      const request = await createMeetingRequest(accessToken, {
+        leadId: state.selectedLead.id,
+        ownerId: state.selectedLead.ownerId ?? currentUser.id,
+        title:
+          meetingState.title.trim() ||
+          `Meeting with ${state.selectedLead.contact.firstName} ${state.selectedLead.contact.lastName}`,
+        timeZone,
+        windowStart: new Date(meetingState.windowStart).toISOString(),
+        windowEnd: new Date(meetingState.windowEnd).toISOString(),
+        durationMinutes: meetingState.durationMinutes,
+        slotMinutes: meetingState.durationMinutes
+      });
+      setMeetingState((current) => ({
+        ...current,
+        requests: [request, ...current.requests.filter((item) => item.id !== request.id)],
+        saving: false,
+        error: null
+      }));
+      const [activities, notifications] = await Promise.all([
+        listLeadActivities(accessToken, state.selectedLead.id).catch(() => state.activities),
+        listNotifications(accessToken, { leadId: state.selectedLead.id, limit: 10 }).catch(
+          () => state.notifications
+        )
+      ]);
+      setState((current) => ({ ...current, activities, notifications }));
+    } catch {
+      setMeetingState((current) => ({
+        ...current,
+        saving: false,
+        error: "Meeting slots could not be requested"
+      }));
+    }
+  }
+
+  async function confirmMeetingSlot(meetingRequestId: string, slotId: string): Promise<void> {
+    setMeetingState((current) => ({ ...current, saving: true, error: null }));
+    try {
+      const request = await confirmMeetingRequest(accessToken, meetingRequestId, { slotId });
+      setMeetingState((current) => ({
+        ...current,
+        requests: current.requests.map((item) => (item.id === request.id ? request : item)),
+        saving: false,
+        error: null
+      }));
+      if (state.selectedLead) {
+        const activities = await listLeadActivities(accessToken, state.selectedLead.id).catch(
+          () => state.activities
+        );
+        setState((current) => ({ ...current, activities }));
+      }
+    } catch {
+      setMeetingState((current) => ({
+        ...current,
+        saving: false,
+        error: "Meeting could not be confirmed"
+      }));
+    }
+  }
+
+  async function generateSelectedLeadBriefing(): Promise<void> {
+    if (!state.selectedLead) return;
+    setBriefingState((current) => ({ ...current, saving: true, error: null }));
+    try {
+      const run = await generateLeadBriefing(accessToken, state.selectedLead.id);
+      const [activities, leadBriefings] = await Promise.all([
+        listLeadActivities(accessToken, state.selectedLead.id).catch(() => state.activities),
+        listBriefings(accessToken, { leadId: state.selectedLead.id, kind: "LEAD", limit: 10 })
+      ]);
+      setState((current) => ({ ...current, activities }));
+      setBriefingState((current) => ({
+        ...current,
+        leadBriefings: [run, ...leadBriefings.filter((item) => item.id !== run.id)],
+        saving: false,
+        error: run.status === "FAILED" ? (run.failureMessage ?? "Briefing generation failed") : null
+      }));
+    } catch {
+      setBriefingState((current) => ({
+        ...current,
+        saving: false,
+        error: "Lead briefing could not be generated"
+      }));
+    }
+  }
+
+  async function generateMeetingRequestBriefing(meetingRequestId: string): Promise<void> {
+    if (!state.selectedLead) return;
+    setBriefingState((current) => ({ ...current, saving: true, error: null }));
+    try {
+      const run = await generateMeetingBriefing(accessToken, meetingRequestId);
+      const meetingBriefings = await listBriefings(accessToken, {
+        leadId: state.selectedLead.id,
+        kind: "MEETING",
+        limit: 20
+      });
+      setBriefingState((current) => ({
+        ...current,
+        meetingBriefings: [run, ...meetingBriefings.filter((item) => item.id !== run.id)],
+        saving: false,
+        error: run.status === "FAILED" ? (run.failureMessage ?? "Briefing generation failed") : null
+      }));
+    } catch {
+      setBriefingState((current) => ({
+        ...current,
+        saving: false,
+        error: "Meeting briefing could not be generated"
+      }));
+    }
+  }
+
+  async function markLeadNotificationRead(notificationId: string): Promise<void> {
+    const notification = await markNotificationRead(accessToken, notificationId);
+    setState((current) => ({
+      ...current,
+      notifications: current.notifications.map((item) =>
+        item.id === notification.id ? notification : item
+      )
+    }));
+  }
+
+  async function acknowledgeLeadNotification(notificationId: string): Promise<void> {
+    const notification = await acknowledgeNotification(accessToken, notificationId);
+    setState((current) => ({
+      ...current,
+      notifications: current.notifications.map((item) =>
+        item.id === notification.id ? notification : item
+      )
+    }));
+  }
+
   return (
     <section className="crm-workspace" aria-label="CRM workspace">
       <div className="workspace-rail">
@@ -743,6 +1069,16 @@ export function CrmWorkspace({
             setConversationState((current) => ({ ...current, input }))
           }
           onModeChange={persistConversationMode}
+          meetingState={meetingState}
+          briefingState={briefingState}
+          onGenerateLeadBriefing={generateSelectedLeadBriefing}
+          onGenerateMeetingBriefing={generateMeetingRequestBriefing}
+          onAcknowledgeNotification={acknowledgeLeadNotification}
+          onReadNotification={markLeadNotificationRead}
+          onMeetingConfirm={confirmMeetingSlot}
+          onMeetingDraftChange={updateMeetingDraft}
+          onMeetingRefresh={loadLeadMeetings}
+          onMeetingRequest={requestMeetingSlots}
           onProposalApprove={approveSelectedProposal}
           onProposalDraftChange={(patch) =>
             setProposalState((current) => ({ ...current, ...patch, error: null }))
@@ -753,6 +1089,7 @@ export function CrmWorkspace({
           onProposalSave={saveProposalDraft}
           onProposalSelect={selectProposal}
           onProposalSend={sendSelectedProposal}
+          onProposalCorrection={recordProposalCorrection}
           onSendProspectMessage={sendProspectMessage}
           onStartConversation={startSimulatorConversation}
           onStartHumanTakeover={startSelectedHumanTakeover}
@@ -917,6 +1254,8 @@ function LeadDetail({
   conversationState,
   currentUser,
   lead,
+  briefingState,
+  meetingState,
   notifications,
   proposalState,
   stages,
@@ -925,6 +1264,14 @@ function LeadDetail({
   onChangeStage,
   onConversationChange,
   onConversationInputChange,
+  onGenerateLeadBriefing,
+  onGenerateMeetingBriefing,
+  onAcknowledgeNotification,
+  onReadNotification,
+  onMeetingConfirm,
+  onMeetingDraftChange,
+  onMeetingRefresh,
+  onMeetingRequest,
   onModeChange,
   onProposalApprove,
   onProposalDraftChange,
@@ -932,6 +1279,7 @@ function LeadDetail({
   onProposalSave,
   onProposalSelect,
   onProposalSend,
+  onProposalCorrection,
   onSendProspectMessage,
   onStartConversation,
   onStartHumanTakeover,
@@ -942,6 +1290,8 @@ function LeadDetail({
   conversationState: ConversationState;
   currentUser: PublicUser;
   lead: LeadDto | null;
+  briefingState: BriefingState;
+  meetingState: MeetingState;
   notifications: InternalNotificationDto[];
   proposalState: ProposalState;
   stages: PipelineStageDto[];
@@ -950,15 +1300,24 @@ function LeadDetail({
   onChangeStage: (stageId: string) => Promise<void>;
   onConversationChange: (conversationId: string) => Promise<void>;
   onConversationInputChange: (input: string) => void;
+  onGenerateLeadBriefing: () => Promise<void>;
+  onGenerateMeetingBriefing: (meetingRequestId: string) => Promise<void>;
+  onAcknowledgeNotification: (notificationId: string) => Promise<void>;
+  onReadNotification: (notificationId: string) => Promise<void>;
+  onMeetingConfirm: (meetingRequestId: string, slotId: string) => Promise<void>;
+  onMeetingDraftChange: (patch: Partial<MeetingState>) => void;
+  onMeetingRefresh: (leadId: string) => Promise<void>;
+  onMeetingRequest: () => Promise<void>;
   onModeChange: (mode: ConversationModeName) => Promise<void>;
   onProposalApprove: () => Promise<void>;
   onProposalDraftChange: (
-    patch: Partial<Pick<ProposalState, "draftTitle" | "draftContent">>
+    patch: Partial<Pick<ProposalState, "draftTitle" | "draftContent" | "correctionSummary">>
   ) => void;
   onProposalRefresh: () => Promise<void>;
   onProposalSave: () => Promise<void>;
   onProposalSelect: (proposalId: string) => void;
   onProposalSend: () => Promise<void>;
+  onProposalCorrection: () => Promise<void>;
   onSendProspectMessage: () => Promise<void>;
   onStartConversation: () => Promise<void>;
   onStartHumanTakeover: () => Promise<void>;
@@ -1030,7 +1389,11 @@ function LeadDetail({
         <span>{lead.nextAction ?? "No next action"}</span>
       </div>
 
-      <NotificationAlerts notifications={notifications} />
+      <NotificationAlerts
+        notifications={notifications}
+        onAcknowledge={onAcknowledgeNotification}
+        onRead={onReadNotification}
+      />
 
       <div className="detail-tabs" role="tablist" aria-label="Lead sections">
         {detailTabs.map((tab) => (
@@ -1052,17 +1415,26 @@ function LeadDetail({
         conversationState={conversationState}
         currentUser={currentUser}
         lead={lead}
+        briefingState={briefingState}
+        meetingState={meetingState}
         proposalState={proposalState}
         tab={activeTab}
         onConversationChange={onConversationChange}
         onConversationInputChange={onConversationInputChange}
         onModeChange={onModeChange}
+        onGenerateLeadBriefing={onGenerateLeadBriefing}
+        onGenerateMeetingBriefing={onGenerateMeetingBriefing}
+        onMeetingConfirm={onMeetingConfirm}
+        onMeetingDraftChange={onMeetingDraftChange}
+        onMeetingRefresh={onMeetingRefresh}
+        onMeetingRequest={onMeetingRequest}
         onProposalApprove={onProposalApprove}
         onProposalDraftChange={onProposalDraftChange}
         onProposalRefresh={onProposalRefresh}
         onProposalSave={onProposalSave}
         onProposalSelect={onProposalSelect}
         onProposalSend={onProposalSend}
+        onProposalCorrection={onProposalCorrection}
         onSendProspectMessage={onSendProspectMessage}
         onStartConversation={onStartConversation}
         onStartHumanTakeover={onStartHumanTakeover}
@@ -1072,13 +1444,19 @@ function LeadDetail({
 }
 
 function NotificationAlerts({
-  notifications
+  notifications,
+  onAcknowledge,
+  onRead
 }: {
   notifications: InternalNotificationDto[];
+  onAcknowledge: (notificationId: string) => Promise<void>;
+  onRead: (notificationId: string) => Promise<void>;
 }): React.JSX.Element | null {
   const handoffAlerts = notifications.filter(
     (notification) =>
-      notification.status === "UNREAD" || notification.status === "ATTENTION_REQUIRED"
+      notification.status === "UNREAD" ||
+      notification.status === "ATTENTION_REQUIRED" ||
+      notification.status === "ESCALATED"
   );
 
   if (handoffAlerts.length === 0) {
@@ -1096,6 +1474,20 @@ function NotificationAlerts({
           <StatusBadge tone={notification.severity === "CRITICAL" ? "hot" : "warm"}>
             {notification.status.replaceAll("_", " ")}
           </StatusBadge>
+          <div className="notification-actions">
+            <button
+              disabled={notification.status !== "UNREAD"}
+              onClick={() => void onRead(notification.id)}
+              type="button"
+            >
+              <Icon name="check" size={14} />
+              Read
+            </button>
+            <button onClick={() => void onAcknowledge(notification.id)} type="button">
+              <Icon name="check" size={14} />
+              Acknowledge
+            </button>
+          </div>
         </article>
       ))}
     </section>
@@ -1107,17 +1499,26 @@ function DetailTabPanel({
   conversationState,
   currentUser,
   lead,
+  briefingState,
+  meetingState,
   proposalState,
   tab,
   onConversationChange,
   onConversationInputChange,
+  onGenerateLeadBriefing,
+  onGenerateMeetingBriefing,
   onModeChange,
+  onMeetingConfirm,
+  onMeetingDraftChange,
+  onMeetingRefresh,
+  onMeetingRequest,
   onProposalApprove,
   onProposalDraftChange,
   onProposalRefresh,
   onProposalSave,
   onProposalSelect,
   onProposalSend,
+  onProposalCorrection,
   onSendProspectMessage,
   onStartConversation,
   onStartHumanTakeover
@@ -1126,19 +1527,28 @@ function DetailTabPanel({
   conversationState: ConversationState;
   currentUser: PublicUser;
   lead: LeadDto;
+  briefingState: BriefingState;
+  meetingState: MeetingState;
   proposalState: ProposalState;
   tab: DetailTab;
   onConversationChange: (conversationId: string) => Promise<void>;
   onConversationInputChange: (input: string) => void;
+  onGenerateLeadBriefing: () => Promise<void>;
+  onGenerateMeetingBriefing: (meetingRequestId: string) => Promise<void>;
   onModeChange: (mode: ConversationModeName) => Promise<void>;
+  onMeetingConfirm: (meetingRequestId: string, slotId: string) => Promise<void>;
+  onMeetingDraftChange: (patch: Partial<MeetingState>) => void;
+  onMeetingRefresh: (leadId: string) => Promise<void>;
+  onMeetingRequest: () => Promise<void>;
   onProposalApprove: () => Promise<void>;
   onProposalDraftChange: (
-    patch: Partial<Pick<ProposalState, "draftTitle" | "draftContent">>
+    patch: Partial<Pick<ProposalState, "draftTitle" | "draftContent" | "correctionSummary">>
   ) => void;
   onProposalRefresh: () => Promise<void>;
   onProposalSave: () => Promise<void>;
   onProposalSelect: (proposalId: string) => void;
   onProposalSend: () => Promise<void>;
+  onProposalCorrection: () => Promise<void>;
   onSendProspectMessage: () => Promise<void>;
   onStartConversation: () => Promise<void>;
   onStartHumanTakeover: () => Promise<void>;
@@ -1170,6 +1580,32 @@ function DetailTabPanel({
         onSave={onProposalSave}
         onSelect={onProposalSelect}
         onSend={onProposalSend}
+        onCorrection={onProposalCorrection}
+      />
+    );
+  }
+
+  if (tab === "Meetings") {
+    return (
+      <MeetingPanel
+        briefingState={briefingState}
+        lead={lead}
+        meetingState={meetingState}
+        onConfirm={onMeetingConfirm}
+        onDraftChange={onMeetingDraftChange}
+        onGenerateBriefing={onGenerateMeetingBriefing}
+        onRefresh={onMeetingRefresh}
+        onRequest={onMeetingRequest}
+      />
+    );
+  }
+
+  if (tab === "AI Insights") {
+    return (
+      <LeadBriefingPanel
+        briefingState={briefingState}
+        lead={lead}
+        onGenerate={onGenerateLeadBriefing}
       />
     );
   }
@@ -1222,10 +1658,288 @@ function DetailTabPanel({
   );
 }
 
+function textField(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function briefingOutput(run: BriefingRunDto): Record<string, unknown> {
+  return typeof run.output === "object" && run.output !== null && !Array.isArray(run.output)
+    ? (run.output as Record<string, unknown>)
+    : {};
+}
+
+function BriefingCard({ run }: { run: BriefingRunDto }): React.JSX.Element {
+  const output = briefingOutput(run);
+  const summary = run.summary ?? textField(output.summary) ?? "No summary returned";
+  const recommended =
+    run.recommendedNextAction ?? textField(output.recommendedNextAction) ?? "No next action";
+
+  return (
+    <article className={`briefing-card ${run.status.toLowerCase()}`}>
+      <header>
+        <div>
+          <strong>{run.kind === "MEETING" ? "Meeting briefing" : "Lead briefing"}</strong>
+          <small>{formatDate(run.createdAt)}</small>
+        </div>
+        <StatusBadge tone={run.status === "COMPLETED" ? "warm" : "hot"}>
+          {run.status.replaceAll("_", " ")}
+        </StatusBadge>
+      </header>
+      {run.status === "FAILED" ? (
+        <p className="form-error">{run.failureMessage ?? run.failureCode ?? "Briefing failed"}</p>
+      ) : (
+        <div className="briefing-grid">
+          <section>
+            <strong>Summary</strong>
+            <span>{summary}</span>
+          </section>
+          <section>
+            <strong>Requirements</strong>
+            <span>{textField(output.requirements) ?? "Unknown"}</span>
+          </section>
+          <section>
+            <strong>Budget / timeline</strong>
+            <span>{textField(output.budget) ?? "Budget unknown"}</span>
+            <span>{textField(output.timeline) ?? "Timeline unknown"}</span>
+          </section>
+          <section>
+            <strong>Decision context</strong>
+            <span>{textField(output.decisionContext) ?? "Unknown"}</span>
+          </section>
+          <section>
+            <strong>Recent communication</strong>
+            <span>{textField(output.recentCommunication) ?? "Unknown"}</span>
+          </section>
+          <section>
+            <strong>Recommended next action</strong>
+            <span>{recommended}</span>
+          </section>
+        </div>
+      )}
+      <details>
+        <summary>Evidence used ({run.evidence.length})</summary>
+        <div className="correction-history">
+          {run.evidence.slice(0, 6).map((item) => (
+            <article key={item.id}>
+              <strong>{item.sourceType}</strong>
+              <span>{item.title}</span>
+              <small>{item.id}</small>
+            </article>
+          ))}
+        </div>
+      </details>
+    </article>
+  );
+}
+
+function LeadBriefingPanel({
+  briefingState,
+  lead,
+  onGenerate
+}: {
+  briefingState: BriefingState;
+  lead: LeadDto;
+  onGenerate: () => Promise<void>;
+}): React.JSX.Element {
+  const latest = briefingState.leadBriefings[0] ?? null;
+
+  return (
+    <div className="tab-panel ai-insights-panel">
+      <section className="meeting-editor" aria-label="Lead briefing">
+        <header className="proposal-editor-head">
+          <div>
+            <p className="eyebrow">AI Insights</p>
+            <h3>Grounded Lead Briefing</h3>
+          </div>
+          <StatusBadge>{briefingState.leadBriefings.length}</StatusBadge>
+        </header>
+        <p className="muted">
+          Advisory briefing from persisted lead, qualification, conversation, proposal, meeting and
+          approved-KB evidence only.
+        </p>
+        <div className="proposal-actions">
+          <button
+            disabled={briefingState.saving || !lead.id}
+            onClick={() => void onGenerate()}
+            type="button"
+          >
+            <Icon name="sparkles" size={16} />
+            Generate briefing
+          </button>
+        </div>
+        {briefingState.error ? <p className="form-error">{briefingState.error}</p> : null}
+      </section>
+      {briefingState.loading ? (
+        <StateBlock title="Loading briefings" />
+      ) : latest ? (
+        <BriefingCard run={latest} />
+      ) : (
+        <StateBlock title="No lead briefing yet" detail="Generate one from real persisted evidence." />
+      )}
+    </div>
+  );
+}
+
+function MeetingPanel({
+  briefingState,
+  lead,
+  meetingState,
+  onConfirm,
+  onDraftChange,
+  onGenerateBriefing,
+  onRefresh,
+  onRequest
+}: {
+  briefingState: BriefingState;
+  lead: LeadDto;
+  meetingState: MeetingState;
+  onConfirm: (meetingRequestId: string, slotId: string) => Promise<void>;
+  onDraftChange: (patch: Partial<MeetingState>) => void;
+  onGenerateBriefing: (meetingRequestId: string) => Promise<void>;
+  onRefresh: (leadId: string) => Promise<void>;
+  onRequest: () => Promise<void>;
+}): React.JSX.Element {
+  const canRequest =
+    meetingState.windowStart.trim().length > 0 && meetingState.windowEnd.trim().length > 0;
+
+  return (
+    <div className="tab-panel meeting-panel">
+      <section className="meeting-editor" aria-label="Meeting scheduling">
+        <header className="proposal-editor-head">
+          <div>
+            <p className="eyebrow">Meetings</p>
+            <h3>Request Real Calendar Slots</h3>
+          </div>
+          <StatusBadge>{meetingState.requests.length}</StatusBadge>
+        </header>
+
+        <label className="proposal-field">
+          Title
+          <input
+            disabled={meetingState.saving}
+            onChange={(event) => onDraftChange({ title: event.target.value })}
+            placeholder={`Meeting with ${lead.contact.firstName} ${lead.contact.lastName}`}
+            value={meetingState.title}
+          />
+        </label>
+        <div className="meeting-time-grid">
+          <label className="proposal-field">
+            Window start
+            <input
+              disabled={meetingState.saving}
+              onChange={(event) => onDraftChange({ windowStart: event.target.value })}
+              type="datetime-local"
+              value={meetingState.windowStart}
+            />
+          </label>
+          <label className="proposal-field">
+            Window end
+            <input
+              disabled={meetingState.saving}
+              onChange={(event) => onDraftChange({ windowEnd: event.target.value })}
+              type="datetime-local"
+              value={meetingState.windowEnd}
+            />
+          </label>
+          <label className="proposal-field">
+            Minutes
+            <input
+              disabled={meetingState.saving}
+              min={15}
+              max={240}
+              onChange={(event) =>
+                onDraftChange({ durationMinutes: Number(event.target.value) || 30 })
+              }
+              type="number"
+              value={meetingState.durationMinutes}
+            />
+          </label>
+        </div>
+
+        <div className="proposal-actions meeting-actions">
+          <button
+            disabled={!canRequest || meetingState.saving}
+            onClick={() => void onRequest()}
+            type="button"
+          >
+            <Icon name="check" size={16} />
+            Request slots
+          </button>
+          <button
+            disabled={meetingState.saving}
+            onClick={() => void onRefresh(lead.id)}
+            type="button"
+          >
+            <Icon name="refresh" size={16} />
+            Refresh
+          </button>
+        </div>
+
+        {meetingState.error ? <p className="form-error">{meetingState.error}</p> : null}
+      </section>
+
+      {meetingState.loading ? (
+        <StateBlock title="Loading meeting requests" />
+      ) : meetingState.requests.length === 0 ? (
+        <StateBlock
+          title="No meeting requests"
+          detail="Create a request to pull real availability from the configured calendar."
+        />
+      ) : (
+        <div className="proposal-list" aria-label="Meeting requests">
+          {meetingState.requests.map((request) => {
+            const briefing = briefingState.meetingBriefings.find(
+              (item) => item.meetingRequestId === request.id
+            );
+            return (
+            <article className="proposal-list-item" key={request.id}>
+              <strong>{request.title}</strong>
+              <span>{request.status.replaceAll("_", " ")}</span>
+              <small>
+                Provider {request.providerSyncStatus.replaceAll("_", " ")} · Zoho{" "}
+                {request.zohoSyncStatus.replaceAll("_", " ")}
+              </small>
+              {request.providerLastError ? <small>{request.providerLastError}</small> : null}
+              {request.partyNotificationNote ? (
+                <small>{request.partyNotificationNote}</small>
+              ) : null}
+              {briefing ? <BriefingCard run={briefing} /> : null}
+              {request.slots
+                .filter((slot) => slot.status === "PROPOSED")
+                .slice(0, 4)
+                .map((slot) => (
+                  <button
+                    disabled={meetingState.saving || request.status !== "CONFIRMATION_REQUIRED"}
+                    key={slot.id}
+                    onClick={() => void onConfirm(request.id, slot.id)}
+                    type="button"
+                  >
+                    <Icon name="check" size={15} />
+                    {formatDate(slot.startsAt)}
+                  </button>
+                ))}
+              <button
+                disabled={briefingState.saving}
+                onClick={() => void onGenerateBriefing(request.id)}
+                type="button"
+              >
+                <Icon name="sparkles" size={15} />
+                Briefing
+              </button>
+            </article>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ProposalReviewPanel({
   currentUser,
   proposalState,
   onApprove,
+  onCorrection,
   onDraftChange,
   onRefresh,
   onSave,
@@ -1235,7 +1949,10 @@ function ProposalReviewPanel({
   currentUser: PublicUser;
   proposalState: ProposalState;
   onApprove: () => Promise<void>;
-  onDraftChange: (patch: Partial<Pick<ProposalState, "draftTitle" | "draftContent">>) => void;
+  onCorrection: () => Promise<void>;
+  onDraftChange: (
+    patch: Partial<Pick<ProposalState, "draftTitle" | "draftContent" | "correctionSummary">>
+  ) => void;
   onRefresh: () => Promise<void>;
   onSave: () => Promise<void>;
   onSelect: (proposalId: string) => void;
@@ -1342,6 +2059,54 @@ function ProposalReviewPanel({
               value={proposalState.draftContent}
             />
           </label>
+
+          <section className="correction-panel" aria-label="Agent feedback correction">
+            <header>
+              <div>
+                <p className="eyebrow">Agent Feedback</p>
+                <h4>Record correction evidence</h4>
+              </div>
+              <StatusBadge tone="neutral">{proposalState.corrections.length}</StatusBadge>
+            </header>
+            <label className="proposal-field">
+              Correction summary
+              <textarea
+                disabled={proposalState.correctionSaving}
+                onChange={(event) => onDraftChange({ correctionSummary: event.target.value })}
+                rows={3}
+                value={proposalState.correctionSummary}
+              />
+            </label>
+            <div className="proposal-actions">
+              <button
+                disabled={
+                  proposalState.correctionSaving ||
+                  proposalState.correctionSummary.trim().length < 3 ||
+                  !selectedProposal.currentVersion
+                }
+                onClick={() => void onCorrection()}
+                type="button"
+              >
+                <Icon name="check" size={16} />
+                Record correction
+              </button>
+            </div>
+            {proposalState.corrections.length > 0 ? (
+              <div className="correction-history">
+                {proposalState.corrections.slice(0, 3).map((correction) => (
+                  <article key={correction.id}>
+                    <strong>v{correction.version} correction</strong>
+                    <span>{correction.correctionSummary}</span>
+                    <small>
+                      {correction.agentModule} · {formatDate(correction.createdAt)}
+                    </small>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <p className="muted">No correction evidence recorded for this proposal.</p>
+            )}
+          </section>
 
           <div className="proposal-actions">
             <button

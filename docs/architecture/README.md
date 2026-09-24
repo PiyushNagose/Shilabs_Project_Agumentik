@@ -282,6 +282,158 @@ configured AWS SES is blocked in non-production unless
 `ALLOW_EXTERNAL_EMAIL_IN_NON_PRODUCTION=true` is deliberately set. Mailpit itself is
 blocked in production and limited to local/container Mailpit hosts.
 
+## R20/R21 Calendar And Meeting Foundation
+
+R20 introduces a provider-neutral `CalendarProvider` boundary for health and availability
+checks. R21 extends that boundary with provider meeting creation while keeping meeting
+workflow state in PostgreSQL.
+
+Calendar availability responses are timezone explicit and must come from a real provider
+adapter. With `CALENDAR_PROVIDER=none`, health reports `NOT_CONFIGURED` and availability
+returns no slots with a visible unavailable reason. With a provider selected before its
+adapter exists, health reports `ERROR`; the application must not fabricate availability.
+
+R21 stores `MeetingRequest` and `MeetingSlot` rows as Shilabs-owned orchestration state.
+Authorized users can request provider-derived slots and explicitly confirm one slot.
+Confirmation re-checks availability immediately before calling the provider to create the
+meeting, then records activity, audit history, a domain event and a calendar
+`ExternalRecordMapping`.
+
+Google Calendar event existence is provider-owned; PostgreSQL stores local lifecycle and
+evidence. Zoho meeting sync remains visibly `NOT_CONFIGURED` until the client confirms CRM
+meeting-object mapping, and customer/party notification semantics remain open, so R21 does
+not send meeting notifications or mark them delivered.
+
+## R22 Voice Provider Foundation
+
+R22 introduces a provider-neutral `VoiceProvider` boundary and a Twilio adapter for local
+E2E. PostgreSQL owns local call orchestration/evidence through `VoiceCallAttempt` and
+`VoiceProviderEvent`; Twilio owns the external call identity and status callbacks.
+
+Manual R22 test calls are protected by RBAC and re-check lead/contact eligibility before
+any provider call: contact phone must be usable, `doNotContact` must be false, lead status
+must not be terminal/disqualified, local E2E destination allow-list must pass when
+configured, and production calling remains disabled unless explicit compliance/consent
+configuration is confirmed.
+
+Recording and transcript metadata are modeled but disabled by default. R22 does not
+implement automated call sequencing, retry cadence, voicemail behavior, WhatsApp, or
+autonomous AI calling; those remain later milestones/open client decisions.
+
+R22 status: implementation is complete and production-ready for the provider-neutral
+foundation. Twilio provider-level test calling passed outside the app, and the app
+failure-path E2E passed by preserving a truthful blocked attempt, activity, audit and
+domain-event evidence when Twilio rejected the app-originated call. A successful
+app-originated live call remains pending Twilio account unlock because the current trial
+account rejects the production-style Calls API request with trial parameter restrictions.
+No application workaround should be added for that provider-side restriction.
+
+## R23 Calling Automation
+
+R23 adds a durable calling automation layer that starts only after the configured email
+follow-up sequence completes without an inbound reply. `CallingSequence` owns the cadence
+and lifecycle; `CallingAttempt` owns each scheduled execution and links to the underlying
+R22 `VoiceCallAttempt` after provider execution starts.
+
+The default cadence follows the revised playbook: two attempts on the configured day, then
+wait three days before the next attempt. These values are configurable through
+`CALLING_AUTOMATION_*` environment variables because voicemail behavior (OC-01) and calling
+compliance by geography (OC-13) remain unresolved.
+
+Worker execution re-checks current eligibility immediately before every provider side
+effect: usable phone, do-not-contact, terminal lead states, conversation pause/human mode,
+active human takeover, inbound replies after the email sequence, local E2E phone allow-list,
+provider configuration, and production calling consent gates. Provider failures and missing
+configuration move the sequence to `ATTENTION_REQUIRED`; business-state blockers stop the
+sequence without placing a call.
+
+If Twilio accepts a call but Zoho timeline sync fails, retries re-use the existing
+`VoiceCallAttempt` and retry only the Zoho sync. They must not place a duplicate call.
+R23 does not implement WhatsApp, voicemail policy, autonomous AI calling or external
+notification channels.
+
+## R24 WhatsApp Integration
+
+R24 adds provider-neutral messaging foundations with a real Meta WhatsApp Business adapter.
+`OutboundWhatsAppMessage` owns persisted outbound lifecycle state and idempotency;
+`WhatsAppProviderEvent` stores signed webhook evidence for delivery/read statuses and
+inbound replies. `META_WHATSAPP` mappings use `ExternalRecordMapping` for provider message
+identity without making WhatsApp a CRM source of truth.
+
+WhatsApp sends are triggered alongside configured R23 calling attempts through durable
+`WHATSAPP_SEND_REQUESTED` outbox events. Worker execution re-checks do-not-contact,
+terminal lead state, human pause/takeover, inbound replies, provider configuration and
+local E2E allow-listing immediately before any Meta side effect. Missing Meta credentials,
+approved template configuration or unresolved provider policy produces truthful
+`NOT_CONFIGURED`/failure state; the application never fabricates WhatsApp success.
+
+Inbound WhatsApp replies are signature-verified, matched deterministically to an eligible
+lead by WhatsApp identity/phone, persisted as `Message` records on a `WHATSAPP`
+conversation, and stop incompatible follow-up/calling/WhatsApp automation. Ambiguous or
+unmatched replies remain visible as failed provider events instead of being guessed.
+
+OC-08 template/content policy and consent rules remain configurable/unresolved. R24 does
+not implement WhatsApp campaign design, autonomous AI messaging, or later R25+ behavior.
+
+## R25 Agent Feedback/Correction Store
+
+R25 adds `AgentCorrection` as an evidence-only record for human corrections to real
+agent/AI outputs. Corrections are linked to persisted `ProposalGenerationRun` or
+`ReplyProcessingRun` records and store the agent/module, source entity, previous output
+snapshot, corrected outcome, correcting user, version/history metadata, audit entry and
+domain-event evidence.
+
+Feedback does not modify Zoho CRM state, update governed KB entries, alter proposals,
+trigger exports, retrain models, or claim fine-tuning. KB promotion, export/training use,
+retention policy and approval workflow remain unresolved client decisions.
+
+## R26 Lead And Meeting Briefings
+
+R26 adds advisory lead and meeting briefings as persisted `BriefingRun` records. A run
+captures the requested briefing kind, actor, lead/meeting context, source evidence
+references, approved knowledge references, AI provider/model metadata, output, recommended
+next action, status and failure information.
+
+Briefings are generated only from persisted lead, qualification, communication, proposal,
+deal, meeting and approved-KB evidence. Unknown pricing, timelines, capabilities or
+decision context remain unknown. A briefing never mutates CRM state, sends messages,
+creates meetings, changes approvals, resumes automation or performs provider actions.
+
+Automatic generation, Zoho sync, retention and R25 correction influence remain unresolved
+client decisions.
+
+## R27 Notifications
+
+R27 extends the existing `InternalNotification` system instead of introducing a second
+dashboard or notification source of truth. Notifications remain local operational state
+derived from persisted proposal, handoff, takeover, meeting, provider-failure and worker
+evidence.
+
+The notification lifecycle now supports unread, read, acknowledged and escalated states.
+Read/acknowledged/escalated transitions are RBAC-protected, idempotent and recorded with
+audit and domain-event evidence. Escalation stores durable in-app evidence only; exact
+external channels, timing rules and escalation destinations remain unresolved client
+decisions and are not implemented.
+
+No email, push, mobile, Slack or other external notification provider is added in R27.
+
+## R28 Operational Visibility
+
+R28 adds a protected Operations Dashboard for admin and manager users. It aggregates
+existing persisted state instead of introducing a second operational source of truth:
+integration account health, external record mappings, integration sync runs,
+`DomainEventOutbox`, provider event tables and domain-specific provider status/failure
+columns.
+
+Provider health covers Zoho Bigin, email, AI, SEMrush, WhatsApp, voice and calendar.
+Where a provider has an existing health check, the dashboard uses that truthful health
+path. Where only configuration evidence exists, such as AI and SEMrush, the dashboard
+reports configuration-only status instead of creating synthetic provider calls.
+
+Usage indicators are counts from persisted evidence only. Cost remains explicitly
+unavailable unless a provider billing/token-cost feed is implemented later. R28 does not
+add external alert channels, billing systems or provider-side remediation behavior.
+
 ## R7 Email Deliverability & Suppression
 
 R7 makes pre-send validation an explicit reusable service. The same server-owned

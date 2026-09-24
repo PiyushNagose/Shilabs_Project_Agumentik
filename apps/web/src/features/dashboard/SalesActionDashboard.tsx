@@ -4,11 +4,12 @@ import type { SalesActionDashboardDto, SalesActionDashboardItemDto } from "@shil
 import { Icon } from "../../components/Icon.js";
 import { StateBlock } from "../../components/StateBlock.js";
 import { StatusBadge } from "../../components/StatusBadge.js";
-import { getSalesActionDashboard } from "../../services/api-client.js";
+import { acknowledgeNotification, getSalesActionDashboard } from "../../services/api-client.js";
+import type { DetailTab } from "../leads/CrmWorkspace.js";
 
 interface SalesActionDashboardProps {
   accessToken: string;
-  onOpenLead: (leadId: string, tab?: "Conversation" | "Proposals") => void;
+  onOpenLead: (leadId: string, tab?: DetailTab) => void;
 }
 
 function formatDate(value: string): string {
@@ -24,7 +25,8 @@ function statusTone(severity: SalesActionDashboardItemDto["severity"]): "hot" | 
   return "neutral";
 }
 
-function targetTab(item: SalesActionDashboardItemDto): "Conversation" | "Proposals" | undefined {
+function targetTab(item: SalesActionDashboardItemDto): DetailTab | undefined {
+  if (item.type === "MEETING_CONFIRMATION") return "Meetings";
   if (item.proposalId) return "Proposals";
   if (item.conversationId) return "Conversation";
   return undefined;
@@ -39,6 +41,10 @@ function openDashboardItem(
   }
 }
 
+function notificationIdFromItem(item: SalesActionDashboardItemDto): string | null {
+  return item.id.startsWith("notification:") ? item.id.slice("notification:".length) : null;
+}
+
 function leadLabel(item: SalesActionDashboardItemDto): string {
   if (!item.lead) return "Operational item";
   return `${item.lead.company.name} · ${item.lead.contact.firstName} ${item.lead.contact.lastName}`;
@@ -48,12 +54,14 @@ function DashboardSection({
   emptyDetail,
   items,
   title,
-  onOpenLead
+  onOpenLead,
+  onAcknowledge
 }: {
   emptyDetail: string;
   items: SalesActionDashboardItemDto[];
   title: string;
   onOpenLead: SalesActionDashboardProps["onOpenLead"];
+  onAcknowledge: (item: SalesActionDashboardItemDto) => Promise<void>;
 }): React.JSX.Element {
   return (
     <section className="dashboard-section" aria-label={title}>
@@ -85,6 +93,12 @@ function DashboardSection({
                     Open workspace
                   </button>
                 ) : null}
+                {notificationIdFromItem(item) ? (
+                  <button onClick={() => void onAcknowledge(item)} type="button">
+                    <Icon name="check" size={15} />
+                    Acknowledge
+                  </button>
+                ) : null}
               </footer>
             </article>
           ))}
@@ -112,6 +126,13 @@ export function SalesActionDashboard({
     } finally {
       setLoading(false);
     }
+  }
+
+  async function acknowledgeDashboardItem(item: SalesActionDashboardItemDto): Promise<void> {
+    const notificationId = notificationIdFromItem(item);
+    if (!notificationId) return;
+    await acknowledgeNotification(accessToken, notificationId);
+    await loadDashboard();
   }
 
   useEffect(() => {
@@ -210,6 +231,12 @@ export function SalesActionDashboard({
                       Open workspace
                     </button>
                   ) : null}
+                  {notificationIdFromItem(item) ? (
+                    <button onClick={() => void acknowledgeDashboardItem(item)} type="button">
+                      <Icon name="check" size={15} />
+                      Acknowledge
+                    </button>
+                  ) : null}
                 </footer>
               </article>
             ))}
@@ -223,32 +250,63 @@ export function SalesActionDashboard({
           items={dashboard.pendingProposalApprovals}
           title="Proposal Approvals"
           onOpenLead={onOpenLead}
+          onAcknowledge={acknowledgeDashboardItem}
         />
         <DashboardSection
           emptyDetail="No negotiation handoff or human takeover requires attention."
           items={dashboard.negotiationAndTakeoverAlerts}
           title="Handoffs & Takeovers"
           onOpenLead={onOpenLead}
+          onAcknowledge={acknowledgeDashboardItem}
         />
         <DashboardSection
           emptyDetail="No persisted failure is currently marked for attention."
           items={dashboard.failuresRequiringAttention}
           title="Failures Requiring Attention"
           onOpenLead={onOpenLead}
+          onAcknowledge={acknowledgeDashboardItem}
         />
         <section className="dashboard-section" aria-label="Appointments and meetings">
           <header>
             <h3>Appointments & Meetings</h3>
             <StatusBadge>{dashboard.meetings.items.length}</StatusBadge>
           </header>
-          <StateBlock
-            title={
-              dashboard.meetings.status === "AVAILABLE"
-                ? "No meetings pending"
-                : "Not yet available"
-            }
-            detail={dashboard.meetings.message}
-          />
+          {dashboard.meetings.items.length === 0 ? (
+            <StateBlock
+              title={
+                dashboard.meetings.status === "AVAILABLE"
+                  ? "No meetings pending"
+                  : "Not yet available"
+              }
+              detail={dashboard.meetings.message}
+            />
+          ) : (
+            <div className="dashboard-card-list">
+              {dashboard.meetings.items.map((item) => (
+                <article className="dashboard-action-card" key={item.id}>
+                  <div className="dashboard-action-main">
+                    <div>
+                      <strong>{item.title}</strong>
+                      <span>{leadLabel(item)}</span>
+                    </div>
+                    <StatusBadge tone={statusTone(item.severity)}>
+                      {item.status.replaceAll("_", " ")}
+                    </StatusBadge>
+                  </div>
+                  <p>{item.detail}</p>
+                  <footer>
+                    <span>{formatDate(item.occurredAt)}</span>
+                    {item.leadId ? (
+                      <button onClick={() => openDashboardItem(item, onOpenLead)} type="button">
+                        <Icon name="briefcase" size={15} />
+                        Open meeting
+                      </button>
+                    ) : null}
+                  </footer>
+                </article>
+              ))}
+            </div>
+          )}
         </section>
       </div>
     </section>

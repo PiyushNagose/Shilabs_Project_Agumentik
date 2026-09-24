@@ -169,7 +169,18 @@ export const ACTIVITY_TYPES = [
   "PROPOSAL_APPROVED",
   "PROPOSAL_SENT",
   "HUMAN_TAKEOVER",
-  "NEGOTIATION_HANDOFF"
+  "NEGOTIATION_HANDOFF",
+  "MEETING_REQUESTED",
+  "MEETING_CONFIRMED",
+  "CALL_REQUESTED",
+  "CALL_STATUS_UPDATED",
+  "CALL_FAILED",
+  "WHATSAPP_SENT",
+  "WHATSAPP_STATUS_UPDATED",
+  "WHATSAPP_RECEIVED",
+  "WHATSAPP_FAILED",
+  "AGENT_CORRECTION_RECORDED",
+  "BRIEFING_GENERATED"
 ] as const;
 export type ActivityTypeName = (typeof ACTIVITY_TYPES)[number];
 
@@ -266,6 +277,72 @@ export interface ProposalGenerationRunDto {
 export interface ProposalGenerationResultDto {
   run: ProposalGenerationRunDto;
   proposal: ProposalDto | null;
+}
+
+export const AGENT_CORRECTION_SOURCE_TYPES = [
+  "PROPOSAL_GENERATION_RUN",
+  "REPLY_PROCESSING_RUN"
+] as const;
+export type AgentCorrectionSourceTypeName = (typeof AGENT_CORRECTION_SOURCE_TYPES)[number];
+
+export const AGENT_CORRECTION_STATUSES = ["ACTIVE", "SUPERSEDED"] as const;
+export type AgentCorrectionStatusName = (typeof AGENT_CORRECTION_STATUSES)[number];
+
+export interface AgentCorrectionDto {
+  id: string;
+  agentModule: string;
+  sourceEntityType: AgentCorrectionSourceTypeName;
+  sourceEntityId: string;
+  leadId: string | null;
+  proposalId: string | null;
+  conversationId: string | null;
+  proposalGenerationRunId: string | null;
+  replyProcessingRunId: string | null;
+  previousOutput: unknown;
+  correctedOutcome: unknown;
+  correctionSummary: string;
+  status: AgentCorrectionStatusName;
+  version: number;
+  supersedesCorrectionId: string | null;
+  correctedByUserId: string;
+  correctedBy: PublicUser;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const BRIEFING_KINDS = ["LEAD", "MEETING"] as const;
+export type BriefingKindName = (typeof BRIEFING_KINDS)[number];
+
+export const BRIEFING_RUN_STATUSES = ["COMPLETED", "FAILED"] as const;
+export type BriefingRunStatusName = (typeof BRIEFING_RUN_STATUSES)[number];
+
+export interface BriefingEvidenceReferenceDto {
+  id: string;
+  sourceType: string;
+  title: string;
+  text: string;
+}
+
+export interface BriefingRunDto {
+  id: string;
+  kind: BriefingKindName;
+  leadId: string;
+  meetingRequestId: string | null;
+  actorUserId: string;
+  status: BriefingRunStatusName;
+  provider: string | null;
+  model: string | null;
+  inputContext: unknown;
+  evidence: BriefingEvidenceReferenceDto[];
+  approvedKnowledge: unknown;
+  output: unknown;
+  summary: string | null;
+  recommendedNextAction: string | null;
+  failureCode: string | null;
+  failureMessage: string | null;
+  idempotencyKey: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ProposalSendResultDto {
@@ -383,14 +460,24 @@ export interface HumanTakeoverBriefingDto {
 export const NEGOTIATION_HANDOFF_STATUSES = ["ACTIVE", "ATTENTION_REQUIRED"] as const;
 export type NegotiationHandoffStatusName = (typeof NEGOTIATION_HANDOFF_STATUSES)[number];
 
-export const INTERNAL_NOTIFICATION_TYPES = ["NEGOTIATION_HANDOFF"] as const;
+export const INTERNAL_NOTIFICATION_TYPES = ["NEGOTIATION_HANDOFF", "MEETING_CONFIRMATION"] as const;
 export type InternalNotificationTypeName = (typeof INTERNAL_NOTIFICATION_TYPES)[number];
 
-export const INTERNAL_NOTIFICATION_STATUSES = ["UNREAD", "READ", "ATTENTION_REQUIRED"] as const;
+export const INTERNAL_NOTIFICATION_STATUSES = [
+  "UNREAD",
+  "READ",
+  "ACKNOWLEDGED",
+  "ATTENTION_REQUIRED",
+  "ESCALATED"
+] as const;
 export type InternalNotificationStatusName = (typeof INTERNAL_NOTIFICATION_STATUSES)[number];
 
 export const INTERNAL_NOTIFICATION_SEVERITIES = ["INFO", "WARNING", "CRITICAL"] as const;
 export type InternalNotificationSeverityName = (typeof INTERNAL_NOTIFICATION_SEVERITIES)[number];
+
+export const INTERNAL_NOTIFICATION_ESCALATION_STATUSES = ["NONE", "PENDING", "ESCALATED"] as const;
+export type InternalNotificationEscalationStatusName =
+  (typeof INTERNAL_NOTIFICATION_ESCALATION_STATUSES)[number];
 
 export interface NegotiationHandoffDto {
   id: string;
@@ -412,21 +499,37 @@ export interface InternalNotificationDto {
   type: InternalNotificationTypeName;
   status: InternalNotificationStatusName;
   severity: InternalNotificationSeverityName;
+  escalationStatus: InternalNotificationEscalationStatusName;
   title: string;
   body: string;
   assignedToUserId: string | null;
+  readByUserId: string | null;
+  acknowledgedByUserId: string | null;
+  escalatedByUserId: string | null;
   leadId: string | null;
   conversationId: string | null;
   negotiationHandoffId: string | null;
+  meetingRequestId: string | null;
   sourceEntityType: string;
   sourceEntityId: string;
+  readAt: string | null;
+  acknowledgedAt: string | null;
+  escalatedAt: string | null;
+  escalationDueAt: string | null;
+  escalationReason: string | null;
+  escalationEvidence: unknown;
   createdAt: string;
   updatedAt: string;
   negotiationHandoff: NegotiationHandoffDto | null;
 }
 
 export type SalesActionDashboardItemType =
-  "PROPOSAL_APPROVAL" | "NEGOTIATION_HANDOFF" | "INTERNAL_ALERT" | "HUMAN_TAKEOVER" | "FAILURE";
+  | "PROPOSAL_APPROVAL"
+  | "NEGOTIATION_HANDOFF"
+  | "INTERNAL_ALERT"
+  | "HUMAN_TAKEOVER"
+  | "MEETING_CONFIRMATION"
+  | "FAILURE";
 
 export type SalesActionDashboardItemSeverity = "INFO" | "WARNING" | "CRITICAL";
 
@@ -466,6 +569,185 @@ export interface SalesActionDashboardDto {
     meetings: number;
     totalActionItems: number;
   };
+}
+
+export type CalendarProviderName = "NONE" | "GOOGLE" | "MICROSOFT";
+export type CalendarHealthStatusName = "CONFIGURED" | "NOT_CONFIGURED" | "ERROR";
+export type CalendarAvailabilityStatusName = "AVAILABLE" | "NOT_CONFIGURED" | "ERROR";
+
+export interface CalendarHealthDto {
+  provider: CalendarProviderName;
+  status: CalendarHealthStatusName;
+  configured: boolean;
+  checkedAt: string;
+  defaultTimeZone: string;
+  missingConfig: string[];
+  lastError: string | null;
+}
+
+export interface CalendarAvailabilitySlotDto {
+  startsAt: string;
+  endsAt: string;
+  timeZone: string;
+}
+
+export interface CalendarAvailabilityResultDto {
+  provider: CalendarProviderName;
+  status: CalendarAvailabilityStatusName;
+  checkedAt: string;
+  timeZone: string;
+  windowStart: string;
+  windowEnd: string;
+  slotMinutes: number;
+  slots: CalendarAvailabilitySlotDto[];
+  unavailableReason: string | null;
+}
+
+export const MEETING_REQUEST_STATUSES = [
+  "CONFIRMATION_REQUIRED",
+  "PROVIDER_PENDING",
+  "CONFIRMED",
+  "ATTENTION_REQUIRED",
+  "CANCELLED"
+] as const;
+export type MeetingRequestStatusName = (typeof MEETING_REQUEST_STATUSES)[number];
+
+export const MEETING_SLOT_STATUSES = ["PROPOSED", "SELECTED", "EXPIRED"] as const;
+export type MeetingSlotStatusName = (typeof MEETING_SLOT_STATUSES)[number];
+
+export const MEETING_SYNC_STATUSES = [
+  "NOT_REQUIRED",
+  "PENDING",
+  "SYNCED",
+  "FAILED",
+  "NOT_CONFIGURED"
+] as const;
+export type MeetingSyncStatusName = (typeof MEETING_SYNC_STATUSES)[number];
+
+export interface MeetingSlotDto {
+  id: string;
+  meetingRequestId: string;
+  startsAt: string;
+  endsAt: string;
+  timeZone: string;
+  status: MeetingSlotStatusName;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MeetingRequestDto {
+  id: string;
+  leadId: string;
+  contactId: string;
+  conversationId: string | null;
+  ownerId: string | null;
+  requestedByUserId: string;
+  confirmedByUserId: string | null;
+  status: MeetingRequestStatusName;
+  title: string;
+  description: string | null;
+  timeZone: string;
+  durationMinutes: number;
+  slotMinutes: number;
+  windowStart: string;
+  windowEnd: string;
+  selectedSlotId: string | null;
+  provider: IntegrationProviderName;
+  providerMeetingId: string | null;
+  providerMeetingUrl: string | null;
+  providerSyncStatus: MeetingSyncStatusName;
+  providerLastError: string | null;
+  zohoSyncStatus: MeetingSyncStatusName;
+  zohoLastError: string | null;
+  partyNotificationStatus: MeetingSyncStatusName;
+  partyNotificationNote: string | null;
+  confirmedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lead: LeadDto;
+  owner: PublicUser | null;
+  requestedBy: PublicUser;
+  confirmedBy: PublicUser | null;
+  slots: MeetingSlotDto[];
+}
+
+export type VoiceProviderName = "NONE" | "TWILIO";
+export type VoiceHealthStatusName = "CONFIGURED" | "NOT_CONFIGURED" | "ERROR";
+export type VoiceCallDirectionName = "OUTBOUND";
+export const VOICE_CALL_STATUSES = [
+  "REQUESTED",
+  "PROVIDER_PENDING",
+  "QUEUED",
+  "RINGING",
+  "IN_PROGRESS",
+  "COMPLETED",
+  "BUSY",
+  "NO_ANSWER",
+  "FAILED",
+  "CANCELED",
+  "BLOCKED",
+  "NOT_CONFIGURED"
+] as const;
+export type VoiceCallStatusName = (typeof VOICE_CALL_STATUSES)[number];
+export type VoiceRecordingStatusName = "DISABLED" | "PENDING" | "AVAILABLE" | "FAILED";
+export type VoiceTranscriptStatusName = "DISABLED" | "PENDING" | "AVAILABLE" | "FAILED";
+
+export interface VoiceHealthDto {
+  provider: VoiceProviderName;
+  status: VoiceHealthStatusName;
+  configured: boolean;
+  checkedAt: string;
+  missingConfig: string[];
+  recordingEnabled: boolean;
+  transcriptionEnabled: boolean;
+  productionCallingEnabled: boolean;
+  complianceConsentMode: "disabled" | "development" | "confirmed";
+  defaultRegion: string;
+  defaultAccent: string;
+  lastError: string | null;
+}
+
+export interface VoiceCallAttemptDto {
+  id: string;
+  leadId: string;
+  contactId: string;
+  actorUserId: string | null;
+  provider: IntegrationProviderName;
+  direction: VoiceCallDirectionName;
+  toPhone: string;
+  fromPhone: string;
+  providerCallId: string | null;
+  status: VoiceCallStatusName;
+  regionalVoice: string | null;
+  accent: string | null;
+  recordingEnabled: boolean;
+  transcriptionEnabled: boolean;
+  recordingStatus: VoiceRecordingStatusName;
+  recordingProviderId: string | null;
+  recordingUrl: string | null;
+  transcriptStatus: VoiceTranscriptStatusName;
+  transcriptProviderId: string | null;
+  transcriptUrl: string | null;
+  transcriptText: string | null;
+  durationSeconds: number | null;
+  failureCode: string | null;
+  failureMessage: string | null;
+  idempotencyKey: string;
+  requestedAt: string;
+  providerAcceptedAt: string | null;
+  answeredAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lead: LeadDto;
+}
+
+export interface VoiceWebhookResultDto {
+  provider: "TWILIO";
+  status: "PROCESSED" | "DUPLICATE";
+  eventId: string;
+  callAttemptId: string | null;
+  callStatus: VoiceCallStatusName | null;
 }
 
 export interface LeadQualificationEvidenceDto {
@@ -546,7 +828,15 @@ export interface LeadScoreOverrideDto {
   runId: string;
 }
 
-export const INTEGRATION_PROVIDERS = ["ZOHO_BIGIN", "AWS_SES", "MAILPIT", "SEMRUSH"] as const;
+export const INTEGRATION_PROVIDERS = [
+  "ZOHO_BIGIN",
+  "AWS_SES",
+  "MAILPIT",
+  "SEMRUSH",
+  "GOOGLE_CALENDAR",
+  "TWILIO",
+  "META_WHATSAPP"
+] as const;
 export type IntegrationProviderName = (typeof INTEGRATION_PROVIDERS)[number];
 
 export const INTEGRATION_ACCOUNT_STATUSES = [
@@ -869,6 +1159,78 @@ export interface DomainEventOutboxDto {
   retryRequestedByUserId: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export type OperationsEvidenceKindName = "LIVE_HEALTH_CHECK" | "CONFIG_ONLY" | "PERSISTED_STATE";
+
+export interface OperationsProviderHealthDto {
+  key: string;
+  label: string;
+  provider: string;
+  status: IntegrationAccountStatusName;
+  configured: boolean;
+  checkedAt: string;
+  missingConfig: string[];
+  lastError: string | null;
+  evidence: OperationsEvidenceKindName;
+}
+
+export interface OperationsWorkStatusDto {
+  status: string;
+  count: number;
+}
+
+export interface OperationsWorkItemDto {
+  id: string;
+  type: string;
+  status: string;
+  detail: string;
+  occurredAt: string;
+}
+
+export interface OperationsSyncStatusDto {
+  provider: IntegrationProviderName;
+  status: string;
+  count: number;
+}
+
+export interface OperationsProviderErrorDto {
+  id: string;
+  provider: string;
+  source: string;
+  status: string;
+  message: string;
+  occurredAt: string;
+}
+
+export interface OperationsUsageIndicatorDto {
+  key: string;
+  label: string;
+  provider: string;
+  count: number;
+  unit: string;
+  period: "ALL_TIME" | "LAST_24_HOURS";
+  costAmount: number | null;
+  currency: string | null;
+  costUnavailableReason: string | null;
+}
+
+export interface OperationsDashboardDto {
+  generatedAt: string;
+  providerHealth: OperationsProviderHealthDto[];
+  work: {
+    statusCounts: OperationsWorkStatusDto[];
+    queuedCount: number;
+    failedCount: number;
+    attentionRequiredCount: number;
+    recentProblemItems: OperationsWorkItemDto[];
+  };
+  unsyncedRecords: {
+    total: number;
+    byStatus: OperationsSyncStatusDto[];
+  };
+  providerErrors: OperationsProviderErrorDto[];
+  usage: OperationsUsageIndicatorDto[];
 }
 
 export const FOLLOW_UP_SEQUENCE_STATUSES = [

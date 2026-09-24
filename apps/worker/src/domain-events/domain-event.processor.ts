@@ -6,13 +6,20 @@ import {
   startDomainEventProcessing
 } from "./domain-event.repository.js";
 import { followUpDomainEventHandlers } from "../followups/followup-email.handler.js";
+import { callingDomainEventHandlers } from "../calling/calling-automation.handler.js";
+import { whatsAppDomainEventHandlers } from "../messaging/whatsapp-send.handler.js";
 import { PermanentDomainEventError } from "./domain-event.errors.js";
 
 const INTERNAL_EVENT_TYPES = new Set([
   "REPLY_UNDERSTOOD",
   "NEGOTIATION_DETECTED",
   "NEGOTIATION_HANDOFF_CREATED",
-  "REPLY_PROCESSING_FAILED"
+  "REPLY_PROCESSING_FAILED",
+  "MESSAGE_RECEIVED",
+  "WHATSAPP_SENT",
+  "WHATSAPP_STATUS_UPDATED",
+  "WHATSAPP_DELIVERY_FAILED",
+  "AGENT_CORRECTION_RECORDED"
 ]);
 
 const COMMUNICATION_SIDE_EFFECT_EVENTS = new Set([
@@ -111,7 +118,11 @@ export async function processDomainEventJob(input: {
   if (!event) return "SKIPPED";
 
   try {
-    await processEvent(event, input.handlers ?? followUpDomainEventHandlers);
+    await processEvent(event, input.handlers ?? {
+      ...followUpDomainEventHandlers,
+      ...callingDomainEventHandlers,
+      ...whatsAppDomainEventHandlers
+    });
     await completeDomainEvent({ eventId: event.id, workerId: input.workerId, now: new Date() });
     return "PROCESSED";
   } catch (error) {

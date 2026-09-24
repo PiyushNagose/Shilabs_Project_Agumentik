@@ -96,6 +96,17 @@ enum ActivityType {
   PROPOSAL_SENT
   HUMAN_TAKEOVER
   NEGOTIATION_HANDOFF
+  MEETING_REQUESTED
+  MEETING_CONFIRMED
+  CALL_REQUESTED
+  CALL_STATUS_UPDATED
+  CALL_FAILED
+  WHATSAPP_SENT
+  WHATSAPP_STATUS_UPDATED
+  WHATSAPP_RECEIVED
+  WHATSAPP_FAILED
+  AGENT_CORRECTION_RECORDED
+  BRIEFING_GENERATED
 }
 
 enum AuditActorType {
@@ -134,18 +145,27 @@ enum NegotiationHandoffStatus {
 
 enum InternalNotificationType {
   NEGOTIATION_HANDOFF
+  MEETING_CONFIRMATION
 }
 
 enum InternalNotificationStatus {
   UNREAD
   READ
+  ACKNOWLEDGED
   ATTENTION_REQUIRED
+  ESCALATED
 }
 
 enum InternalNotificationSeverity {
   INFO
   WARNING
   CRITICAL
+}
+
+enum InternalNotificationEscalationStatus {
+  NONE
+  PENDING
+  ESCALATED
 }
 
 enum MessageDirection {
@@ -173,6 +193,9 @@ enum IntegrationProvider {
   AWS_SES
   MAILPIT
   SEMRUSH
+  GOOGLE_CALENDAR
+  TWILIO
+  META_WHATSAPP
 }
 
 enum IntegrationAccountStatus {
@@ -192,6 +215,35 @@ enum ExternalRecordEntityType {
   MESSAGE
   MEETING
   PROPOSAL
+  CALL
+  WHATSAPP_MESSAGE
+}
+
+enum OutboundWhatsAppStatus {
+  PENDING
+  PROVIDER_PENDING
+  SENT
+  DELIVERED
+  READ
+  FAILED
+  BLOCKED
+  NOT_CONFIGURED
+}
+
+enum WhatsAppProviderEventType {
+  MESSAGE_STATUS
+  INBOUND_MESSAGE
+  WEBHOOK_VERIFICATION
+}
+
+enum AgentCorrectionSourceType {
+  PROPOSAL_GENERATION_RUN
+  REPLY_PROCESSING_RUN
+}
+
+enum AgentCorrectionStatus {
+  ACTIVE
+  SUPERSEDED
 }
 
 enum SyncDirection {
@@ -353,6 +405,93 @@ enum DomainEventPriority {
   HIGH
 }
 
+enum MeetingRequestStatus {
+  CONFIRMATION_REQUIRED
+  PROVIDER_PENDING
+  CONFIRMED
+  ATTENTION_REQUIRED
+  CANCELLED
+}
+
+enum MeetingSlotStatus {
+  PROPOSED
+  SELECTED
+  EXPIRED
+}
+
+enum MeetingSyncStatus {
+  NOT_REQUIRED
+  PENDING
+  SYNCED
+  FAILED
+  NOT_CONFIGURED
+}
+
+enum VoiceCallDirection {
+  OUTBOUND
+}
+
+enum VoiceCallStatus {
+  REQUESTED
+  PROVIDER_PENDING
+  QUEUED
+  RINGING
+  IN_PROGRESS
+  COMPLETED
+  BUSY
+  NO_ANSWER
+  FAILED
+  CANCELED
+  BLOCKED
+  NOT_CONFIGURED
+}
+
+enum VoiceRecordingStatus {
+  DISABLED
+  PENDING
+  AVAILABLE
+  FAILED
+}
+
+enum VoiceTranscriptStatus {
+  DISABLED
+  PENDING
+  AVAILABLE
+  FAILED
+}
+
+enum VoiceProviderEventType {
+  CALL_STATUS
+  RECORDING_STATUS
+}
+
+enum CallingSequenceStatus {
+  ACTIVE
+  COMPLETED
+  STOPPED
+  ATTENTION_REQUIRED
+}
+
+enum CallingAttemptStatus {
+  SCHEDULED
+  CALLING
+  ACCEPTED
+  COMPLETED
+  BLOCKED
+  FAILED
+  SKIPPED
+}
+
+enum BriefingKind {
+  LEAD
+  MEETING
+}
+
+enum BriefingRunStatus {
+  COMPLETED
+  FAILED
+}
+
 model User {
   id           String     @id @default(cuid())
   email        String     @unique
@@ -386,9 +525,18 @@ model User {
   createdProposalVersions     ProposalVersion[]         @relation("ProposalVersionCreatedBy")
   proposalStatusChanges       ProposalStatusChange[]    @relation("ProposalStatusChangeActor")
   proposalGenerationRuns      ProposalGenerationRun[]   @relation("ProposalGenerationActor")
+  agentCorrections            AgentCorrection[]         @relation("AgentCorrectionCorrectedBy")
   humanTakeovers              HumanTakeover[]           @relation("HumanTakeoverActor")
   negotiationHandoffs         NegotiationHandoff[]      @relation("NegotiationHandoffAssignee")
   assignedNotifications       InternalNotification[]    @relation("InternalNotificationAssignee")
+  readNotifications           InternalNotification[]    @relation("InternalNotificationReadBy")
+  acknowledgedNotifications   InternalNotification[]    @relation("InternalNotificationAcknowledgedBy")
+  escalatedNotifications      InternalNotification[]    @relation("InternalNotificationEscalatedBy")
+  ownedMeetingRequests        MeetingRequest[]          @relation("MeetingRequestOwner")
+  requestedMeetingRequests    MeetingRequest[]          @relation("MeetingRequestRequestedBy")
+  confirmedMeetingRequests    MeetingRequest[]          @relation("MeetingRequestConfirmedBy")
+  voiceCallAttempts           VoiceCallAttempt[]        @relation("VoiceCallActor")
+  briefingRuns                BriefingRun[]             @relation("BriefingRunActor")
 
   @@index([role])
   @@index([status])
@@ -560,11 +708,16 @@ model Contact {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  company           Company            @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  leads             Lead[]
-  outboundEmails    OutboundEmail[]
-  inboundEmails     InboundEmail[]
-  followUpSequences FollowUpSequence[]
+  company                  Company                   @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  leads                    Lead[]
+  outboundEmails           OutboundEmail[]
+  outboundWhatsAppMessages OutboundWhatsAppMessage[]
+  inboundEmails            InboundEmail[]
+  followUpSequences        FollowUpSequence[]
+  callingSequences         CallingSequence[]
+  callingAttempts          CallingAttempt[]
+  meetingRequests          MeetingRequest[]
+  voiceCallAttempts        VoiceCallAttempt[]
 
   @@unique([companyId, normalizedEmail])
   @@unique([companyId, normalizedPhone])
@@ -617,26 +770,33 @@ model Lead {
   createdAt             DateTime        @default(now())
   updatedAt             DateTime        @updatedAt
 
-  company                Company                 @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  contact                Contact                 @relation(fields: [contactId], references: [id], onDelete: Restrict)
-  owner                  User?                   @relation("LeadOwner", fields: [ownerId], references: [id], onDelete: SetNull)
-  scoreOverrideBy        User?                   @relation("LeadScoreOverrideBy", fields: [scoreOverrideByUserId], references: [id], onDelete: SetNull)
-  stage                  PipelineStage           @relation(fields: [stageId], references: [id], onDelete: Restrict)
-  deal                   Deal?
-  qualification          LeadQualification?
-  activities             Activity[]
-  conversations          Conversation[]
-  outboundEmails         OutboundEmail[]
-  inboundEmails          InboundEmail[]
-  followUpSequences      FollowUpSequence[]
-  followUpAttempts       FollowUpAttempt[]
-  humanTakeovers         HumanTakeover[]
-  scoreRuns              LeadScoreRun[]
-  replyProcessingRuns    ReplyProcessingRun[]
-  negotiationHandoffs    NegotiationHandoff[]
-  internalNotifications  InternalNotification[]
-  proposals              Proposal[]
-  proposalGenerationRuns ProposalGenerationRun[]
+  company                  Company                   @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  contact                  Contact                   @relation(fields: [contactId], references: [id], onDelete: Restrict)
+  owner                    User?                     @relation("LeadOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  scoreOverrideBy          User?                     @relation("LeadScoreOverrideBy", fields: [scoreOverrideByUserId], references: [id], onDelete: SetNull)
+  stage                    PipelineStage             @relation(fields: [stageId], references: [id], onDelete: Restrict)
+  deal                     Deal?
+  qualification            LeadQualification?
+  activities               Activity[]
+  conversations            Conversation[]
+  outboundEmails           OutboundEmail[]
+  inboundEmails            InboundEmail[]
+  followUpSequences        FollowUpSequence[]
+  followUpAttempts         FollowUpAttempt[]
+  callingSequences         CallingSequence[]
+  callingAttempts          CallingAttempt[]
+  humanTakeovers           HumanTakeover[]
+  scoreRuns                LeadScoreRun[]
+  replyProcessingRuns      ReplyProcessingRun[]
+  negotiationHandoffs      NegotiationHandoff[]
+  internalNotifications    InternalNotification[]
+  proposals                Proposal[]
+  proposalGenerationRuns   ProposalGenerationRun[]
+  agentCorrections         AgentCorrection[]
+  meetingRequests          MeetingRequest[]
+  voiceCallAttempts        VoiceCallAttempt[]
+  outboundWhatsAppMessages OutboundWhatsAppMessage[]
+  briefingRuns             BriefingRun[]
 
   @@index([companyId])
   @@index([contactId])
@@ -773,6 +933,7 @@ model Proposal {
   versions          ProposalVersion[]       @relation("ProposalVersions")
   statusChanges     ProposalStatusChange[]
   generationRuns    ProposalGenerationRun[]
+  agentCorrections  AgentCorrection[]
 
   @@index([leadId])
   @@index([dealId])
@@ -828,10 +989,11 @@ model ProposalGenerationRun {
   createdAt         DateTime                 @default(now())
   updatedAt         DateTime                 @updatedAt
 
-  lead      Lead      @relation(fields: [leadId], references: [id], onDelete: Restrict)
-  deal      Deal?     @relation(fields: [dealId], references: [id], onDelete: SetNull)
-  proposal  Proposal? @relation(fields: [proposalId], references: [id], onDelete: SetNull)
-  actorUser User      @relation("ProposalGenerationActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+  lead        Lead              @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  deal        Deal?             @relation(fields: [dealId], references: [id], onDelete: SetNull)
+  proposal    Proposal?         @relation(fields: [proposalId], references: [id], onDelete: SetNull)
+  actorUser   User              @relation("ProposalGenerationActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+  corrections AgentCorrection[]
 
   @@index([leadId])
   @@index([dealId])
@@ -857,6 +1019,39 @@ model ProposalStatusChange {
   @@index([proposalId])
   @@index([actorUserId])
   @@index([toStatus])
+  @@index([createdAt])
+}
+
+model BriefingRun {
+  id                  String            @id @default(cuid())
+  kind                BriefingKind
+  leadId              String
+  meetingRequestId    String?
+  actorUserId         String
+  status              BriefingRunStatus
+  provider            String?
+  model               String?
+  inputContext        Json
+  evidence            Json
+  approvedKnowledge   Json?
+  output              Json?
+  summary             String?
+  recommendedNextAction String?
+  failureCode         String?
+  failureMessage      String?
+  idempotencyKey      String            @unique
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+
+  lead           Lead            @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  meetingRequest MeetingRequest? @relation(fields: [meetingRequestId], references: [id], onDelete: SetNull)
+  actorUser      User            @relation("BriefingRunActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@index([kind])
+  @@index([leadId])
+  @@index([meetingRequestId])
+  @@index([actorUserId])
+  @@index([status])
   @@index([createdAt])
 }
 
@@ -905,14 +1100,17 @@ model Conversation {
   createdAt     DateTime            @default(now())
   updatedAt     DateTime            @updatedAt
 
-  lead                  Lead                   @relation(fields: [leadId], references: [id], onDelete: Restrict)
-  messages              Message[]
-  inboundEmails         InboundEmail[]
-  replyProcessingRuns   ReplyProcessingRun[]
-  followUpSequences     FollowUpSequence[]
-  humanTakeovers        HumanTakeover[]
-  negotiationHandoffs   NegotiationHandoff[]
-  internalNotifications InternalNotification[]
+  lead                     Lead                      @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  messages                 Message[]
+  inboundEmails            InboundEmail[]
+  replyProcessingRuns      ReplyProcessingRun[]
+  followUpSequences        FollowUpSequence[]
+  humanTakeovers           HumanTakeover[]
+  negotiationHandoffs      NegotiationHandoff[]
+  internalNotifications    InternalNotification[]
+  meetingRequests          MeetingRequest[]
+  outboundWhatsAppMessages OutboundWhatsAppMessage[]
+  agentCorrections         AgentCorrection[]
 
   @@index([leadId])
   @@index([channel])
@@ -976,32 +1174,197 @@ model InternalNotification {
   type                 InternalNotificationType
   status               InternalNotificationStatus   @default(UNREAD)
   severity             InternalNotificationSeverity @default(INFO)
+  escalationStatus     InternalNotificationEscalationStatus @default(NONE)
   title                String
   body                 String
   assignedToUserId     String?
+  readByUserId         String?
+  acknowledgedByUserId String?
+  escalatedByUserId    String?
   leadId               String?
   conversationId       String?
   negotiationHandoffId String?
+  meetingRequestId     String?
   sourceEntityType     String
   sourceEntityId       String
+  readAt               DateTime?
+  acknowledgedAt       DateTime?
+  escalatedAt          DateTime?
+  escalationDueAt      DateTime?
+  escalationReason     String?
+  escalationEvidence   Json?
   idempotencyKey       String                       @unique
   createdAt            DateTime                     @default(now())
   updatedAt            DateTime                     @updatedAt
 
   assignedTo         User?               @relation("InternalNotificationAssignee", fields: [assignedToUserId], references: [id], onDelete: SetNull)
+  readBy             User?               @relation("InternalNotificationReadBy", fields: [readByUserId], references: [id], onDelete: SetNull)
+  acknowledgedBy     User?               @relation("InternalNotificationAcknowledgedBy", fields: [acknowledgedByUserId], references: [id], onDelete: SetNull)
+  escalatedBy        User?               @relation("InternalNotificationEscalatedBy", fields: [escalatedByUserId], references: [id], onDelete: SetNull)
   lead               Lead?               @relation(fields: [leadId], references: [id], onDelete: SetNull)
   conversation       Conversation?       @relation(fields: [conversationId], references: [id], onDelete: SetNull)
   negotiationHandoff NegotiationHandoff? @relation(fields: [negotiationHandoffId], references: [id], onDelete: SetNull)
+  meetingRequest     MeetingRequest?     @relation(fields: [meetingRequestId], references: [id], onDelete: SetNull)
 
   @@index([type])
   @@index([status])
   @@index([severity])
+  @@index([escalationStatus])
   @@index([assignedToUserId])
+  @@index([readByUserId])
+  @@index([acknowledgedByUserId])
+  @@index([escalatedByUserId])
   @@index([leadId])
   @@index([conversationId])
   @@index([negotiationHandoffId])
+  @@index([meetingRequestId])
   @@index([sourceEntityType, sourceEntityId])
+  @@index([escalationDueAt])
   @@index([createdAt])
+}
+
+model MeetingRequest {
+  id                      String               @id @default(cuid())
+  leadId                  String
+  contactId               String
+  conversationId          String?
+  ownerId                 String?
+  requestedByUserId       String
+  confirmedByUserId       String?
+  status                  MeetingRequestStatus @default(CONFIRMATION_REQUIRED)
+  title                   String
+  description             String?
+  timeZone                String
+  durationMinutes         Int
+  slotMinutes             Int
+  windowStart             DateTime
+  windowEnd               DateTime
+  selectedSlotId          String?
+  provider                IntegrationProvider
+  providerMeetingId       String?
+  providerMeetingUrl      String?
+  providerSyncStatus      MeetingSyncStatus    @default(PENDING)
+  providerLastError       String?
+  zohoSyncStatus          MeetingSyncStatus    @default(PENDING)
+  zohoLastError           String?
+  partyNotificationStatus MeetingSyncStatus    @default(NOT_REQUIRED)
+  partyNotificationNote   String?
+  idempotencyKey          String               @unique
+  confirmedAt             DateTime?
+  createdAt               DateTime             @default(now())
+  updatedAt               DateTime             @updatedAt
+
+  lead                  Lead                   @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  contact               Contact                @relation(fields: [contactId], references: [id], onDelete: Restrict)
+  conversation          Conversation?          @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  owner                 User?                  @relation("MeetingRequestOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  requestedBy           User                   @relation("MeetingRequestRequestedBy", fields: [requestedByUserId], references: [id], onDelete: Restrict)
+  confirmedBy           User?                  @relation("MeetingRequestConfirmedBy", fields: [confirmedByUserId], references: [id], onDelete: SetNull)
+  slots                 MeetingSlot[]
+  internalNotifications InternalNotification[]
+  briefingRuns          BriefingRun[]
+
+  @@index([leadId])
+  @@index([contactId])
+  @@index([conversationId])
+  @@index([ownerId])
+  @@index([requestedByUserId])
+  @@index([confirmedByUserId])
+  @@index([status])
+  @@index([provider, providerSyncStatus])
+  @@index([zohoSyncStatus])
+  @@index([windowStart])
+  @@index([confirmedAt])
+  @@index([createdAt])
+}
+
+model MeetingSlot {
+  id               String            @id @default(cuid())
+  meetingRequestId String
+  startsAt         DateTime
+  endsAt           DateTime
+  timeZone         String
+  status           MeetingSlotStatus @default(PROPOSED)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  meetingRequest MeetingRequest @relation(fields: [meetingRequestId], references: [id], onDelete: Cascade)
+
+  @@unique([meetingRequestId, startsAt, endsAt])
+  @@index([meetingRequestId])
+  @@index([status])
+  @@index([startsAt])
+}
+
+model VoiceCallAttempt {
+  id                   String                @id @default(cuid())
+  leadId               String
+  contactId            String
+  actorUserId          String?
+  provider             IntegrationProvider
+  direction            VoiceCallDirection    @default(OUTBOUND)
+  toPhone              String
+  normalizedToPhone    String
+  fromPhone            String
+  providerCallId       String?               @unique
+  status               VoiceCallStatus       @default(REQUESTED)
+  regionalVoice        String?
+  accent               String?
+  recordingEnabled     Boolean               @default(false)
+  transcriptionEnabled Boolean               @default(false)
+  recordingStatus      VoiceRecordingStatus  @default(DISABLED)
+  recordingProviderId  String?
+  recordingUrl         String?
+  transcriptStatus     VoiceTranscriptStatus @default(DISABLED)
+  transcriptProviderId String?
+  transcriptUrl        String?
+  transcriptText       String?
+  durationSeconds      Int?
+  failureCode          String?
+  failureMessage       String?
+  idempotencyKey       String                @unique
+  requestedAt          DateTime              @default(now())
+  providerAcceptedAt   DateTime?
+  answeredAt           DateTime?
+  completedAt          DateTime?
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+
+  lead           Lead                 @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  contact        Contact              @relation(fields: [contactId], references: [id], onDelete: Restrict)
+  actor          User?                @relation("VoiceCallActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  events         VoiceProviderEvent[]
+  callingAttempt CallingAttempt?
+
+  @@index([leadId])
+  @@index([contactId])
+  @@index([actorUserId])
+  @@index([provider, status])
+  @@index([providerCallId])
+  @@index([normalizedToPhone])
+  @@index([requestedAt])
+  @@index([completedAt])
+}
+
+model VoiceProviderEvent {
+  id              String                 @id @default(cuid())
+  provider        IntegrationProvider
+  providerEventId String
+  providerCallId  String?
+  callAttemptId   String?
+  type            VoiceProviderEventType
+  payload         Json
+  receivedAt      DateTime               @default(now())
+  processedAt     DateTime?
+  createdAt       DateTime               @default(now())
+
+  callAttempt VoiceCallAttempt? @relation(fields: [callAttemptId], references: [id], onDelete: SetNull)
+
+  @@unique([provider, providerEventId])
+  @@index([provider, type])
+  @@index([providerCallId])
+  @@index([callAttemptId])
+  @@index([receivedAt])
 }
 
 model FollowUpSequence {
@@ -1021,10 +1384,11 @@ model FollowUpSequence {
   createdAt        DateTime               @default(now())
   updatedAt        DateTime               @updatedAt
 
-  lead         Lead              @relation(fields: [leadId], references: [id], onDelete: Restrict)
-  contact      Contact           @relation(fields: [contactId], references: [id], onDelete: Restrict)
-  conversation Conversation?     @relation(fields: [conversationId], references: [id], onDelete: SetNull)
-  attempts     FollowUpAttempt[]
+  lead             Lead              @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  contact          Contact           @relation(fields: [contactId], references: [id], onDelete: Restrict)
+  conversation     Conversation?     @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  attempts         FollowUpAttempt[]
+  callingSequences CallingSequence[]
 
   @@index([leadId])
   @@index([contactId])
@@ -1065,6 +1429,140 @@ model FollowUpAttempt {
   @@index([domainEventId])
   @@index([outboundEmailId])
   @@index([zohoSyncStatus])
+}
+
+model CallingSequence {
+  id                 String                @id @default(cuid())
+  leadId             String
+  contactId          String
+  followUpSequenceId String?
+  status             CallingSequenceStatus @default(ACTIVE)
+  cadenceOffsets     Int[]
+  currentAttempt     Int                   @default(0)
+  maxAttempts        Int
+  stopReason         String?
+  stoppedAt          DateTime?
+  completedAt        DateTime?
+  lastErrorCode      String?
+  lastErrorMessage   String?
+  idempotencyKey     String                @unique
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+
+  lead             Lead              @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  contact          Contact           @relation(fields: [contactId], references: [id], onDelete: Restrict)
+  followUpSequence FollowUpSequence? @relation(fields: [followUpSequenceId], references: [id], onDelete: SetNull)
+  attempts         CallingAttempt[]
+
+  @@index([leadId])
+  @@index([contactId])
+  @@index([followUpSequenceId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model CallingAttempt {
+  id                 String                 @id @default(cuid())
+  sequenceId         String
+  leadId             String
+  contactId          String
+  attemptIndex       Int
+  status             CallingAttemptStatus   @default(SCHEDULED)
+  scheduledAt        DateTime
+  idempotencyKey     String                 @unique
+  domainEventId      String?
+  voiceCallAttemptId String?                @unique
+  activityId         String?
+  zohoSyncStatus     FollowUpZohoSyncStatus @default(PENDING)
+  zohoLastError      String?
+  startedAt          DateTime?
+  completedAt        DateTime?
+  failureCode        String?
+  failureMessage     String?
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+
+  sequence                 CallingSequence           @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  lead                     Lead                      @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  contact                  Contact                   @relation(fields: [contactId], references: [id], onDelete: Restrict)
+  voiceCallAttempt         VoiceCallAttempt?         @relation(fields: [voiceCallAttemptId], references: [id], onDelete: SetNull)
+  outboundWhatsAppMessages OutboundWhatsAppMessage[]
+
+  @@unique([sequenceId, attemptIndex])
+  @@index([leadId])
+  @@index([contactId])
+  @@index([status, scheduledAt])
+  @@index([domainEventId])
+  @@index([voiceCallAttemptId])
+  @@index([activityId])
+  @@index([zohoSyncStatus])
+}
+
+model OutboundWhatsAppMessage {
+  id                String                 @id @default(cuid())
+  leadId            String
+  contactId         String
+  callingAttemptId  String?
+  conversationId    String?
+  provider          IntegrationProvider
+  toWhatsAppId      String
+  normalizedToPhone String?
+  fromPhoneNumberId String?
+  templateName      String?
+  templateLanguage  String?
+  textBody          String?
+  providerMessageId String?                @unique
+  idempotencyKey    String                 @unique
+  status            OutboundWhatsAppStatus @default(PENDING)
+  zohoSyncStatus    FollowUpZohoSyncStatus @default(PENDING)
+  zohoLastError     String?
+  failureCode       String?
+  failureMessage    String?
+  requestedAt       DateTime               @default(now())
+  sentAt            DateTime?
+  deliveredAt       DateTime?
+  readAt            DateTime?
+  failedAt          DateTime?
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+
+  lead           Lead                    @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  contact        Contact                 @relation(fields: [contactId], references: [id], onDelete: Restrict)
+  callingAttempt CallingAttempt?         @relation(fields: [callingAttemptId], references: [id], onDelete: SetNull)
+  conversation   Conversation?           @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  events         WhatsAppProviderEvent[]
+
+  @@index([leadId])
+  @@index([contactId])
+  @@index([callingAttemptId])
+  @@index([conversationId])
+  @@index([provider, status])
+  @@index([providerMessageId])
+  @@index([zohoSyncStatus])
+  @@index([createdAt])
+}
+
+model WhatsAppProviderEvent {
+  id                String                    @id @default(cuid())
+  provider          IntegrationProvider
+  providerEventId   String
+  providerMessageId String?
+  outboundMessageId String?
+  type              WhatsAppProviderEventType
+  payload           Json
+  failureCode       String?
+  failureMessage    String?
+  receivedAt        DateTime                  @default(now())
+  processedAt       DateTime?
+  createdAt         DateTime                  @default(now())
+
+  outboundMessage OutboundWhatsAppMessage? @relation(fields: [outboundMessageId], references: [id], onDelete: SetNull)
+
+  @@unique([provider, providerEventId])
+  @@index([provider, type])
+  @@index([providerMessageId])
+  @@index([outboundMessageId])
+  @@index([receivedAt])
 }
 
 model Message {
@@ -1351,6 +1849,7 @@ model ReplyProcessingRun {
   message            Message             @relation(fields: [messageId], references: [id], onDelete: Restrict)
   inboundEmail       InboundEmail?       @relation(fields: [inboundEmailId], references: [id], onDelete: SetNull)
   negotiationHandoff NegotiationHandoff?
+  corrections        AgentCorrection[]
 
   @@index([leadId])
   @@index([conversationId])
@@ -1359,5 +1858,46 @@ model ReplyProcessingRun {
   @@index([status])
   @@index([intent])
   @@index([recommendedAction])
+  @@index([createdAt])
+}
+
+model AgentCorrection {
+  id                      String                    @id @default(cuid())
+  agentModule             String
+  sourceEntityType        AgentCorrectionSourceType
+  sourceEntityId          String
+  leadId                  String?
+  proposalId              String?
+  conversationId          String?
+  proposalGenerationRunId String?
+  replyProcessingRunId    String?
+  previousOutput          Json
+  correctedOutcome        Json
+  correctionSummary       String
+  status                  AgentCorrectionStatus     @default(ACTIVE)
+  version                 Int                       @default(1)
+  supersedesCorrectionId  String?
+  correctedByUserId       String
+  createdAt               DateTime                  @default(now())
+  updatedAt               DateTime                  @updatedAt
+
+  lead                  Lead?                  @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  proposal              Proposal?              @relation(fields: [proposalId], references: [id], onDelete: SetNull)
+  conversation          Conversation?          @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  proposalGenerationRun ProposalGenerationRun? @relation(fields: [proposalGenerationRunId], references: [id], onDelete: SetNull)
+  replyProcessingRun    ReplyProcessingRun?    @relation(fields: [replyProcessingRunId], references: [id], onDelete: SetNull)
+  supersedesCorrection  AgentCorrection?       @relation("AgentCorrectionHistory", fields: [supersedesCorrectionId], references: [id], onDelete: SetNull)
+  supersededBy          AgentCorrection[]      @relation("AgentCorrectionHistory")
+  correctedBy           User                   @relation("AgentCorrectionCorrectedBy", fields: [correctedByUserId], references: [id], onDelete: Restrict)
+
+  @@index([agentModule])
+  @@index([sourceEntityType, sourceEntityId])
+  @@index([leadId])
+  @@index([proposalId])
+  @@index([conversationId])
+  @@index([proposalGenerationRunId])
+  @@index([replyProcessingRunId])
+  @@index([status])
+  @@index([correctedByUserId])
   @@index([createdAt])
 }

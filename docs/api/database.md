@@ -218,3 +218,27 @@ R16 adds proposal send synchronization state on `Proposal`:
 The proposal is marked `SENT` only after `OutboundEmail.status` is `SENT`. Zoho timeline
 sync happens after that confirmed local sent state and is retryable without resending the
 email.
+
+R26 adds `BriefingRun` for lead and meeting briefing evidence:
+
+- `kind` distinguishes lead briefings from meeting briefings.
+- `leadId` is required; `meetingRequestId` is nullable for lead-level briefings.
+- `inputContext`, `evidence`, `approvedKnowledge` and `output` are JSON because each
+  advisory briefing may cite different persisted sources and approved-KB entries.
+- `summary`, `recommendedNextAction`, status, provider/model and failure columns keep the
+  latest operational result queryable.
+
+Briefing runs are advisory evidence only. They do not update CRM state, meeting state,
+proposal state, automation schedules, approvals or external provider state.
+
+R27 extends `InternalNotification` for in-app notification lifecycle state:
+
+- `status` now includes `ACKNOWLEDGED` and `ESCALATED`.
+- `escalationStatus` records whether escalation evidence is none, pending or escalated.
+- `readByUserId`, `acknowledgedByUserId`, `escalatedByUserId` and matching timestamps
+  capture who moved the notification through the lifecycle.
+- `escalationDueAt`, `escalationReason` and `escalationEvidence` persist in-app
+  escalation context without implying an external channel was contacted.
+
+The existing `idempotencyKey` remains the duplicate-prevention boundary for source events.
+Lifecycle transitions are append-evidenced through audit events and domain events.

@@ -21,6 +21,84 @@ export interface AuthConfig {
   bcryptSaltRounds: number;
 }
 
+export type CalendarProviderName = "none" | "google" | "microsoft";
+export type VoiceProviderName = "none" | "twilio";
+export type MessagingProviderName = "none" | "meta_whatsapp";
+
+export interface CalendarConfig {
+  provider: CalendarProviderName;
+  defaultTimeZone: string;
+  workdayStart: string;
+  workdayEnd: string;
+  slotMinutes: number;
+  lookaheadDays: number;
+  timeoutMs: number;
+  maxRetries: number;
+  google: {
+    clientId: string;
+    clientSecret: string;
+    refreshToken: string;
+    calendarId: string;
+    scope: string;
+  };
+  microsoft: {
+    tenantId: string;
+    clientId: string;
+    clientSecret: string;
+    userId: string;
+  };
+}
+
+export interface VoiceConfig {
+  provider: VoiceProviderName;
+  nodeEnv: string;
+  webhookBaseUrl: string;
+  defaultRegion: string;
+  defaultAccent: string;
+  recordingEnabled: boolean;
+  transcriptionEnabled: boolean;
+  productionCallingEnabled: boolean;
+  complianceConsentMode: "disabled" | "development" | "confirmed";
+  e2eAllowedToNumbers: string[];
+  timeoutMs: number;
+  maxRetries: number;
+  twilio: {
+    accountSid: string;
+    authToken: string;
+    fromNumber: string;
+    statusCallbackPath: string;
+    recordingCallbackPath: string;
+  };
+}
+
+export interface CallingAutomationConfig {
+  enabled: boolean;
+  attemptsSameDay: number;
+  sameDaySpacingMinutes: number;
+  waitDaysAfterSameDay: number;
+  maxAttempts: number;
+}
+
+export interface MessagingConfig {
+  provider: MessagingProviderName;
+  nodeEnv: string;
+  webhookBaseUrl: string;
+  templatePolicyMode: "unresolved" | "approved_only";
+  e2eAllowedToNumbers: string[];
+  timeoutMs: number;
+  maxRetries: number;
+  metaWhatsApp: {
+    graphApiBaseUrl: string;
+    accessToken: string;
+    phoneNumberId: string;
+    businessAccountId: string;
+    appSecret: string;
+    webhookVerifyToken: string;
+    defaultTemplateName: string;
+    defaultTemplateLanguage: string;
+  };
+}
+
 export function getApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   return {
     host: env.API_HOST ?? "0.0.0.0",
@@ -39,6 +117,268 @@ export function getWorkerConfig(env: NodeJS.ProcessEnv = process.env): WorkerCon
     domainEventDispatchLimit: Number(env.DOMAIN_EVENT_DISPATCH_LIMIT ?? 25),
     domainEventDispatchIntervalMs: Number(env.DOMAIN_EVENT_DISPATCH_INTERVAL_MS ?? 60000),
     domainEventStaleAfterMs: Number(env.DOMAIN_EVENT_STALE_AFTER_MS ?? 900000)
+  };
+}
+
+function parseCalendarProvider(value: string | undefined): CalendarProviderName {
+  const provider = (value ?? "none").trim().toLowerCase();
+  if (provider === "" || provider === "none") {
+    return "none";
+  }
+  if (provider === "google" || provider === "microsoft") {
+    return provider;
+  }
+
+  throw new Error("CALENDAR_PROVIDER must be one of: none, google, microsoft");
+}
+
+function parseVoiceProvider(value: string | undefined): VoiceProviderName {
+  const provider = (value ?? "none").trim().toLowerCase();
+  if (provider === "" || provider === "none") {
+    return "none";
+  }
+  if (provider === "twilio") {
+    return provider;
+  }
+
+  throw new Error("VOICE_PROVIDER must be one of: none, twilio");
+}
+
+function parseMessagingProvider(value: string | undefined): MessagingProviderName {
+  const provider = (value ?? "none").trim().toLowerCase();
+  if (provider === "" || provider === "none") {
+    return "none";
+  }
+  if (provider === "meta_whatsapp" || provider === "meta-whatsapp" || provider === "whatsapp") {
+    return "meta_whatsapp";
+  }
+
+  throw new Error("MESSAGING_PROVIDER must be one of: none, meta_whatsapp");
+}
+
+function parseTemplatePolicyMode(value: string | undefined): MessagingConfig["templatePolicyMode"] {
+  const mode = (value ?? "unresolved").trim().toLowerCase();
+  if (mode === "unresolved" || mode === "approved_only") {
+    return mode;
+  }
+
+  throw new Error("WHATSAPP_TEMPLATE_POLICY_MODE must be one of: unresolved, approved_only");
+}
+
+function parseBooleanEnv(name: string, value: string | undefined, defaultValue: boolean): boolean {
+  const normalized = (value ?? String(defaultValue)).trim().toLowerCase();
+  if (normalized === "true") return true;
+  if (normalized === "false") return false;
+  throw new Error(`${name} must be true or false`);
+}
+
+function parseConsentMode(value: string | undefined): VoiceConfig["complianceConsentMode"] {
+  const mode = (value ?? "disabled").trim().toLowerCase();
+  if (mode === "disabled" || mode === "development" || mode === "confirmed") {
+    return mode;
+  }
+
+  throw new Error("VOICE_COMPLIANCE_CONSENT_MODE must be one of: disabled, development, confirmed");
+}
+
+function parseCsv(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function assertTimeZone(timeZone: string): void {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date());
+  } catch {
+    throw new Error("CALENDAR_DEFAULT_TIME_ZONE must be a valid IANA time zone");
+  }
+}
+
+function assertClockTime(name: string, value: string): void {
+  if (!/^\d{2}:\d{2}$/.test(value)) {
+    throw new Error(`${name} must use HH:mm format`);
+  }
+
+  const [hoursText, minutesText] = value.split(":");
+  const hours = Number(hoursText);
+  const minutes = Number(minutesText);
+  if (hours > 23 || minutes > 59) {
+    throw new Error(`${name} must be a valid 24-hour clock time`);
+  }
+}
+
+export function getCalendarConfig(env: NodeJS.ProcessEnv = process.env): CalendarConfig {
+  const defaultTimeZone = env.CALENDAR_DEFAULT_TIME_ZONE ?? "Asia/Kolkata";
+  const workdayStart = env.CALENDAR_WORKDAY_START ?? "09:00";
+  const workdayEnd = env.CALENDAR_WORKDAY_END ?? "17:00";
+  const slotMinutes = Number(env.CALENDAR_SLOT_MINUTES ?? 30);
+  const lookaheadDays = Number(env.CALENDAR_LOOKAHEAD_DAYS ?? 14);
+  const timeoutMs = Number(env.CALENDAR_TIMEOUT_MS ?? 30000);
+  const maxRetries = Number(env.CALENDAR_MAX_RETRIES ?? 1);
+
+  assertTimeZone(defaultTimeZone);
+  assertClockTime("CALENDAR_WORKDAY_START", workdayStart);
+  assertClockTime("CALENDAR_WORKDAY_END", workdayEnd);
+
+  if (!Number.isInteger(slotMinutes) || slotMinutes < 15 || slotMinutes > 240) {
+    throw new Error("CALENDAR_SLOT_MINUTES must be an integer between 15 and 240");
+  }
+
+  if (!Number.isInteger(lookaheadDays) || lookaheadDays < 1 || lookaheadDays > 90) {
+    throw new Error("CALENDAR_LOOKAHEAD_DAYS must be an integer between 1 and 90");
+  }
+
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 120000) {
+    throw new Error("CALENDAR_TIMEOUT_MS must be an integer between 1000 and 120000");
+  }
+
+  if (!Number.isInteger(maxRetries) || maxRetries < 0 || maxRetries > 5) {
+    throw new Error("CALENDAR_MAX_RETRIES must be an integer between 0 and 5");
+  }
+
+  return {
+    provider: parseCalendarProvider(env.CALENDAR_PROVIDER),
+    defaultTimeZone,
+    workdayStart,
+    workdayEnd,
+    slotMinutes,
+    lookaheadDays,
+    timeoutMs,
+    maxRetries,
+    google: {
+      clientId: env.GOOGLE_CALENDAR_CLIENT_ID ?? "",
+      clientSecret: env.GOOGLE_CALENDAR_CLIENT_SECRET ?? "",
+      refreshToken: env.GOOGLE_CALENDAR_REFRESH_TOKEN ?? "",
+      calendarId: env.GOOGLE_CALENDAR_ID ?? "",
+      scope: env.GOOGLE_CALENDAR_SCOPE ?? "https://www.googleapis.com/auth/calendar.freebusy"
+    },
+    microsoft: {
+      tenantId: env.MICROSOFT_CALENDAR_TENANT_ID ?? "",
+      clientId: env.MICROSOFT_CALENDAR_CLIENT_ID ?? "",
+      clientSecret: env.MICROSOFT_CALENDAR_CLIENT_SECRET ?? "",
+      userId: env.MICROSOFT_CALENDAR_USER_ID ?? ""
+    }
+  };
+}
+
+export function getVoiceConfig(env: NodeJS.ProcessEnv = process.env): VoiceConfig {
+  const timeoutMs = Number(env.VOICE_TIMEOUT_MS ?? 30000);
+  const maxRetries = Number(env.VOICE_MAX_RETRIES ?? 1);
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 120000) {
+    throw new Error("VOICE_TIMEOUT_MS must be an integer between 1000 and 120000");
+  }
+  if (!Number.isInteger(maxRetries) || maxRetries < 0 || maxRetries > 5) {
+    throw new Error("VOICE_MAX_RETRIES must be an integer between 0 and 5");
+  }
+
+  return {
+    provider: parseVoiceProvider(env.VOICE_PROVIDER),
+    nodeEnv: env.NODE_ENV ?? "development",
+    webhookBaseUrl: env.VOICE_WEBHOOK_BASE_URL ?? "",
+    defaultRegion: env.VOICE_DEFAULT_REGION ?? "IN",
+    defaultAccent: env.VOICE_DEFAULT_ACCENT ?? "indian-english",
+    recordingEnabled: parseBooleanEnv(
+      "VOICE_RECORDING_ENABLED",
+      env.VOICE_RECORDING_ENABLED,
+      false
+    ),
+    transcriptionEnabled: parseBooleanEnv(
+      "VOICE_TRANSCRIPTION_ENABLED",
+      env.VOICE_TRANSCRIPTION_ENABLED,
+      false
+    ),
+    productionCallingEnabled: parseBooleanEnv(
+      "VOICE_PRODUCTION_CALLING_ENABLED",
+      env.VOICE_PRODUCTION_CALLING_ENABLED,
+      false
+    ),
+    complianceConsentMode: parseConsentMode(env.VOICE_COMPLIANCE_CONSENT_MODE),
+    e2eAllowedToNumbers: parseCsv(env.VOICE_E2E_ALLOWED_TO_NUMBERS),
+    timeoutMs,
+    maxRetries,
+    twilio: {
+      accountSid: env.TWILIO_ACCOUNT_SID ?? "",
+      authToken: env.TWILIO_AUTH_TOKEN ?? "",
+      fromNumber: env.TWILIO_FROM_NUMBER ?? "",
+      statusCallbackPath: env.TWILIO_STATUS_CALLBACK_PATH ?? "/api/voice/twilio/status",
+      recordingCallbackPath:
+        env.TWILIO_RECORDING_CALLBACK_PATH ?? "/api/voice/twilio/recording"
+    }
+  };
+}
+
+export function getCallingAutomationConfig(
+  env: NodeJS.ProcessEnv = process.env
+): CallingAutomationConfig {
+  const attemptsSameDay = Number(env.CALLING_AUTOMATION_ATTEMPTS_SAME_DAY ?? 2);
+  const sameDaySpacingMinutes = Number(env.CALLING_AUTOMATION_SAME_DAY_SPACING_MINUTES ?? 240);
+  const waitDaysAfterSameDay = Number(env.CALLING_AUTOMATION_WAIT_DAYS_AFTER_SAME_DAY ?? 3);
+  const maxAttempts = Number(env.CALLING_AUTOMATION_MAX_ATTEMPTS ?? 3);
+
+  if (!Number.isInteger(attemptsSameDay) || attemptsSameDay < 1 || attemptsSameDay > 5) {
+    throw new Error("CALLING_AUTOMATION_ATTEMPTS_SAME_DAY must be an integer between 1 and 5");
+  }
+  if (
+    !Number.isInteger(sameDaySpacingMinutes) ||
+    sameDaySpacingMinutes < 1 ||
+    sameDaySpacingMinutes > 1440
+  ) {
+    throw new Error(
+      "CALLING_AUTOMATION_SAME_DAY_SPACING_MINUTES must be an integer between 1 and 1440"
+    );
+  }
+  if (
+    !Number.isInteger(waitDaysAfterSameDay) ||
+    waitDaysAfterSameDay < 1 ||
+    waitDaysAfterSameDay > 30
+  ) {
+    throw new Error("CALLING_AUTOMATION_WAIT_DAYS_AFTER_SAME_DAY must be an integer between 1 and 30");
+  }
+  if (!Number.isInteger(maxAttempts) || maxAttempts < attemptsSameDay || maxAttempts > 10) {
+    throw new Error(
+      "CALLING_AUTOMATION_MAX_ATTEMPTS must be an integer between CALLING_AUTOMATION_ATTEMPTS_SAME_DAY and 10"
+    );
+  }
+
+  return {
+    enabled: parseBooleanEnv("CALLING_AUTOMATION_ENABLED", env.CALLING_AUTOMATION_ENABLED, true),
+    attemptsSameDay,
+    sameDaySpacingMinutes,
+    waitDaysAfterSameDay,
+    maxAttempts
+  };
+}
+
+export function getMessagingConfig(env: NodeJS.ProcessEnv = process.env): MessagingConfig {
+  const timeoutMs = Number(env.MESSAGING_TIMEOUT_MS ?? 30000);
+  const maxRetries = Number(env.MESSAGING_MAX_RETRIES ?? 1);
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 120000) {
+    throw new Error("MESSAGING_TIMEOUT_MS must be an integer between 1000 and 120000");
+  }
+  if (!Number.isInteger(maxRetries) || maxRetries < 0 || maxRetries > 5) {
+    throw new Error("MESSAGING_MAX_RETRIES must be an integer between 0 and 5");
+  }
+
+  return {
+    provider: parseMessagingProvider(env.MESSAGING_PROVIDER),
+    nodeEnv: env.NODE_ENV ?? "development",
+    webhookBaseUrl: env.MESSAGING_WEBHOOK_BASE_URL ?? env.VOICE_WEBHOOK_BASE_URL ?? "",
+    templatePolicyMode: parseTemplatePolicyMode(env.WHATSAPP_TEMPLATE_POLICY_MODE),
+    e2eAllowedToNumbers: parseCsv(env.WHATSAPP_E2E_ALLOWED_TO_NUMBERS),
+    timeoutMs,
+    maxRetries,
+    metaWhatsApp: {
+      graphApiBaseUrl: env.WHATSAPP_GRAPH_API_BASE_URL ?? "https://graph.facebook.com/v20.0",
+      accessToken: env.WHATSAPP_ACCESS_TOKEN ?? "",
+      phoneNumberId: env.WHATSAPP_PHONE_NUMBER_ID ?? "",
+      businessAccountId: env.WHATSAPP_BUSINESS_ACCOUNT_ID ?? "",
+      appSecret: env.WHATSAPP_APP_SECRET ?? "",
+      webhookVerifyToken: env.WHATSAPP_WEBHOOK_VERIFY_TOKEN ?? env.WHATSAPP_VERIFY_TOKEN ?? "",
+      defaultTemplateName: env.WHATSAPP_DEFAULT_TEMPLATE_NAME ?? "",
+      defaultTemplateLanguage: env.WHATSAPP_DEFAULT_TEMPLATE_LANGUAGE ?? "en"
+    }
   };
 }
 

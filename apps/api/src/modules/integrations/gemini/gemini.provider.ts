@@ -11,6 +11,7 @@ import {
   followUpResultSchema,
   proposalDraftResultSchema,
   replyUnderstandingResultSchema,
+  briefingResultSchema,
   embeddingInputSchema,
   embeddingResultSchema
 } from "../../ai/ai.schemas.js";
@@ -85,6 +86,9 @@ function groundingInstruction(operation: string): string {
   if (operation === "proposal_draft") {
     return "For proposal drafts, every usedKnowledgeIds item and every evidence.sourceId must be an exact id from approvedKnowledge. Evidence quotes must be exact text from the matching approvedKnowledge content.";
   }
+  if (operation === "briefing") {
+    return "For briefings, every evidence.sourceId must be an exact id from supplied messages or approvedKnowledge. Evidence quotes must be exact text from the matching supplied source.";
+  }
   return "Evidence must quote a supplied message with its exact messageId.";
 }
 
@@ -111,6 +115,9 @@ export class GeminiProvider implements AIProvider {
   }
   public understandReply(input: SalesReplyInput) {
     return this.generate("reply_understanding", input, replyUnderstandingResultSchema);
+  }
+  public generateBriefing(input: SalesReplyInput) {
+    return this.generate("briefing", input, briefingResultSchema);
   }
   public async createEmbedding(text: string): Promise<number[]> {
     const input = embeddingInputSchema.safeParse(text);
@@ -176,6 +183,23 @@ export class GeminiProvider implements AIProvider {
         )
       )
         throw providerError();
+    }
+    if (operation === "briefing") {
+      const briefing = briefingResultSchema.parse(result.data);
+      const sourceTexts = new Map([
+        ...parsedInput.data.messages.map((message) => [message.id, message.body] as const),
+        ...parsedInput.data.approvedKnowledge.map(
+          (knowledge) => [knowledge.id, knowledge.content] as const
+        )
+      ]);
+      if (
+        briefing.usedKnowledgeIds.some(
+          (id) => !parsedInput.data.approvedKnowledge.some((knowledge) => knowledge.id === id)
+        ) ||
+        briefing.evidence.some((item) => !sourceTexts.get(item.sourceId)?.includes(item.quote))
+      ) {
+        throw providerError();
+      }
     }
     return result.data;
   }

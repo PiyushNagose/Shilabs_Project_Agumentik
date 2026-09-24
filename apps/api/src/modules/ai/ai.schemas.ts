@@ -34,6 +34,29 @@ export const proposalDraftResultSchema = z.strictObject({
   requiresHumanReview: z.literal(true),
   missingInformation: z.array(text).max(20)
 });
+export const briefingResultSchema = z.strictObject({
+  summary: text,
+  requirements: text.nullable(),
+  budget: text.nullable(),
+  timeline: text.nullable(),
+  decisionContext: text.nullable(),
+  recentCommunication: text,
+  qualification: text.nullable(),
+  proposalDealContext: text.nullable(),
+  meetingContext: text.nullable(),
+  recommendedNextAction: text.nullable(),
+  usedKnowledgeIds: z.array(text).max(30),
+  evidence: z
+    .array(
+      z.strictObject({
+        sourceId: text,
+        quote: text
+      })
+    )
+    .max(50),
+  requiresHumanReview: z.literal(true),
+  unknowns: z.array(text).max(30)
+});
 export const qualificationResultSchema = z.strictObject({
   need: text.nullable(),
   requirement: text.nullable(),

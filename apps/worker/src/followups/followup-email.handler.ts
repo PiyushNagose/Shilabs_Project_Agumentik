@@ -9,6 +9,7 @@ import {
 import { getWorkerSelectedEmailConfig } from "../integrations/email.config.js";
 import { WorkerMailpitProvider } from "../integrations/mailpit.provider.js";
 import { ZohoTimelineSyncer, type TimelineSyncer } from "./zoho-timeline.syncer.js";
+import { scheduleCallingSequenceAfterFailedEmailSequence } from "../calling/calling-automation.service.js";
 
 function normalizeEmail(value: string | null): string | null {
   const normalized = value?.trim().toLowerCase() ?? null;
@@ -293,6 +294,12 @@ async function sendFollowUpEmail(input: {
       );
       outbound = result.updated;
       activityId = result.activityId;
+      if (attempt.stepIndex >= attempt.sequence.cadenceDays.length - 1) {
+        await scheduleCallingSequenceAfterFailedEmailSequence({
+          followUpSequenceId: attempt.sequenceId,
+          env: input.env ?? process.env
+        });
+      }
     } catch (error) {
       const failureCode = `${config.provider}_SEND_FAILED`;
       await workerPrisma.outboundEmail.update({
