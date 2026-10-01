@@ -3,6 +3,7 @@ import type { MessagingHealthDto } from "./messaging.provider.js";
 import {
   getMessagingHealth,
   ingestMetaWhatsAppWebhook,
+  ingestTwilioWhatsAppWebhook,
   verifyMetaWebhookChallenge
 } from "./messaging.service.js";
 
@@ -31,6 +32,18 @@ export async function ingestMetaWhatsAppWebhookController(
       body: request.body,
       rawBody: (request as Request & { rawBody?: string }).rawBody ?? JSON.stringify(request.body),
       signature: request.header("x-hub-signature-256") ?? undefined
+    })
+  );
+}
+
+export async function ingestTwilioWhatsAppWebhookController(
+  request: Request,
+  response: Response<{ provider: "TWILIO_WHATSAPP"; processed: number }>
+): Promise<void> {
+  response.status(200).json(
+    await ingestTwilioWhatsAppWebhook({
+      body: request.body as Record<string, unknown>,
+      signature: request.header("x-twilio-signature") ?? undefined
     })
   );
 }

@@ -63,7 +63,7 @@ export async function updateLeadScoreWithActivityAndAudit(input: {
   factors: Prisma.InputJsonArray;
   config: Prisma.InputJsonObject;
   qualificationSnapshot: Prisma.InputJsonObject | null;
-  actorId: string;
+  actor: { type: "USER" | "SYSTEM"; id: string | null };
   action: string;
 }): Promise<{ lead: LeadWithQualificationRecord; runId: string }> {
   return prisma.$transaction(
@@ -83,7 +83,7 @@ export async function updateLeadScoreWithActivityAndAudit(input: {
       const run = await transaction.leadScoreRun.create({
         data: {
           leadId: input.lead.id,
-          actorUserId: input.actorId,
+          actorUserId: input.actor.id,
           source: "RULE_ENGINE",
           status: "COMPLETED",
           score: input.score,
@@ -96,15 +96,15 @@ export async function updateLeadScoreWithActivityAndAudit(input: {
       await transaction.activity.create({
         data: {
           leadId: input.lead.id,
-          actorUserId: input.actorId,
+          actorUserId: input.actor.id,
           type: "SCORE_CHANGED",
           description: `Lead score recalculated from ${String(input.lead.score)} to ${String(input.score)}`
         }
       });
       await transaction.auditEvent.create({
         data: {
-          actorType: "USER",
-          actorId: input.actorId,
+          actorType: input.actor.type,
+          actorId: input.actor.id,
           entityType: "Lead",
           entityId: input.lead.id,
           action: input.action,
@@ -131,7 +131,7 @@ export async function updateLeadScoreWithActivityAndAudit(input: {
 
 export async function createSkippedLeadScoreRun(input: {
   leadId: string;
-  actorId: string;
+  actorId: string | null;
   config: Prisma.InputJsonObject;
   qualificationSnapshot: Prisma.InputJsonObject | null;
   reason: string;

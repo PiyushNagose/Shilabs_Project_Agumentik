@@ -3,11 +3,21 @@ export interface ApiConfig {
   port: number;
   nodeEnv: string;
   webOrigin: string;
+  realtimeInternalSecret: string;
+  trustProxy: false | string | number;
+  jsonBodyLimit: string;
+  webhookBodyLimit: string;
+  globalRateLimitWindowMs: number;
+  globalRateLimitMax: number;
+  webhookRateLimitWindowMs: number;
+  webhookRateLimitMax: number;
 }
 
 export interface WorkerConfig {
   redisUrl: string;
   nodeEnv: string;
+  apiBaseUrl: string;
+  realtimeInternalSecret: string;
   domainEventQueueName: string;
   domainEventWorkerConcurrency: number;
   domainEventDispatchLimit: number;
@@ -22,8 +32,8 @@ export interface AuthConfig {
 }
 
 export type CalendarProviderName = "none" | "google" | "microsoft";
-export type VoiceProviderName = "none" | "twilio";
-export type MessagingProviderName = "none" | "meta_whatsapp";
+export type VoiceProviderName = "none" | "twilio" | "exotel";
+export type MessagingProviderName = "none" | "meta_whatsapp" | "twilio_whatsapp";
 
 export interface CalendarConfig {
   provider: CalendarProviderName;
@@ -69,6 +79,30 @@ export interface VoiceConfig {
     statusCallbackPath: string;
     recordingCallbackPath: string;
   };
+  exotel: {
+    accountSid: string;
+    apiKey: string;
+    apiToken: string;
+    apiSubdomain: string;
+    callerId: string;
+    appUrl: string;
+    agentNumber: string;
+    statusCallbackPath: string;
+    voicebotAppPath: string;
+    voicebotStreamPath: string;
+  };
+  voiceAi: {
+    enabled: boolean;
+    provider: "openai_realtime" | "local_vosk_windows";
+    openaiApiKey: string;
+    model: string;
+    voice: string;
+    sampleRate: 16000 | 24000;
+    streamToken: string;
+    localVoskModelPath: string;
+    localPythonCommand: string;
+    localTtsVoiceName: string;
+  };
 }
 
 export interface CallingAutomationConfig {
@@ -77,6 +111,16 @@ export interface CallingAutomationConfig {
   sameDaySpacingMinutes: number;
   waitDaysAfterSameDay: number;
   maxAttempts: number;
+}
+
+export type FollowUpCadenceMode = "production_days" | "e2e_accelerated_minutes";
+
+export interface FollowUpTimingConfig {
+  mode: FollowUpCadenceMode;
+  nodeEnv: string;
+  appEnv: string;
+  productionCadenceDays: number[];
+  offsetsMinutes: number[];
 }
 
 export interface MessagingConfig {
@@ -97,6 +141,12 @@ export interface MessagingConfig {
     defaultTemplateName: string;
     defaultTemplateLanguage: string;
   };
+  twilioWhatsApp: {
+    accountSid: string;
+    authToken: string;
+    sandboxFrom: string;
+    defaultBody: string;
+  };
 }
 
 export function getApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
@@ -104,7 +154,15 @@ export function getApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     host: env.API_HOST ?? "0.0.0.0",
     port: Number(env.API_PORT ?? 4000),
     nodeEnv: env.NODE_ENV ?? "development",
-    webOrigin: env.WEB_ORIGIN ?? "http://localhost:5173"
+    webOrigin: env.WEB_ORIGIN ?? "http://localhost:5173",
+    realtimeInternalSecret: env.REALTIME_INTERNAL_SECRET ?? "",
+    trustProxy: parseTrustProxy(env.API_TRUST_PROXY),
+    jsonBodyLimit: env.API_JSON_BODY_LIMIT ?? "1mb",
+    webhookBodyLimit: env.API_WEBHOOK_BODY_LIMIT ?? "512kb",
+    globalRateLimitWindowMs: Number(env.API_GLOBAL_RATE_LIMIT_WINDOW_MS ?? 15 * 60 * 1000),
+    globalRateLimitMax: Number(env.API_GLOBAL_RATE_LIMIT_MAX ?? 1000),
+    webhookRateLimitWindowMs: Number(env.API_WEBHOOK_RATE_LIMIT_WINDOW_MS ?? 60 * 1000),
+    webhookRateLimitMax: Number(env.API_WEBHOOK_RATE_LIMIT_MAX ?? 120)
   };
 }
 
@@ -112,6 +170,8 @@ export function getWorkerConfig(env: NodeJS.ProcessEnv = process.env): WorkerCon
   return {
     redisUrl: env.REDIS_URL ?? "",
     nodeEnv: env.NODE_ENV ?? "development",
+    apiBaseUrl: env.WORKER_API_BASE_URL ?? env.API_BASE_URL ?? `http://localhost:${String(Number(env.API_PORT ?? 4000))}`,
+    realtimeInternalSecret: env.REALTIME_INTERNAL_SECRET ?? "",
     domainEventQueueName: env.DOMAIN_EVENT_QUEUE_NAME ?? "domain-events",
     domainEventWorkerConcurrency: Number(env.DOMAIN_EVENT_WORKER_CONCURRENCY ?? 5),
     domainEventDispatchLimit: Number(env.DOMAIN_EVENT_DISPATCH_LIMIT ?? 25),
@@ -137,11 +197,11 @@ function parseVoiceProvider(value: string | undefined): VoiceProviderName {
   if (provider === "" || provider === "none") {
     return "none";
   }
-  if (provider === "twilio") {
+  if (provider === "twilio" || provider === "exotel") {
     return provider;
   }
 
-  throw new Error("VOICE_PROVIDER must be one of: none, twilio");
+  throw new Error("VOICE_PROVIDER must be one of: none, twilio, exotel");
 }
 
 function parseMessagingProvider(value: string | undefined): MessagingProviderName {
@@ -152,8 +212,11 @@ function parseMessagingProvider(value: string | undefined): MessagingProviderNam
   if (provider === "meta_whatsapp" || provider === "meta-whatsapp" || provider === "whatsapp") {
     return "meta_whatsapp";
   }
+  if (provider === "twilio_whatsapp" || provider === "twilio-whatsapp" || provider === "twilio") {
+    return "twilio_whatsapp";
+  }
 
-  throw new Error("MESSAGING_PROVIDER must be one of: none, meta_whatsapp");
+  throw new Error("MESSAGING_PROVIDER must be one of: none, meta_whatsapp, twilio_whatsapp");
 }
 
 function parseTemplatePolicyMode(value: string | undefined): MessagingConfig["templatePolicyMode"] {
@@ -186,6 +249,38 @@ function parseCsv(value: string | undefined): string[] {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function parseTrustProxy(value: string | undefined): false | string | number {
+  const raw = (value ?? "loopback").trim();
+  if (raw.toLowerCase() === "false" || raw.length === 0) return false;
+  const hopCount = Number(raw);
+  if (Number.isInteger(hopCount) && hopCount >= 0) return hopCount;
+  return raw;
+}
+
+function parseNumberCsv(name: string, value: string | undefined, defaultValue: number[]): number[] {
+  const raw = value?.trim();
+  const values = raw && raw.length > 0 ? raw.split(",").map((item) => Number(item.trim())) : defaultValue;
+  if (
+    values.length === 0 ||
+    values.some((item) => !Number.isInteger(item) || item < 0 || item > 1440)
+  ) {
+    throw new Error(`${name} must be a comma-separated list of integers between 0 and 1440`);
+  }
+
+  return values;
+}
+
+function parseFollowUpCadenceMode(value: string | undefined): FollowUpCadenceMode {
+  const mode = (value ?? "production_days").trim().toLowerCase();
+  if (mode === "production_days" || mode === "e2e_accelerated_minutes") {
+    return mode;
+  }
+
+  throw new Error(
+    "FOLLOW_UP_CADENCE_MODE must be one of: production_days, e2e_accelerated_minutes"
+  );
 }
 
 function assertTimeZone(timeZone: string): void {
@@ -305,6 +400,32 @@ export function getVoiceConfig(env: NodeJS.ProcessEnv = process.env): VoiceConfi
       statusCallbackPath: env.TWILIO_STATUS_CALLBACK_PATH ?? "/api/voice/twilio/status",
       recordingCallbackPath:
         env.TWILIO_RECORDING_CALLBACK_PATH ?? "/api/voice/twilio/recording"
+    },
+    exotel: {
+      accountSid: env.EXOTEL_ACCOUNT_SID ?? "",
+      apiKey: env.EXOTEL_API_KEY ?? "",
+      apiToken: env.EXOTEL_API_TOKEN ?? "",
+      apiSubdomain: env.EXOTEL_API_SUBDOMAIN ?? "api.exotel.com",
+      callerId: env.EXOTEL_CALLER_ID ?? "",
+      appUrl: env.EXOTEL_APP_URL ?? "",
+      agentNumber: env.EXOTEL_AGENT_NUMBER ?? "",
+      statusCallbackPath: env.EXOTEL_STATUS_CALLBACK_PATH ?? "/api/voice/exotel/status",
+      voicebotAppPath: env.EXOTEL_VOICEBOT_APP_PATH ?? "/api/voice/exotel/voicebot",
+      voicebotStreamPath:
+        env.EXOTEL_VOICEBOT_STREAM_PATH ?? "/api/voice/exotel/voicebot/stream"
+    },
+    voiceAi: {
+      enabled: parseBooleanEnv("VOICE_AI_ENABLED", env.VOICE_AI_ENABLED, false),
+      provider:
+        env.VOICE_AI_PROVIDER === "local_vosk_windows" ? "local_vosk_windows" : "openai_realtime",
+      openaiApiKey: env.VOICE_AI_OPENAI_API_KEY ?? env.OPENAI_API_KEY ?? "",
+      model: env.VOICE_AI_OPENAI_MODEL ?? "gpt-realtime",
+      voice: env.VOICE_AI_OPENAI_VOICE ?? "alloy",
+      sampleRate: (Number(env.VOICE_AI_AUDIO_SAMPLE_RATE ?? 16000) === 24000 ? 24000 : 16000),
+      streamToken: env.VOICE_AI_STREAM_TOKEN ?? "",
+      localVoskModelPath: env.VOICE_AI_LOCAL_VOSK_MODEL_PATH ?? "",
+      localPythonCommand: env.VOICE_AI_LOCAL_PYTHON_COMMAND ?? "python",
+      localTtsVoiceName: env.VOICE_AI_LOCAL_TTS_VOICE_NAME ?? ""
     }
   };
 }
@@ -351,6 +472,47 @@ export function getCallingAutomationConfig(
   };
 }
 
+export function getFollowUpTimingConfig(
+  env: NodeJS.ProcessEnv = process.env
+): FollowUpTimingConfig {
+  const mode = parseFollowUpCadenceMode(env.FOLLOW_UP_CADENCE_MODE);
+  const nodeEnv = env.NODE_ENV ?? "development";
+  const appEnv = env.APP_ENV ?? "";
+  const productionCadenceDays = [0, 1, 5, 9];
+  const offsetsMinutes =
+    mode === "e2e_accelerated_minutes"
+      ? parseNumberCsv("FOLLOW_UP_E2E_CADENCE_MINUTES", env.FOLLOW_UP_E2E_CADENCE_MINUTES, [
+          0, 1, 3, 5
+        ])
+      : productionCadenceDays.map((day) => day * 24 * 60);
+
+  if (offsetsMinutes.length !== productionCadenceDays.length) {
+    throw new Error("FOLLOW_UP_E2E_CADENCE_MINUTES must contain exactly 4 offsets");
+  }
+
+  for (let index = 1; index < offsetsMinutes.length; index += 1) {
+    const current = offsetsMinutes[index];
+    const previous = offsetsMinutes[index - 1];
+    if (current === undefined || previous === undefined || current < previous) {
+      throw new Error("FOLLOW_UP_E2E_CADENCE_MINUTES must be sorted ascending");
+    }
+  }
+
+  if (mode === "e2e_accelerated_minutes" && (nodeEnv === "production" || appEnv !== "e2e-local")) {
+    throw new Error(
+      "FOLLOW_UP_CADENCE_MODE=e2e_accelerated_minutes is only allowed when APP_ENV=e2e-local and NODE_ENV is not production"
+    );
+  }
+
+  return {
+    mode,
+    nodeEnv,
+    appEnv,
+    productionCadenceDays,
+    offsetsMinutes
+  };
+}
+
 export function getMessagingConfig(env: NodeJS.ProcessEnv = process.env): MessagingConfig {
   const timeoutMs = Number(env.MESSAGING_TIMEOUT_MS ?? 30000);
   const maxRetries = Number(env.MESSAGING_MAX_RETRIES ?? 1);
@@ -378,6 +540,14 @@ export function getMessagingConfig(env: NodeJS.ProcessEnv = process.env): Messag
       webhookVerifyToken: env.WHATSAPP_WEBHOOK_VERIFY_TOKEN ?? env.WHATSAPP_VERIFY_TOKEN ?? "",
       defaultTemplateName: env.WHATSAPP_DEFAULT_TEMPLATE_NAME ?? "",
       defaultTemplateLanguage: env.WHATSAPP_DEFAULT_TEMPLATE_LANGUAGE ?? "en"
+    },
+    twilioWhatsApp: {
+      accountSid: env.TWILIO_WHATSAPP_ACCOUNT_SID ?? env.TWILIO_ACCOUNT_SID ?? "",
+      authToken: env.TWILIO_WHATSAPP_AUTH_TOKEN ?? env.TWILIO_AUTH_TOKEN ?? "",
+      sandboxFrom: env.TWILIO_WHATSAPP_SANDBOX_FROM ?? "",
+      defaultBody:
+        env.TWILIO_WHATSAPP_DEFAULT_BODY ??
+        "Hello from Shilabs AI Sales Engine. Reply here and our team will follow up."
     }
   };
 }

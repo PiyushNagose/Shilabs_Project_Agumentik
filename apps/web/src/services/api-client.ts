@@ -7,7 +7,10 @@ import type {
   ConversationModeName,
   HumanTakeoverBriefingDto,
   HumanTakeoverDto,
+  HumanConversationReplyDto,
+  FollowUpSequenceDto,
   InternalNotificationDto,
+  LeadQualificationDto,
   LeadDto,
   MeetingRequestDto,
   OperationsDashboardDto,
@@ -17,10 +20,15 @@ import type {
   PaginatedResponse,
   PipelineStageDto,
   ProposalDto,
+  ProposalGenerationKindName,
+  ProposalGenerationResultDto,
   ProposalSendResultDto,
   ProposalWorkflowStatusName,
   PublicUser,
-  SalesActionDashboardDto
+  ReplyProcessingRunDto,
+  SalesActionDashboardDto,
+  SesInboundEmailDto,
+  ZohoLeadContactSyncDto
 } from "@shilabs/shared-types";
 
 const viteEnv = import.meta.env as Readonly<Record<string, string | undefined>>;
@@ -29,10 +37,23 @@ export const apiBaseUrl = viteEnv.VITE_API_BASE_URL ?? "http://localhost:4000";
 export class ApiClientError extends Error {
   constructor(
     message: string,
-    public readonly status: number
+    public readonly status: number,
+    public readonly code?: string
   ) {
     super(message);
   }
+}
+
+export function apiErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof ApiClientError && error.message.trim().length > 0) {
+    return error.message;
+  }
+
+  return fallback;
+}
+
+function isErrorPayload(value: unknown): value is { message?: unknown; code?: unknown } {
+  return typeof value === "object" && value !== null;
 }
 
 function notifyAuthInvalid(): void {
@@ -59,7 +80,22 @@ async function apiRequest<TResponse>(
     if (response.status === 401) {
       notifyAuthInvalid();
     }
-    throw new ApiClientError("Request failed", response.status);
+    let message = "Request failed";
+    let code: string | undefined;
+    try {
+      const payload: unknown = await response.json();
+      if (isErrorPayload(payload)) {
+        if (typeof payload.message === "string" && payload.message.trim().length > 0) {
+          message = payload.message;
+        }
+        if (typeof payload.code === "string" && payload.code.trim().length > 0) {
+          code = payload.code;
+        }
+      }
+    } catch {
+      // Keep the generic safe message when the response body is not JSON.
+    }
+    throw new ApiClientError(message, response.status, code);
   }
 
   return (await response.json()) as TResponse;
@@ -133,8 +169,21 @@ export interface SendApprovedProposalBody {
   idempotencyKey?: string;
 }
 
+export interface GenerateProposalBody {
+  leadId: string;
+  dealId?: string;
+  kind: ProposalGenerationKindName;
+  targetWebsite?: string;
+  additionalContext?: string;
+  idempotencyKey?: string;
+}
+
 export interface StartHumanTakeoverBody {
   reason?: string;
+}
+
+export interface StartFollowUpSequenceBody {
+  idempotencyKey?: string;
 }
 
 export interface NotificationListParams {
@@ -208,6 +257,13 @@ export function getLead(accessToken: string, leadId: string): Promise<LeadDto> {
   return apiRequest<LeadDto>(`/api/leads/${leadId}`, accessToken);
 }
 
+export function getLeadQualification(
+  accessToken: string,
+  leadId: string
+): Promise<LeadQualificationDto> {
+  return apiRequest<LeadQualificationDto>(`/api/leads/${leadId}/qualification`, accessToken);
+}
+
 export function listUsers(accessToken: string): Promise<PublicUser[]> {
   return apiRequest<PublicUser[]>("/api/users", accessToken);
 }
@@ -222,6 +278,14 @@ export function getSalesActionDashboard(accessToken: string): Promise<SalesActio
 
 export function getOperationsDashboard(accessToken: string): Promise<OperationsDashboardDto> {
   return apiRequest<OperationsDashboardDto>("/api/operations/dashboard", accessToken);
+}
+
+export function syncZohoLeadContacts(accessToken: string): Promise<ZohoLeadContactSyncDto> {
+  return apiRequest<ZohoLeadContactSyncDto>(
+    "/api/integrations/zoho-bigin/sync/leads-contacts",
+    accessToken,
+    { method: "POST" }
+  );
 }
 
 export function updateLeadStage(
@@ -377,6 +441,62 @@ export function listConversationMessages(
   return apiRequest<MessageDto[]>(`/api/conversations/${conversationId}/messages`, accessToken);
 }
 
+export function listFollowUpSequences(
+  accessToken: string,
+  leadId: string
+): Promise<FollowUpSequenceDto[]> {
+  return apiRequest<FollowUpSequenceDto[]>(`/api/followups/leads/${leadId}`, accessToken);
+}
+
+export function startFollowUpSequence(
+  accessToken: string,
+  leadId: string,
+  body: StartFollowUpSequenceBody = {}
+): Promise<FollowUpSequenceDto> {
+  return apiRequest<FollowUpSequenceDto>(`/api/followups/leads/${leadId}/start`, accessToken, {
+    method: "POST",
+    body: JSON.stringify(body)
+  });
+}
+
+export function accelerateFollowUpSequenceForE2E(
+  accessToken: string,
+  sequenceId: string
+): Promise<FollowUpSequenceDto> {
+  return apiRequest<FollowUpSequenceDto>(
+    `/api/followups/sequences/${sequenceId}/e2e/accelerate`,
+    accessToken,
+    {
+      method: "POST",
+      body: JSON.stringify({})
+    }
+  );
+}
+
+export function submitE2ECustomerReply(
+  accessToken: string,
+  body: { leadId: string; subject?: string; body: string }
+): Promise<SesInboundEmailDto> {
+  return apiRequest<SesInboundEmailDto>("/api/email/e2e/customer-reply", accessToken, {
+    method: "POST",
+    body: JSON.stringify(body)
+  });
+}
+
+export function processInboundReply(
+  accessToken: string,
+  inboundEmailId: string
+): Promise<ReplyProcessingRunDto> {
+  return apiRequest<ReplyProcessingRunDto>(
+    `/api/reply-processing/inbound-emails/${inboundEmailId}/process`,
+    accessToken,
+    {
+      method: "POST",
+      body: JSON.stringify({})
+    }
+  );
+}
+
 export function appendConversationMessage(
   accessToken: string,
   conversationId: string,
@@ -386,6 +506,21 @@ export function appendConversationMessage(
     method: "POST",
     body: JSON.stringify(body)
   });
+}
+
+export function sendHumanConversationReply(
+  accessToken: string,
+  conversationId: string,
+  body: { subject?: string; body: string; idempotencyKey: string }
+): Promise<HumanConversationReplyDto> {
+  return apiRequest<HumanConversationReplyDto>(
+    `/api/conversations/${conversationId}/human-reply`,
+    accessToken,
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    }
+  );
 }
 
 export function updateConversationMode(
@@ -429,6 +564,16 @@ export function listProposals(
   params: ProposalListParams
 ): Promise<ProposalDto[]> {
   return apiRequest<ProposalDto[]>(`/api/proposals${toQueryString(params)}`, accessToken);
+}
+
+export function generateProposal(
+  accessToken: string,
+  body: GenerateProposalBody
+): Promise<ProposalGenerationResultDto> {
+  return apiRequest<ProposalGenerationResultDto>("/api/proposals/generate", accessToken, {
+    method: "POST",
+    body: JSON.stringify(body)
+  });
 }
 
 export function updateProposalDraft(

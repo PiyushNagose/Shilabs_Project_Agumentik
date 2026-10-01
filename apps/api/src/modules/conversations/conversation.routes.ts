@@ -9,6 +9,7 @@ import {
   getHumanTakeoverBriefingController,
   listConversationsController,
   listMessagesController,
+  sendHumanReplyController,
   startHumanTakeoverController,
   updateConversationModeController
 } from "./conversation.controller.js";
@@ -16,6 +17,7 @@ import {
   createConversationSchema,
   createMessageSchema,
   listConversationsQuerySchema,
+  sendHumanReplySchema,
   startHumanTakeoverSchema,
   updateConversationModeSchema
 } from "./conversation.schemas.js";
@@ -43,6 +45,11 @@ conversationRoutes.post(
   "/:id/takeover",
   validateBody(startHumanTakeoverSchema),
   asyncHandler(startHumanTakeoverController)
+);
+conversationRoutes.post(
+  "/:id/human-reply",
+  validateBody(sendHumanReplySchema),
+  asyncHandler(sendHumanReplyController)
 );
 conversationRoutes.get(
   "/:id/takeover/briefing",

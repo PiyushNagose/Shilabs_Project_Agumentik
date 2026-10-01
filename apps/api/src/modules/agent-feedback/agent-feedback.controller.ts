@@ -32,5 +32,7 @@ export async function listAgentCorrectionsController(
   request: Request,
   response: Response<AgentCorrectionDto[]>
 ): Promise<void> {
-  response.status(200).json(await listAgentCorrections(request.query as unknown as ListAgentCorrectionsQuery));
+  response
+    .status(200)
+    .json(await listAgentCorrections(request.validatedQuery as ListAgentCorrectionsQuery));
 }

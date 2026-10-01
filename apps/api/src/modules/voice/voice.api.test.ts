@@ -11,6 +11,7 @@ const app = createApp();
 const password = "CorrectHorse123!";
 const adminEmail = "r22-voice-api-admin@example.local";
 const repEmail = "r22-voice-api-rep@example.local";
+const companyPrefix = "R22 Voice API";
 const webhookBaseUrl = "https://voice-e2e.example.test";
 const authToken = "api-test-token";
 
@@ -28,7 +29,39 @@ async function cleanup(): Promise<void> {
     where: { user: { email: { in: [adminEmail, repEmail] } } }
   });
   await prisma.voiceProviderEvent.deleteMany({
-    where: { providerEventId: { startsWith: "twilio-status:CAapi" } }
+    where: {
+      OR: [
+        { providerEventId: { startsWith: "twilio-status:CAapi" } },
+        { providerEventId: { startsWith: "exotel-status:exotel-api" } }
+      ]
+    }
+  });
+  await prisma.domainEventOutbox.deleteMany({
+    where: { aggregateType: "VoiceCallAttempt" }
+  });
+  await prisma.callingAttempt.deleteMany({
+    where: { lead: { company: { name: { startsWith: companyPrefix } } } }
+  });
+  await prisma.callingSequence.deleteMany({
+    where: { lead: { company: { name: { startsWith: companyPrefix } } } }
+  });
+  await prisma.voiceCallAttempt.deleteMany({
+    where: { lead: { company: { name: { startsWith: companyPrefix } } } }
+  });
+  await prisma.activity.deleteMany({
+    where: { lead: { company: { name: { startsWith: companyPrefix } } } }
+  });
+  await prisma.auditEvent.deleteMany({
+    where: { entityType: "VoiceCallAttempt" }
+  });
+  await prisma.lead.deleteMany({
+    where: { company: { name: { startsWith: companyPrefix } } }
+  });
+  await prisma.contact.deleteMany({
+    where: { company: { name: { startsWith: companyPrefix } } }
+  });
+  await prisma.company.deleteMany({
+    where: { name: { startsWith: companyPrefix } }
   });
   await prisma.user.deleteMany({ where: { email: { in: [adminEmail, repEmail] } } });
 }
@@ -130,6 +163,124 @@ describe("R22 voice API", () => {
       eventId: "twilio-status:CAapi123:1",
       callAttemptId: null,
       callStatus: "COMPLETED"
+    });
+  }, 45000);
+
+  it("ingests Exotel status callbacks and updates persisted call state", async () => {
+    const stage = await prisma.pipelineStage.findUniqueOrThrow({ where: { key: "NEW" } });
+    const company = await prisma.company.create({
+      data: { name: `${companyPrefix} Exotel` }
+    });
+    const contact = await prisma.contact.create({
+      data: {
+        companyId: company.id,
+        firstName: "Exotel",
+        lastName: "Callback",
+        email: "exotel-callback@example.local",
+        normalizedEmail: "exotel-callback@example.local",
+        phone: "+917724960195",
+        normalizedPhone: "+917724960195"
+      }
+    });
+    const lead = await prisma.lead.create({
+      data: {
+        companyId: company.id,
+        contactId: contact.id,
+        stageId: stage.id,
+        source: "r22-voice-api-test"
+      }
+    });
+    const callingSequence = await prisma.callingSequence.create({
+      data: {
+        leadId: lead.id,
+        contactId: contact.id,
+        cadenceOffsets: [0, 240, 4320],
+        maxAttempts: 3,
+        idempotencyKey: `api-exotel-calling-sequence:${lead.id}`
+      }
+    });
+    const voiceCall = await prisma.voiceCallAttempt.create({
+      data: {
+        leadId: lead.id,
+        contactId: contact.id,
+        provider: "EXOTEL",
+        toPhone: "+917724960195",
+        normalizedToPhone: "+917724960195",
+        fromPhone: "09513886363",
+        providerCallId: "exotel-api-status-1",
+        status: "QUEUED",
+        idempotencyKey: `api-exotel-voice-call:${lead.id}`
+      }
+    });
+    const callingAttempt = await prisma.callingAttempt.create({
+      data: {
+        sequenceId: callingSequence.id,
+        leadId: lead.id,
+        contactId: contact.id,
+        attemptIndex: 0,
+        status: "ACCEPTED",
+        scheduledAt: new Date(),
+        voiceCallAttemptId: voiceCall.id,
+        idempotencyKey: `api-exotel-calling-attempt:${lead.id}`
+      }
+    });
+
+    const response = await request(app)
+      .post("/api/voice/exotel/status")
+      .type("form")
+      .send({
+        CallSid: "exotel-api-status-1",
+        CallStatus: "failed",
+        Duration: "29",
+        CustomField: "api-exotel-callback"
+      })
+      .expect(200);
+
+    expect(response.body as VoiceWebhookResultDto).toMatchObject({
+      provider: "EXOTEL",
+      status: "PROCESSED",
+      callAttemptId: voiceCall.id,
+      callStatus: "FAILED"
+    });
+    await expect(prisma.voiceCallAttempt.findUniqueOrThrow({ where: { id: voiceCall.id } })).resolves.toMatchObject({
+      status: "FAILED",
+      durationSeconds: 29,
+      failureCode: "EXOTEL_FAILED",
+      failureMessage: "Exotel call status: failed"
+    });
+    await expect(prisma.callingAttempt.findUniqueOrThrow({ where: { id: callingAttempt.id } })).resolves.toMatchObject({
+      status: "FAILED",
+      failureCode: "EXOTEL_FAILED"
+    });
+
+    const multipartResponse = await request(app)
+      .post("/api/voice/exotel/status")
+      .field("CallSid", "exotel-api-status-1")
+      .field("Status", "completed")
+      .field("Duration", "30")
+      .field("DateUpdated", "2026-09-30 11:41:38")
+      .expect(200);
+    expect(multipartResponse.body as VoiceWebhookResultDto).toMatchObject({
+      provider: "EXOTEL",
+      status: "PROCESSED",
+      callAttemptId: voiceCall.id,
+      callStatus: "COMPLETED"
+    });
+
+    const duplicate = await request(app)
+      .post("/api/voice/exotel/status")
+      .type("form")
+      .send({
+        CallSid: "exotel-api-status-1",
+        CallStatus: "failed",
+        Duration: "29",
+        CustomField: "api-exotel-callback"
+      })
+      .expect(200);
+    expect(duplicate.body as VoiceWebhookResultDto).toMatchObject({
+      provider: "EXOTEL",
+      status: "DUPLICATE",
+      callAttemptId: voiceCall.id
     });
   }, 45000);
 });

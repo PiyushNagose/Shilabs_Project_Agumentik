@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import { getVoiceConfig } from "@shilabs/shared-config";
 import type {
   IntegrationHealthDto,
   VoiceCallAttemptDto,
@@ -9,10 +10,13 @@ import {
   buildTwilioTestCallTwiml,
   createManualVoiceCall,
   getVoiceHealth,
+  ingestExotelStatusWebhook,
   ingestTwilioRecordingWebhook,
   ingestTwilioStatusWebhook
 } from "./voice.service.js";
+import { buildExotelVoicebotStreamUrl } from "./voice-ai.service.js";
 import type {
+  ExotelStatusWebhookInput,
   ManualVoiceCallInput,
   TwilioRecordingWebhookInput,
   TwilioStatusWebhookInput
@@ -56,6 +60,35 @@ export async function ingestTwilioRecordingWebhookController(
   );
 }
 
+export async function ingestExotelStatusWebhookController(
+  request: Request<never, VoiceWebhookResultDto, ExotelStatusWebhookInput>,
+  response: Response<VoiceWebhookResultDto>
+): Promise<void> {
+  response.status(200).json(await ingestExotelStatusWebhook({ body: request.body }));
+}
+
+export function getExotelVoicebotStreamUrlController(
+  request: Request,
+  response: Response<{ url: string }>
+): void {
+  response.status(200).json(
+    buildExotelVoicebotStreamUrl({
+      query: { ...request.query, ...(request.body as Record<string, unknown> | undefined) }
+    })
+  );
+}
+
 export function getTwilioTestCallTwimlController(_request: Request, response: Response): void {
+  const config = getVoiceConfig();
+  if (config.nodeEnv === "production" && config.complianceConsentMode !== "confirmed") {
+    response.status(404).json({
+      error: {
+        code: "NOT_FOUND",
+        message: "Route not found"
+      }
+    });
+    return;
+  }
+
   response.type("text/xml").status(200).send(buildTwilioTestCallTwiml());
 }

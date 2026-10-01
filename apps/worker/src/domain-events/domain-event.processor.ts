@@ -9,6 +9,7 @@ import { followUpDomainEventHandlers } from "../followups/followup-email.handler
 import { callingDomainEventHandlers } from "../calling/calling-automation.handler.js";
 import { whatsAppDomainEventHandlers } from "../messaging/whatsapp-send.handler.js";
 import { PermanentDomainEventError } from "./domain-event.errors.js";
+import { publishWorkerRealtimeEvent } from "../realtime/realtime.publisher.js";
 
 const INTERNAL_EVENT_TYPES = new Set([
   "REPLY_UNDERSTOOD",
@@ -19,7 +20,11 @@ const INTERNAL_EVENT_TYPES = new Set([
   "WHATSAPP_SENT",
   "WHATSAPP_STATUS_UPDATED",
   "WHATSAPP_DELIVERY_FAILED",
-  "AGENT_CORRECTION_RECORDED"
+  "AGENT_CORRECTION_RECORDED",
+  "CALL_REQUESTED",
+  "CALL_STATUS_UPDATED",
+  "CALL_FAILED",
+  "VOICE_CONVERSATION_COMPLETED"
 ]);
 
 const COMMUNICATION_SIDE_EFFECT_EVENTS = new Set([
@@ -124,6 +129,11 @@ export async function processDomainEventJob(input: {
       ...whatsAppDomainEventHandlers
     });
     await completeDomainEvent({ eventId: event.id, workerId: input.workerId, now: new Date() });
+    await publishWorkerRealtimeEvent({
+      event,
+      action: "domain-event-processed",
+      env: process.env
+    });
     return "PROCESSED";
   } catch (error) {
     const permanent = error instanceof PermanentDomainEventError;
@@ -137,6 +147,12 @@ export async function processDomainEventJob(input: {
       retryAt,
       now: new Date(),
       permanent
+    });
+    await publishWorkerRealtimeEvent({
+      event,
+      action: "domain-event-failed",
+      entityType: "operations",
+      env: process.env
     });
     throw error;
   }

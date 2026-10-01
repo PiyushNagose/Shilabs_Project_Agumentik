@@ -206,8 +206,8 @@ export class GeminiProvider implements AIProvider {
 
   private async request(path: string, body: object, action: string): Promise<unknown> {
     const startedAt = Date.now();
-    const signal = AbortSignal.timeout(this.config.AI_TIMEOUT_MS);
     for (let attempt = 0; ; attempt++) {
+      const signal = AbortSignal.timeout(this.config.AI_TIMEOUT_MS);
       try {
         const response = await this.transport(
           `https://generativelanguage.googleapis.com/v1beta/models/${path}?key=${encodeURIComponent(
@@ -253,14 +253,10 @@ export class GeminiProvider implements AIProvider {
             durationMs: Date.now() - startedAt
           })
         );
-        if (
-          signal.aborted ||
-          normalized.code !== "RETRYABLE_PROVIDER_ERROR" ||
-          attempt >= this.config.AI_MAX_RETRIES
-        )
+        if (normalized.code !== "RETRYABLE_PROVIDER_ERROR" || attempt >= this.config.AI_MAX_RETRIES)
           throw normalized;
         try {
-          await delay(500 * 2 ** attempt + Math.floor(Math.random() * 100), undefined, { signal });
+          await delay(500 * 2 ** attempt + Math.floor(Math.random() * 100));
         } catch {
           throw providerError(true);
         }

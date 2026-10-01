@@ -2,32 +2,48 @@ import crypto from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { UserRole, UserStatus, type MessageSenderType } from "@prisma/client";
 import { prisma } from "../../shared/prisma.js";
-import type { AIProvider, ReplyUnderstandingResult } from "../ai/ai.provider.js";
+import { AppError } from "../../shared/errors.js";
+import type { AIProvider, QualificationResult, ReplyUnderstandingResult } from "../ai/ai.provider.js";
 import { hashPassword } from "../auth/auth.service.js";
 import { processInboundReply } from "./reply-processing.service.js";
 
 const actorEmail = "r10-reply-admin@example.local";
 const password = "CorrectHorse123!";
+const originalCalendarProvider = process.env.CALENDAR_PROVIDER;
+const defaultScoringConfig = {
+  key: "default",
+  requirementWeight: 20,
+  authorityWeight: 20,
+  budgetWeight: 20,
+  timelineWeight: 20,
+  businessFitWeight: 20,
+  warmThreshold: 60,
+  hotThreshold: 80
+};
 
 class ReplyTestProvider implements AIProvider {
-  public constructor(private readonly output: ReplyUnderstandingResult) {}
+  public constructor(
+    private readonly output: ReplyUnderstandingResult,
+    private readonly qualificationOutput: QualificationResult = {
+      need: null,
+      requirement: null,
+      budget: null,
+      budgetBand: null,
+      authority: null,
+      timeline: null,
+      businessFit: null,
+      decisionMakerIdentified: null,
+      urgency: null,
+      evidence: []
+    }
+  ) {}
   public generateSalesReply: AIProvider["generateSalesReply"] = () => Promise.resolve({
     body: "test",
     requiresHumanReview: true,
     reason: null
   });
-  public extractQualification: AIProvider["extractQualification"] = () => Promise.resolve({
-    need: null,
-    requirement: null,
-    budget: null,
-    budgetBand: null,
-    authority: null,
-    timeline: null,
-    businessFit: null,
-    decisionMakerIdentified: null,
-    urgency: null,
-    evidence: []
-  });
+  public extractQualification: AIProvider["extractQualification"] = () =>
+    Promise.resolve(this.qualificationOutput);
   public summarizeLead: AIProvider["summarizeLead"] = () => Promise.resolve({
     summary: "test",
     buyingSignals: [],
@@ -71,17 +87,62 @@ class ReplyTestProvider implements AIProvider {
   public createEmbedding: AIProvider["createEmbedding"] = () => Promise.resolve([0.1]);
 }
 
+class FailingReplyTestProvider extends ReplyTestProvider {
+  public constructor() {
+    super({
+      intent: "UNCLEAR",
+      confidence: 0.1,
+      summary: "unused",
+      draftResponse: null,
+      requiresHumanReview: true,
+      recommendedAction: "NO_ACTION",
+      evidence: [],
+      usedKnowledgeIds: []
+    });
+  }
+
+  public override understandReply: AIProvider["understandReply"] = () =>
+    Promise.reject(new Error("AI provider temporarily unavailable"));
+}
+
+class RetryableFailingReplyTestProvider extends ReplyTestProvider {
+  public constructor() {
+    super({
+      intent: "UNCLEAR",
+      confidence: 0.1,
+      summary: "unused",
+      draftResponse: null,
+      requiresHumanReview: true,
+      recommendedAction: "NO_ACTION",
+      evidence: [],
+      usedKnowledgeIds: []
+    });
+  }
+
+  public override understandReply: AIProvider["understandReply"] = () =>
+    Promise.reject(
+      new AppError(503, "RETRYABLE_PROVIDER_ERROR", "AI provider temporarily unavailable")
+    );
+}
+
 async function cleanup(): Promise<void> {
   await prisma.domainEventOutbox.deleteMany({
     where: {
       OR: [
         { idempotencyKey: { startsWith: "domain-event:negotiation-handoff:" } },
-        { idempotencyKey: { startsWith: "domain-event:reply-processing:" } }
+        { idempotencyKey: { startsWith: "domain-event:reply-processing:" } },
+        { idempotencyKey: { startsWith: "domain-event:meeting-requested:" } }
       ]
     }
   });
   await prisma.internalNotification.deleteMany({
-    where: { sourceEntityType: "NegotiationHandoff" }
+    where: { sourceEntityType: { in: ["NegotiationHandoff", "MeetingRequest"] } }
+  });
+  await prisma.meetingSlot.deleteMany({
+    where: { meetingRequest: { lead: { source: "r10-reply-test" } } }
+  });
+  await prisma.meetingRequest.deleteMany({
+    where: { lead: { source: "r10-reply-test" } }
   });
   await prisma.negotiationHandoff.deleteMany({
     where: { lead: { source: "r10-reply-test" } }
@@ -89,22 +150,32 @@ async function cleanup(): Promise<void> {
   await prisma.replyProcessingRun.deleteMany({
     where: { inboundEmail: { providerMessageId: { startsWith: "ses-r10-" } } }
   });
+  await prisma.leadScoreRun.deleteMany({
+    where: { lead: { source: "r10-reply-test" } }
+  });
   await prisma.inboundEmail.deleteMany({
     where: { providerMessageId: { startsWith: "ses-r10-" } }
   });
-  await prisma.message.deleteMany({
-    where: { providerMessageId: { startsWith: "ses-r10-" } }
-  });
-  await prisma.conversation.deleteMany({ where: { lead: { source: "r10-reply-test" } } });
   await prisma.leadQualificationEvidence.deleteMany({
     where: { qualification: { lead: { source: "r10-reply-test" } } }
   });
   await prisma.leadQualification.deleteMany({
     where: { lead: { source: "r10-reply-test" } }
   });
+  await prisma.message.deleteMany({
+    where: { providerMessageId: { startsWith: "ses-r10-" } }
+  });
+  await prisma.conversation.deleteMany({ where: { lead: { source: "r10-reply-test" } } });
   await prisma.activity.deleteMany({ where: { lead: { source: "r10-reply-test" } } });
   await prisma.auditEvent.deleteMany({
-    where: { entityType: { in: ["ReplyProcessingRun", "KnowledgeBaseEntry"] } }
+    where: {
+      entityType: {
+        in: ["ReplyProcessingRun", "KnowledgeBaseEntry", "LeadQualification", "Lead", "MeetingRequest"]
+      }
+    }
+  });
+  await prisma.leadScoreRun.deleteMany({
+    where: { lead: { source: "r10-reply-test" } }
   });
   await prisma.lead.deleteMany({ where: { source: "r10-reply-test" } });
   await prisma.contact.deleteMany({ where: { source: "r10-reply-test" } });
@@ -118,6 +189,11 @@ async function cleanup(): Promise<void> {
 }
 
 async function seedUser(): Promise<string> {
+  await prisma.scoringConfig.upsert({
+    where: { key: defaultScoringConfig.key },
+    create: defaultScoringConfig,
+    update: defaultScoringConfig
+  });
   const user = await prisma.user.create({
     data: {
       email: actorEmail,
@@ -236,11 +312,17 @@ async function createInboundFixture(input?: {
 
 describe("R10 reply processing", () => {
   beforeEach(async () => {
+    process.env.CALENDAR_PROVIDER = "none";
     await cleanup();
     await seedUser();
-  }, 45000);
+  }, 90000);
 
   afterAll(async () => {
+    if (originalCalendarProvider === undefined) {
+      delete process.env.CALENDAR_PROVIDER;
+    } else {
+      process.env.CALENDAR_PROVIDER = originalCalendarProvider;
+    }
     await cleanup();
     await prisma.$disconnect();
   }, 45000);
@@ -272,6 +354,71 @@ describe("R10 reply processing", () => {
     await expect(
       prisma.inboundEmail.findUniqueOrThrow({ where: { id: fixture.inbound.id } })
     ).resolves.toMatchObject({ replyProcessingStatus: "PROCESSED" });
+  }, 45000);
+
+  it("updates qualification from reply evidence and recalculates deterministic score", async () => {
+    const body =
+      "We need AI sales automation for website leads. I am the founder and decision maker. Budget is INR 100000 per month and launch is within 30 days.";
+    const fixture = await createInboundFixture({ body });
+    const provider = new ReplyTestProvider(
+      {
+        intent: "INTERESTED",
+        confidence: 0.94,
+        summary: "Prospect shared need, authority, budget and timeline.",
+        draftResponse: "Thanks, I can help with next steps.",
+        requiresHumanReview: false,
+        recommendedAction: "NO_ACTION",
+        evidence: [{ messageId: fixture.message.id, quote: "AI sales automation" }],
+        usedKnowledgeIds: []
+      },
+      {
+        need: "AI sales automation for website leads",
+        requirement: "Automated lead follow-up and qualification",
+        budget: "INR 100000 per month",
+        budgetBand: "INR 100000/month",
+        authority: "Founder and decision maker",
+        timeline: "within 30 days",
+        businessFit: "Strong fit for AI sales automation",
+        decisionMakerIdentified: true,
+        urgency: "High",
+        evidence: [
+          { messageId: fixture.message.id, quote: "AI sales automation" },
+          { messageId: fixture.message.id, quote: "decision maker" },
+          { messageId: fixture.message.id, quote: "INR 100000 per month" },
+          { messageId: fixture.message.id, quote: "within 30 days" }
+        ]
+      }
+    );
+
+    const result = await processInboundReply(fixture.inbound.id, { provider });
+
+    expect(result.status).toBe("COMPLETED");
+    const qualification = await prisma.leadQualification.findUniqueOrThrow({
+      where: { leadId: fixture.lead.id },
+      include: { evidence: true }
+    });
+    expect(qualification).toMatchObject({
+      need: "AI sales automation for website leads",
+      requirement: "Automated lead follow-up and qualification",
+      budget: "INR 100000 per month",
+      authority: "Founder and decision maker",
+      timeline: "within 30 days",
+      decisionMakerIdentified: true
+    });
+    expect(qualification.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ messageId: fixture.message.id, quote: "AI sales automation" })
+      ])
+    );
+    await expect(prisma.lead.findUniqueOrThrow({ where: { id: fixture.lead.id } })).resolves.toMatchObject({
+      score: 100,
+      temperature: "HOT"
+    });
+    await expect(
+      prisma.leadScoreRun.findFirstOrThrow({
+        where: { leadId: fixture.lead.id, source: "RULE_ENGINE", status: "COMPLETED" }
+      })
+    ).resolves.toMatchObject({ actorUserId: null, score: 100, temperature: "HOT" });
   }, 45000);
 
   it("routes negotiation to human handoff without drafting a negotiation reply", async () => {
@@ -340,6 +487,181 @@ describe("R10 reply processing", () => {
       })
     ).resolves.toMatchObject({ priority: "HIGH" });
   }, 45000);
+
+  it("creates an idempotent meeting request for a meeting-request reply without booking", async () => {
+    const actorId = await prisma.user.findUniqueOrThrow({ where: { email: actorEmail } }).then((u) => u.id);
+    const fixture = await createInboundFixture({
+      body: "Please schedule a meeting with your team so we can finalize the scope and pricing."
+    });
+    const provider = new ReplyTestProvider({
+      intent: "MEETING_REQUEST",
+      confidence: 0.92,
+      summary: "Prospect asked to schedule a meeting to finalize scope and pricing.",
+      draftResponse: "Here is a meeting link.",
+      requiresHumanReview: true,
+      recommendedAction: "DRAFT_RESPONSE",
+      evidence: [{ messageId: fixture.message.id, quote: "schedule a meeting" }],
+      usedKnowledgeIds: []
+    });
+
+    const result = await processInboundReply(fixture.inbound.id, { provider });
+    const repeated = await processInboundReply(fixture.inbound.id, { provider });
+
+    expect(repeated.id).toBe(result.id);
+    expect(result).toMatchObject({
+      status: "COMPLETED",
+      intent: "MEETING_REQUEST",
+      recommendedAction: "MEETING_REVIEW",
+      humanHandoffRequired: true,
+      draftResponse: null
+    });
+    await expect(
+      prisma.conversation.findUniqueOrThrow({ where: { id: fixture.conversation.id } })
+    ).resolves.toMatchObject({ mode: "HUMAN" });
+    const meetings = await prisma.meetingRequest.findMany({
+      where: { leadId: fixture.lead.id },
+      include: { slots: true }
+    });
+    expect(meetings).toHaveLength(1);
+    expect(meetings[0]).toMatchObject({
+      conversationId: fixture.conversation.id,
+      requestedByUserId: actorId,
+      ownerId: actorId,
+      status: "ATTENTION_REQUIRED",
+      providerSyncStatus: "NOT_REQUIRED",
+      providerLastError: "Calendar provider is not configured",
+      selectedSlotId: null,
+      providerMeetingId: null,
+      idempotencyKey: `meeting-request:reply-processing:${result.id}`
+    });
+    expect(meetings[0]?.slots).toHaveLength(0);
+    await expect(
+      prisma.internalNotification.count({
+        where: { leadId: fixture.lead.id, type: "MEETING_CONFIRMATION", meetingRequestId: meetings[0]?.id }
+      })
+    ).resolves.toBe(1);
+    await expect(
+      prisma.activity.count({ where: { leadId: fixture.lead.id, type: "MEETING_REQUESTED" } })
+    ).resolves.toBe(1);
+    await expect(
+      prisma.domainEventOutbox.count({
+        where: { aggregateType: "MeetingRequest", aggregateId: meetings[0]?.id }
+      })
+    ).resolves.toBe(1);
+  }, 90000);
+
+  it("retries a failed reply-processing run and then creates the idempotent negotiation handoff", async () => {
+    const actorId = await prisma.user.findUniqueOrThrow({ where: { email: actorEmail } }).then((u) => u.id);
+    const fixture = await createInboundFixture({
+      body: "The pricing is higher than expected. Please reduce the price or offer a better commercial deal."
+    });
+    const failed = await processInboundReply(fixture.inbound.id, {
+      provider: new FailingReplyTestProvider()
+    });
+
+    expect(failed.status).toBe("FAILED");
+    expect(failed.failureMessage).toBe("AI provider temporarily unavailable");
+    await expect(
+      prisma.negotiationHandoff.count({ where: { leadId: fixture.lead.id } })
+    ).resolves.toBe(0);
+
+    const provider = new ReplyTestProvider({
+      intent: "NEGOTIATION",
+      confidence: 0.93,
+      summary: "Prospect wants a better commercial deal.",
+      draftResponse: "I can reduce the price.",
+      requiresHumanReview: true,
+      recommendedAction: "DRAFT_RESPONSE",
+      evidence: [{ messageId: fixture.message.id, quote: "better commercial deal" }],
+      usedKnowledgeIds: []
+    });
+    const retried = await processInboundReply(fixture.inbound.id, { provider });
+    const repeated = await processInboundReply(fixture.inbound.id, { provider });
+
+    expect(retried.id).toBe(failed.id);
+    expect(repeated.id).toBe(retried.id);
+    expect(retried).toMatchObject({
+      status: "COMPLETED",
+      intent: "NEGOTIATION",
+      recommendedAction: "HUMAN_HANDOFF",
+      failureCode: null,
+      failureMessage: null
+    });
+    expect(retried.draftResponse).toBeNull();
+    await expect(
+      prisma.inboundEmail.findUniqueOrThrow({ where: { id: fixture.inbound.id } })
+    ).resolves.toMatchObject({ replyProcessingStatus: "PROCESSED" });
+    await expect(
+      prisma.conversation.findUniqueOrThrow({ where: { id: fixture.conversation.id } })
+    ).resolves.toMatchObject({ mode: "HUMAN" });
+    await expect(
+      prisma.negotiationHandoff.count({
+        where: { replyProcessingRunId: retried.id }
+      })
+    ).resolves.toBe(1);
+    await expect(
+      prisma.internalNotification.count({
+        where: { leadId: fixture.lead.id, type: "NEGOTIATION_HANDOFF", assignedToUserId: actorId }
+      })
+    ).resolves.toBe(1);
+    await expect(
+      prisma.activity.count({
+        where: { leadId: fixture.lead.id, type: "NEGOTIATION_HANDOFF" }
+      })
+    ).resolves.toBe(1);
+    await expect(
+      prisma.domainEventOutbox.count({
+        where: {
+          aggregateType: "NegotiationHandoff",
+          eventType: "NEGOTIATION_HANDOFF_CREATED"
+        }
+      })
+    ).resolves.toBe(1);
+  }, 90000);
+
+  it("routes explicit negotiation to human handoff when the AI provider is temporarily unavailable", async () => {
+    const actorId = await prisma.user.findUniqueOrThrow({ where: { email: actorEmail } }).then((u) => u.id);
+    const fixture = await createInboundFixture({
+      body: "The proposal looks good, but the price is too high. Can you reduce the price or offer a better commercial deal?"
+    });
+
+    const result = await processInboundReply(fixture.inbound.id, {
+      provider: new RetryableFailingReplyTestProvider()
+    });
+
+    expect(result).toMatchObject({
+      status: "COMPLETED",
+      intent: "NEGOTIATION",
+      recommendedAction: "HUMAN_HANDOFF",
+      humanHandoffRequired: true,
+      draftResponse: null,
+      provider: "deterministic-negotiation-safety",
+      failureCode: null,
+      failureMessage: null
+    });
+    await expect(
+      prisma.inboundEmail.findUniqueOrThrow({ where: { id: fixture.inbound.id } })
+    ).resolves.toMatchObject({ replyProcessingStatus: "PROCESSED" });
+    await expect(
+      prisma.conversation.findUniqueOrThrow({ where: { id: fixture.conversation.id } })
+    ).resolves.toMatchObject({ mode: "HUMAN" });
+    await expect(
+      prisma.negotiationHandoff.count({ where: { replyProcessingRunId: result.id } })
+    ).resolves.toBe(1);
+    await expect(
+      prisma.internalNotification.count({
+        where: { leadId: fixture.lead.id, type: "NEGOTIATION_HANDOFF", assignedToUserId: actorId }
+      })
+    ).resolves.toBe(1);
+    await expect(
+      prisma.activity.count({ where: { leadId: fixture.lead.id, type: "NEGOTIATION_HANDOFF" } })
+    ).resolves.toBe(1);
+    await expect(
+      prisma.domainEventOutbox.count({
+        where: { aggregateType: "NegotiationHandoff", eventType: "NEGOTIATION_HANDOFF_CREATED" }
+      })
+    ).resolves.toBe(1);
+  }, 90000);
 
   it("creates visible attention state when negotiation has no assigned owner", async () => {
     const actorId = await prisma.user.findUniqueOrThrow({ where: { email: actorEmail } }).then((u) => u.id);

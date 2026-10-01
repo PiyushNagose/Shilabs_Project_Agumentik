@@ -1,15 +1,69 @@
 import crypto from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "../../shared/prisma.js";
+import type { AIProvider, QualificationResult, ReplyUnderstandingResult } from "../ai/ai.provider.js";
 import {
   getMessagingHealth,
   ingestMetaWhatsAppWebhook,
+  ingestTwilioWhatsAppWebhook,
   verifyMetaWebhookChallenge
 } from "./messaging.service.js";
 
 const companyPrefix = "R24 Messaging Company";
 const webhookSecret = "r24-test-webhook-secret";
 const verifyToken = "r24-test-verify-token";
+
+class MessagingReplyTestProvider implements AIProvider {
+  public constructor(private readonly output: ReplyUnderstandingResult) {}
+  public generateSalesReply: AIProvider["generateSalesReply"] = () =>
+    Promise.resolve({ body: "test", requiresHumanReview: true, reason: null });
+  public extractQualification: AIProvider["extractQualification"] = () =>
+    Promise.resolve({
+      need: "WhatsApp follow-up",
+      requirement: "Asked for details",
+      budget: null,
+      budgetBand: null,
+      authority: null,
+      timeline: null,
+      businessFit: null,
+      decisionMakerIdentified: null,
+      urgency: null,
+      evidence: []
+    } satisfies QualificationResult);
+  public summarizeLead: AIProvider["summarizeLead"] = () =>
+    Promise.resolve({ summary: "test", buyingSignals: [], objections: [], risks: [], suggestedNextAction: null });
+  public generateFollowUp: AIProvider["generateFollowUp"] = () =>
+    Promise.resolve({ body: "test", requiresHumanReview: true, reason: null });
+  public generateProposalDraft: AIProvider["generateProposalDraft"] = () =>
+    Promise.resolve({
+      title: "Test proposal",
+      serviceType: "AI Sales",
+      content: "Proposal content",
+      usedKnowledgeIds: [],
+      evidence: [],
+      requiresHumanReview: true,
+      missingInformation: []
+    });
+  public understandReply: AIProvider["understandReply"] = () => Promise.resolve(this.output);
+  public generateBriefing: AIProvider["generateBriefing"] = () =>
+    Promise.resolve({
+      summary: "Briefing",
+      requirements: null,
+      budget: null,
+      timeline: null,
+      decisionContext: null,
+      recentCommunication: "No recent communication",
+      qualification: null,
+      proposalDealContext: null,
+      meetingContext: null,
+      recommendedNextAction: null,
+      usedKnowledgeIds: [],
+      evidence: [],
+      requiresHumanReview: true,
+      unknowns: []
+    });
+  public createEmbedding: AIProvider["createEmbedding"] = () => Promise.resolve([0.1]);
+}
 
 function testEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
@@ -29,6 +83,25 @@ function signature(rawBody: string): string {
   return `sha256=${crypto.createHmac("sha256", webhookSecret).update(rawBody).digest("hex")}`;
 }
 
+function twilioEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  return testEnv({
+    MESSAGING_PROVIDER: "twilio_whatsapp",
+    MESSAGING_WEBHOOK_BASE_URL: "https://voice-e2e.example.test",
+    TWILIO_WHATSAPP_ACCOUNT_SID: "ACtwilio",
+    TWILIO_WHATSAPP_AUTH_TOKEN: "twilio-auth-token",
+    TWILIO_WHATSAPP_SANDBOX_FROM: "whatsapp:+14155238886",
+    ...overrides
+  });
+}
+
+function twilioSignature(url: string, params: Record<string, string>, authToken = "twilio-auth-token"): string {
+  const sorted = Object.keys(params)
+    .sort()
+    .map((key) => `${key}${params[key] ?? ""}`)
+    .join("");
+  return crypto.createHmac("sha1", authToken).update(`${url}${sorted}`).digest("base64");
+}
+
 async function cleanup(): Promise<void> {
   const leads = await prisma.lead.findMany({
     where: { company: { name: { startsWith: companyPrefix } } },
@@ -45,6 +118,14 @@ async function cleanup(): Promise<void> {
   });
   await prisma.outboundWhatsAppMessage.deleteMany({ where: { leadId: { in: leadIds } } });
   await prisma.domainEventOutbox.deleteMany({ where: { idempotencyKey: { startsWith: "r24-test" } } });
+  await prisma.domainEventOutbox.deleteMany({ where: { idempotencyKey: { startsWith: "domain-event:reply-processing:" } } });
+  await prisma.replyProcessingRun.deleteMany({ where: { leadId: { in: leadIds } } });
+  await prisma.inboundEmail.deleteMany({ where: { leadId: { in: leadIds } } });
+  await prisma.leadQualificationEvidence.deleteMany({
+    where: { qualification: { leadId: { in: leadIds } } }
+  });
+  await prisma.leadQualification.deleteMany({ where: { leadId: { in: leadIds } } });
+  await prisma.leadScoreRun.deleteMany({ where: { leadId: { in: leadIds } } });
   await prisma.callingAttempt.deleteMany({ where: { leadId: { in: leadIds } } });
   await prisma.callingSequence.deleteMany({ where: { leadId: { in: leadIds } } });
   await prisma.followUpAttempt.deleteMany({ where: { leadId: { in: leadIds } } });
@@ -188,18 +269,41 @@ describe("R24 messaging service", () => {
       ]
     };
     const rawBody = JSON.stringify(body);
+    const provider = new MessagingReplyTestProvider({
+      intent: "INTERESTED",
+      confidence: 0.9,
+      summary: "Prospect asked for details.",
+      draftResponse: null,
+      requiresHumanReview: true,
+      recommendedAction: "DRAFT_RESPONSE",
+      evidence: [{ messageId: "", quote: "Interested" }],
+      usedKnowledgeIds: []
+    });
+    provider.understandReply = (input) =>
+      Promise.resolve({
+        intent: "INTERESTED",
+        confidence: 0.9,
+        summary: "Prospect asked for details.",
+        draftResponse: null,
+        requiresHumanReview: true,
+        recommendedAction: "DRAFT_RESPONSE",
+        evidence: [{ messageId: input.messages.at(-1)?.id ?? "", quote: "Interested" }],
+        usedKnowledgeIds: []
+      });
 
     const first = await ingestMetaWhatsAppWebhook({
       body,
       rawBody,
       signature: signature(rawBody),
-      env: testEnv()
+      env: testEnv(),
+      replyProcessingOptions: { provider }
     });
     const second = await ingestMetaWhatsAppWebhook({
       body,
       rawBody,
       signature: signature(rawBody),
-      env: testEnv()
+      env: testEnv(),
+      replyProcessingOptions: { provider }
     });
 
     expect(first.processed).toBe(1);
@@ -215,5 +319,75 @@ describe("R24 messaging service", () => {
       status: "STOPPED",
       stopReason: "WHATSAPP_REPLY_RECEIVED"
     });
+  });
+
+  it("accepts signed Twilio WhatsApp Sandbox inbound form payloads through the same R24 pipeline", async () => {
+    const fixture = await createLeadFixture();
+    const body = {
+      MessageSid: "SM-r24-test-twilio-inbound-001",
+      SmsMessageSid: "SM-r24-test-twilio-inbound-001",
+      From: `whatsapp:+${fixture.contact.whatsappId ?? ""}`,
+      To: "whatsapp:+14155238886",
+      Body: "Please send details on WhatsApp."
+    };
+    const url = "https://voice-e2e.example.test/api/messaging/twilio/webhook";
+    const provider = new MessagingReplyTestProvider({
+      intent: "INTERESTED",
+      confidence: 0.92,
+      summary: "Prospect asked for more details over WhatsApp.",
+      draftResponse: null,
+      requiresHumanReview: true,
+      recommendedAction: "DRAFT_RESPONSE",
+      evidence: [{ messageId: "", quote: "Please send details" }],
+      usedKnowledgeIds: []
+    });
+    provider.understandReply = (input) =>
+      Promise.resolve({
+        intent: "INTERESTED",
+        confidence: 0.92,
+        summary: "Prospect asked for more details over WhatsApp.",
+        draftResponse: null,
+        requiresHumanReview: true,
+        recommendedAction: "DRAFT_RESPONSE",
+        evidence: [{ messageId: input.messages.at(-1)?.id ?? "", quote: "Please send details" }],
+        usedKnowledgeIds: []
+      });
+
+    const first = await ingestTwilioWhatsAppWebhook({
+      body,
+      signature: twilioSignature(url, body),
+      url,
+      env: twilioEnv(),
+      replyProcessingOptions: { provider }
+    });
+    const second = await ingestTwilioWhatsAppWebhook({
+      body,
+      signature: twilioSignature(url, body),
+      url,
+      env: twilioEnv(),
+      replyProcessingOptions: { provider }
+    });
+
+    expect(first).toMatchObject({ provider: "TWILIO_WHATSAPP", processed: 1 });
+    expect(second).toMatchObject({ provider: "TWILIO_WHATSAPP", processed: 1 });
+    await expect(
+      prisma.message.count({ where: { providerMessageId: "SM-r24-test-twilio-inbound-001" } })
+    ).resolves.toBe(1);
+    await expect(
+      prisma.whatsAppProviderEvent.findFirst({
+        where: { provider: "TWILIO", providerMessageId: "SM-r24-test-twilio-inbound-001" }
+      })
+    ).resolves.toMatchObject({
+      type: "INBOUND_MESSAGE"
+    });
+    await expect(
+      prisma.replyProcessingRun.count({
+        where: {
+          message: { providerMessageId: "SM-r24-test-twilio-inbound-001" },
+          status: "COMPLETED",
+          intent: "INTERESTED"
+        }
+      })
+    ).resolves.toBe(1);
   });
 });

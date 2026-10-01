@@ -29,6 +29,7 @@ import {
 } from "../../config/email-provider.js";
 import { AppError } from "../../shared/errors.js";
 import { prisma } from "../../shared/prisma.js";
+import { redactSecrets } from "../../shared/redaction.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
 import { upsertIntegrationAccount } from "../integrations/integration-mapping.repository.js";
 import { AwsSesProvider } from "../integrations/aws-ses/aws-ses.provider.js";
@@ -43,6 +44,7 @@ import {
 } from "./email-feedback.schemas.js";
 import type {
   CreateEmailSuppressionInput,
+  E2ECustomerReplyInput,
   SendEmailInput,
   ValidatePreSendEmailInput
 } from "./email.schemas.js";
@@ -57,11 +59,59 @@ interface FeedbackHeaders {
   timestamp?: string;
 }
 
+const E2E_INBOUND_WEBHOOK_SECRET_ENV = "E2E_INBOUND_EMAIL_WEBHOOK_SECRET";
+
 type LeadWithContact = Prisma.LeadGetPayload<{ include: { contact: true } }>;
 
 function sanitizeError(error: unknown): string {
-  if (error instanceof Error) return error.message;
+  if (error instanceof Error) return redactSecrets(error.message).slice(0, 500);
   return "Email provider operation failed";
+}
+
+function assertE2ELocalInboundEnabled(env: NodeJS.ProcessEnv): void {
+  if (env.APP_ENV !== "e2e-local" || env.NODE_ENV === "production") {
+    throw new AppError(404, "NOT_FOUND", "E2E customer reply ingestion is not available");
+  }
+}
+
+function firstNonEmpty(...values: (string | undefined)[]): string | null {
+  return values.map((value) => value?.trim()).find((value): value is string => Boolean(value)) ?? null;
+}
+
+function getE2EInboundSigningConfig(env: NodeJS.ProcessEnv): {
+  fromEmail: string;
+  webhookSecret: string;
+  providerEnv: NodeJS.ProcessEnv;
+} {
+  const fromEmail = firstNonEmpty(env.AWS_SES_FROM_EMAIL, env.MAILPIT_FROM_EMAIL) ?? "sales@shilabs.local";
+  const webhookSecret =
+    firstNonEmpty(env.AWS_SES_WEBHOOK_SECRET, env[E2E_INBOUND_WEBHOOK_SECRET_ENV]) ?? "";
+  if (!webhookSecret) {
+    throw new AppError(503, "PROVIDER_ERROR", "E2E inbound email signing is not configured", {
+      missingConfig: [E2E_INBOUND_WEBHOOK_SECRET_ENV]
+    });
+  }
+
+  return {
+    fromEmail,
+    webhookSecret,
+    providerEnv: {
+      ...env,
+      AWS_SES_REGION: firstNonEmpty(env.AWS_SES_REGION) ?? "local-e2e",
+      AWS_SES_FROM_EMAIL: fromEmail,
+      AWS_SES_USE_DEFAULT_CREDENTIAL_CHAIN: "true",
+      AWS_SES_WEBHOOK_SECRET: webhookSecret
+    }
+  };
+}
+
+function signInboundPayload(rawBody: string, secret: string): FeedbackHeaders {
+  const timestamp = String(Date.now());
+  const signature = `sha256=${crypto
+    .createHmac("sha256", secret)
+    .update(`${timestamp}.${rawBody}`)
+    .digest("hex")}`;
+  return { timestamp, signature };
 }
 
 function toOutboundEmailDto(email: OutboundEmail): OutboundEmailDto {
@@ -1506,4 +1556,62 @@ export async function ingestSesInboundEmail(input: {
     status: "PROCESSED",
     inboundEmail: toInboundEmailDto(processed)
   };
+}
+
+export async function ingestE2ECustomerReply(
+  _actor: AuthenticatedUser,
+  input: E2ECustomerReplyInput,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<SesInboundEmailDto> {
+  assertE2ELocalInboundEnabled(env);
+
+  const lead = await prisma.lead.findUnique({
+    where: { id: input.leadId },
+    include: { company: true, contact: true }
+  });
+  if (!lead) {
+    throw new AppError(404, "NOT_FOUND", "Lead not found");
+  }
+  if (isForbiddenLeadStatus(lead.status)) {
+    throw new AppError(409, "CONFLICT", `Lead status ${lead.status} forbids reply processing`);
+  }
+  if (!lead.contact.email || !lead.contact.normalizedEmail) {
+    throw new AppError(409, "CONFLICT", "Lead contact does not have a usable email address");
+  }
+
+  const config = getE2EInboundSigningConfig(env);
+  const now = new Date().toISOString();
+  const providerMessageId = `e2e-customer-reply-${crypto.randomUUID()}@local.shilabs`;
+  const subject = input.subject ?? `Re: ${lead.company.name}`;
+  const payload: SesInboundNotification = {
+    notificationType: "Received",
+    mail: {
+      messageId: providerMessageId,
+      timestamp: now,
+      source: lead.contact.email,
+      destination: [config.fromEmail],
+      commonHeaders: {
+        from: [lead.contact.email],
+        to: [config.fromEmail],
+        subject,
+        date: now
+      },
+      headers: [
+        { name: "X-Shilabs-Lead-Id", value: lead.id },
+        { name: "From", value: lead.contact.email },
+        { name: "To", value: config.fromEmail },
+        { name: "Subject", value: subject }
+      ]
+    },
+    receipt: { action: { type: "E2E_LOCAL" } },
+    textBody: input.body
+  };
+  const rawBody = JSON.stringify(payload);
+
+  return ingestSesInboundEmail({
+    body: payload,
+    rawBody,
+    headers: signInboundPayload(rawBody, config.webhookSecret),
+    env: config.providerEnv
+  });
 }

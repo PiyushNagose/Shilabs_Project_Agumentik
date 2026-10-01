@@ -1,8 +1,9 @@
 import crypto from "node:crypto";
 import type { MessagingConfig } from "@shilabs/shared-config";
+import { redactSecrets } from "../../shared/redaction.js";
 
 export interface MessagingHealthDto {
-  provider: "META_WHATSAPP" | "NONE";
+  provider: "META_WHATSAPP" | "TWILIO_WHATSAPP" | "NONE";
   status: "CONFIGURED" | "NOT_CONFIGURED" | "ERROR";
   configured: boolean;
   checkedAt: string;
@@ -18,6 +19,12 @@ export interface MessagingProvider {
   verifyWebhookSignature(input: { rawBody: string; signature: string | undefined }): boolean;
 }
 
+export interface TwilioWhatsAppSignatureInput {
+  url: string;
+  params: Record<string, string>;
+  signature: string | undefined;
+}
+
 export type MessagingTransport = typeof fetch;
 
 function missingMetaConfig(config: MessagingConfig): string[] {
@@ -31,9 +38,23 @@ function missingMetaConfig(config: MessagingConfig): string[] {
   return missing;
 }
 
+function missingTwilioConfig(config: MessagingConfig): string[] {
+  const missing: string[] = [];
+  if (config.provider !== "twilio_whatsapp") missing.push("MESSAGING_PROVIDER");
+  if (!config.twilioWhatsApp.accountSid) missing.push("TWILIO_WHATSAPP_ACCOUNT_SID");
+  if (!config.twilioWhatsApp.authToken) missing.push("TWILIO_WHATSAPP_AUTH_TOKEN");
+  if (!config.twilioWhatsApp.sandboxFrom) missing.push("TWILIO_WHATSAPP_SANDBOX_FROM");
+  return missing;
+}
+
 function baseHealth(config: MessagingConfig, status: MessagingHealthDto["status"]): MessagingHealthDto {
   return {
-    provider: config.provider === "meta_whatsapp" ? "META_WHATSAPP" : "NONE",
+    provider:
+      config.provider === "meta_whatsapp"
+        ? "META_WHATSAPP"
+        : config.provider === "twilio_whatsapp"
+          ? "TWILIO_WHATSAPP"
+          : "NONE",
     status,
     configured: status === "CONFIGURED",
     checkedAt: new Date().toISOString(),
@@ -47,7 +68,7 @@ function baseHealth(config: MessagingConfig, status: MessagingHealthDto["status"
 
 function sanitizeError(error: unknown): string {
   return error instanceof Error && error.message.trim()
-    ? error.message.slice(0, 500)
+    ? redactSecrets(error.message).slice(0, 500)
     : "Meta WhatsApp request failed";
 }
 
@@ -164,7 +185,81 @@ export class MetaWhatsAppProvider implements MessagingProvider {
       .createHmac("sha256", this.config.metaWhatsApp.appSecret)
       .update(input.rawBody)
       .digest("hex")}`;
-    return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(input.signature));
+    const expectedBuffer = Buffer.from(expected);
+    const actualBuffer = Buffer.from(input.signature);
+    return (
+      expectedBuffer.length === actualBuffer.length &&
+      crypto.timingSafeEqual(expectedBuffer, actualBuffer)
+    );
+  }
+}
+
+export class TwilioWhatsAppProvider implements MessagingProvider {
+  public constructor(
+    private readonly config: MessagingConfig,
+    private readonly transport: MessagingTransport = fetch
+  ) {}
+
+  public async getHealth(): Promise<MessagingHealthDto> {
+    const missing = missingTwilioConfig(this.config);
+    if (missing.length > 0) {
+      return {
+        ...baseHealth(this.config, "NOT_CONFIGURED"),
+        configured: false,
+        missingConfig: missing,
+        lastError: `Missing configuration: ${missing.join(", ")}`
+      };
+    }
+
+    try {
+      const response = await requestWithRetry(
+        this.config,
+        this.transport,
+        `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(
+          this.config.twilioWhatsApp.accountSid
+        )}.json`,
+        {
+          headers: {
+            Authorization: `Basic ${Buffer.from(
+              `${this.config.twilioWhatsApp.accountSid}:${this.config.twilioWhatsApp.authToken}`
+            ).toString("base64")}`
+          }
+        }
+      );
+      const body = await parseJson(response);
+      if (!response.ok) {
+        throw new Error(metaErrorMessage(response.status, body));
+      }
+      return baseHealth(this.config, "CONFIGURED");
+    } catch (error) {
+      return {
+        ...baseHealth(this.config, "ERROR"),
+        configured: true,
+        lastError: sanitizeError(error)
+      };
+    }
+  }
+
+  public verifyWebhookSignature(): boolean {
+    return false;
+  }
+
+  public verifyTwilioWebhookSignature(input: TwilioWhatsAppSignatureInput): boolean {
+    if (!this.config.twilioWhatsApp.authToken || !input.signature) return false;
+    const sortedParams = Object.keys(input.params)
+      .sort()
+      .map((key) => `${key}${input.params[key] ?? ""}`)
+      .join("");
+    const expected = crypto
+      .createHmac("sha1", this.config.twilioWhatsApp.authToken)
+      .update(`${input.url}${sortedParams}`)
+      .digest("base64");
+    const expectedBuffer = Buffer.from(expected);
+    const actualBuffer = Buffer.from(input.signature);
+    return (
+      expectedBuffer.length === actualBuffer.length &&
+      crypto.timingSafeEqual(expectedBuffer, actualBuffer)
+    );
   }
 }
 
@@ -172,8 +267,7 @@ export function createMessagingProvider(
   config: MessagingConfig,
   transport?: MessagingTransport
 ): MessagingProvider {
-  if (config.provider !== "meta_whatsapp") {
-    return new NotConfiguredMessagingProvider(config);
-  }
-  return new MetaWhatsAppProvider(config, transport);
+  if (config.provider === "meta_whatsapp") return new MetaWhatsAppProvider(config, transport);
+  if (config.provider === "twilio_whatsapp") return new TwilioWhatsAppProvider(config, transport);
+  return new NotConfiguredMessagingProvider(config);
 }

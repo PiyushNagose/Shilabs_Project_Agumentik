@@ -21,12 +21,14 @@
     "@shilabs/shared-config": "0.0.0",
     "@shilabs/shared-types": "0.0.0",
     "@shilabs/validation": "0.0.0",
+    "@types/ws": "^8.18.2",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "express-rate-limit": "^8.7.0",
     "jose": "^6.2.12",
     "nodemailer": "^10.0.10",
+    "ws": "^8.22.0",
     "zod": "^4.5.4"
   },
   "devDependencies": {

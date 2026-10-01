@@ -1,11 +1,12 @@
 import type { IntegrationHealthDto } from "@shilabs/shared-types";
 import { getZohoBiginConfig } from "../../../config/zoho-bigin.js";
+import { redactSecrets } from "../../../shared/redaction.js";
 import { upsertIntegrationAccount } from "../integration-mapping.repository.js";
 import { ZohoBiginAuthClient, type FetchTransport } from "./zoho-bigin.client.js";
 import { ZohoBiginProvider } from "./zoho-bigin.provider.js";
 
 function sanitizeError(error: unknown): string {
-  if (error instanceof Error) return error.message;
+  if (error instanceof Error) return redactSecrets(error.message).slice(0, 500);
   return "Zoho Bigin connectivity check failed";
 }
 

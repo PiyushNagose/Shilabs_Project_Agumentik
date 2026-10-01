@@ -10,6 +10,7 @@ import { Icon } from "../../components/Icon.js";
 import { StateBlock } from "../../components/StateBlock.js";
 import { StatusBadge } from "../../components/StatusBadge.js";
 import { getOperationsDashboard } from "../../services/api-client.js";
+import { useRealtime } from "../realtime/RealtimeProvider.js";
 
 interface OperationsDashboardProps {
   accessToken: string;
@@ -91,6 +92,7 @@ function UsageCard({ item }: { item: OperationsUsageIndicatorDto }): React.JSX.E
 }
 
 export function OperationsDashboard({ accessToken }: OperationsDashboardProps): React.JSX.Element {
+  const realtime = useRealtime();
   const [dashboard, setDashboard] = useState<OperationsDashboardDto | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -110,6 +112,19 @@ export function OperationsDashboard({ accessToken }: OperationsDashboardProps): 
   useEffect(() => {
     void loadDashboard();
   }, [accessToken]);
+
+  useEffect(
+    () =>
+      realtime.subscribe((event) => {
+        if (
+          event.type === "realtime:reconnected" ||
+          ["operations", "domain-event", "workspace", "lead"].includes(event.entityType)
+        ) {
+          void loadDashboard();
+        }
+      }),
+    [accessToken, realtime]
+  );
 
   const unhealthyProviders = useMemo(
     () =>

@@ -4,6 +4,7 @@ import type {
   ConversationDto,
   HumanTakeoverBriefingDto,
   HumanTakeoverDto,
+  HumanConversationReplyDto,
   MessageDto
 } from "@shilabs/shared-types";
 import { AppError } from "../../shared/errors.js";
@@ -11,6 +12,9 @@ import { prisma } from "../../shared/prisma.js";
 import { toPublicUser } from "../auth/auth.service.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
 import { toDealDto } from "../deals/deal.service.js";
+import { sendOutboundEmail } from "../email/email.service.js";
+import type { EmailProvider } from "../email/email.provider.js";
+import { appendActivityToZohoTimeline } from "../integrations/zoho-bigin/zoho-bigin-timeline.service.js";
 import { findDealByLeadId } from "../deals/deal.repository.js";
 import { findLeadById } from "../leads/lead.repository.js";
 import { toLeadDto } from "../leads/lead.service.js";
@@ -21,6 +25,7 @@ import type {
   CreateConversationInput,
   CreateMessageInput,
   ListConversationsQuery,
+  SendHumanReplyInput,
   StartHumanTakeoverInput,
   UpdateConversationModeInput
 } from "./conversation.schemas.js";
@@ -123,6 +128,22 @@ function parseOptionalDate(value: string | null | undefined): Date | null | unde
   return value ? new Date(value) : null;
 }
 
+function defaultHumanReplySubject(conversation: ConversationRecord): string {
+  return `Re: ${conversation.lead.company.name}`;
+}
+
+function assertHumanReplyActor(actor: AuthenticatedUser, conversation: ConversationRecord): void {
+  if (actor.role === "ADMIN" || actor.role === "SALES_MANAGER") return;
+  if (conversation.lead.ownerId === actor.id) return;
+  throw new AppError(403, "AUTHORIZATION_ERROR", "Only the assigned owner can send this human reply");
+}
+
+interface SendHumanReplyOptions {
+  env?: NodeJS.ProcessEnv;
+  emailProvider?: EmailProvider;
+  zohoTransport?: typeof fetch;
+}
+
 export async function createConversation(input: CreateConversationInput): Promise<ConversationDto> {
   const lead = await findLeadById(input.leadId);
   if (!lead) {
@@ -215,6 +236,131 @@ export async function appendMessage(
   });
 
   return toMessageDto(message);
+}
+
+export async function sendHumanReply(
+  actor: AuthenticatedUser,
+  conversationId: string,
+  input: SendHumanReplyInput,
+  options?: SendHumanReplyOptions
+): Promise<HumanConversationReplyDto> {
+  const conversation = requireConversation(await findConversationById(conversationId));
+  if (conversation.status === "CLOSED") {
+    throw new AppError(409, "CONFLICT", "Cannot reply on a closed conversation");
+  }
+  if (conversation.channel !== "EMAIL") {
+    throw new AppError(409, "CONFLICT", "Human replies can only be sent on email conversations");
+  }
+  if (conversation.mode !== "HUMAN") {
+    throw new AppError(409, "CONFLICT", "Human replies require conversation mode HUMAN");
+  }
+  assertHumanReplyActor(actor, conversation);
+
+  const subject = input.subject ?? defaultHumanReplySubject(conversation);
+  const idempotencyKey = `human-reply:${conversation.id}:${input.idempotencyKey}`;
+  const outboundEmail = await sendOutboundEmail(actor, {
+    leadId: conversation.leadId,
+    subject,
+    textBody: input.body,
+    idempotencyKey
+  }, { env: options?.env, provider: options?.emailProvider });
+
+  if (outboundEmail.status !== "SENT") {
+    return { outboundEmail, message: null, zohoTimeline: null };
+  }
+
+  let message = await prisma.message.findUnique({
+    where: { providerMessageId: outboundEmail.providerMessageId ?? "" },
+    include: { senderUser: true }
+  });
+  if (!message) {
+    message = await prisma.message.create({
+      data: {
+        conversationId: conversation.id,
+        providerMessageId: outboundEmail.providerMessageId,
+        direction: "OUTBOUND",
+        senderType: "USER",
+        senderUserId: actor.id,
+        body: input.body,
+        deliveryStatus: "SENT",
+        sentAt: outboundEmail.sentAt ? new Date(outboundEmail.sentAt) : new Date(),
+        metadata: {
+          outboundEmailId: outboundEmail.id,
+          source: "HUMAN_REPLY",
+          idempotencyKey
+        }
+      },
+      include: { senderUser: true }
+    });
+    await prisma.conversation.update({
+      where: { id: conversation.id },
+      data: { lastMessageAt: message.sentAt ?? message.createdAt }
+    });
+    await prisma.auditEvent.create({
+      data: {
+        actorType: "USER",
+        actorId: actor.id,
+        entityType: "Message",
+        entityId: message.id,
+        action: "HUMAN_REPLY_SENT",
+        after: {
+          conversationId: conversation.id,
+          leadId: conversation.leadId,
+          outboundEmailId: outboundEmail.id,
+          providerMessageId: outboundEmail.providerMessageId
+        }
+      }
+    });
+  }
+
+  let zohoTimeline: HumanConversationReplyDto["zohoTimeline"] = null;
+  const sentActivity = await prisma.activity.findFirst({
+    where: {
+      leadId: conversation.leadId,
+      type: "MESSAGE_SENT",
+      description: { contains: outboundEmail.id }
+    },
+    orderBy: { createdAt: "desc" }
+  });
+  const activity =
+    sentActivity ??
+    (await prisma.activity.findFirst({
+      where: {
+        leadId: conversation.leadId,
+        type: "MESSAGE_SENT",
+        description: { contains: subject }
+      },
+      orderBy: { createdAt: "desc" }
+    }));
+  if (activity) {
+    try {
+      zohoTimeline = await appendActivityToZohoTimeline({
+        activityId: activity.id,
+        env: options?.env,
+        transport: options?.zohoTransport
+      });
+    } catch (error) {
+      zohoTimeline = {
+        provider: "ZOHO_BIGIN",
+        status: "FAILED",
+        activityId: activity.id,
+        mappingId: null,
+        externalRecordId: null,
+        lastError: error instanceof Error ? error.message : "Zoho timeline sync failed"
+      };
+      await prisma.auditEvent.create({
+        data: {
+          actorType: "SYSTEM",
+          entityType: "OutboundEmail",
+          entityId: outboundEmail.id,
+          action: "HUMAN_REPLY_ZOHO_TIMELINE_SYNC_FAILED",
+          after: { activityId: activity.id, lastError: zohoTimeline.lastError }
+        }
+      });
+    }
+  }
+
+  return { outboundEmail, message: toMessageDto(message), zohoTimeline };
 }
 
 export async function updateConversationMode(

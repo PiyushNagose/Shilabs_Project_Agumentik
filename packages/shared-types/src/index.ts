@@ -174,6 +174,7 @@ export const ACTIVITY_TYPES = [
   "MEETING_CONFIRMED",
   "CALL_REQUESTED",
   "CALL_STATUS_UPDATED",
+  "CALL_CONVERSATION_COMPLETED",
   "CALL_FAILED",
   "WHATSAPP_SENT",
   "WHATSAPP_STATUS_UPDATED",
@@ -413,6 +414,12 @@ export interface MessageDto {
   metadata: unknown;
   createdAt: string;
   senderUser: PublicUser | null;
+}
+
+export interface HumanConversationReplyDto {
+  message: MessageDto | null;
+  outboundEmail: OutboundEmailDto;
+  zohoTimeline: ZohoTimelineAppendDto | null;
 }
 
 export const HUMAN_TAKEOVER_STATUSES = ["ACTIVE"] as const;
@@ -655,6 +662,8 @@ export interface MeetingRequestDto {
   provider: IntegrationProviderName;
   providerMeetingId: string | null;
   providerMeetingUrl: string | null;
+  providerCalendarId: string | null;
+  providerOrganizerEmail: string | null;
   providerSyncStatus: MeetingSyncStatusName;
   providerLastError: string | null;
   zohoSyncStatus: MeetingSyncStatusName;
@@ -671,7 +680,7 @@ export interface MeetingRequestDto {
   slots: MeetingSlotDto[];
 }
 
-export type VoiceProviderName = "NONE" | "TWILIO";
+export type VoiceProviderName = "NONE" | "TWILIO" | "EXOTEL";
 export type VoiceHealthStatusName = "CONFIGURED" | "NOT_CONFIGURED" | "ERROR";
 export type VoiceCallDirectionName = "OUTBOUND";
 export const VOICE_CALL_STATUSES = [
@@ -743,7 +752,7 @@ export interface VoiceCallAttemptDto {
 }
 
 export interface VoiceWebhookResultDto {
-  provider: "TWILIO";
+  provider: Extract<IntegrationProviderName, "TWILIO" | "EXOTEL">;
   status: "PROCESSED" | "DUPLICATE";
   eventId: string;
   callAttemptId: string | null;
@@ -835,6 +844,7 @@ export const INTEGRATION_PROVIDERS = [
   "SEMRUSH",
   "GOOGLE_CALENDAR",
   "TWILIO",
+  "EXOTEL",
   "META_WHATSAPP"
 ] as const;
 export type IntegrationProviderName = (typeof INTEGRATION_PROVIDERS)[number];
@@ -1292,6 +1302,9 @@ export interface FollowUpSequenceDto {
   conversationId: string | null;
   status: FollowUpSequenceStatusName;
   cadenceDays: number[];
+  cadenceMode: string;
+  cadenceOffsetsMinutes: number[];
+  e2eAccelerationEligible: boolean;
   currentStep: number;
   stopReason: string | null;
   stoppedAt: string | null;

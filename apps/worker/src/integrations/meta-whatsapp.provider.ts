@@ -1,4 +1,5 @@
 import type { MessagingConfig } from "@shilabs/shared-config";
+import { redactSecrets } from "../shared/redaction.js";
 
 export interface WorkerMessagingProvider {
   sendTemplateMessage(input: {
@@ -25,6 +26,15 @@ function missingMetaConfig(config: MessagingConfig): string[] {
   return missing;
 }
 
+function missingTwilioConfig(config: MessagingConfig): string[] {
+  const missing: string[] = [];
+  if (config.provider !== "twilio_whatsapp") missing.push("MESSAGING_PROVIDER");
+  if (!config.twilioWhatsApp.accountSid) missing.push("TWILIO_WHATSAPP_ACCOUNT_SID");
+  if (!config.twilioWhatsApp.authToken) missing.push("TWILIO_WHATSAPP_AUTH_TOKEN");
+  if (!config.twilioWhatsApp.sandboxFrom) missing.push("TWILIO_WHATSAPP_SANDBOX_FROM");
+  return missing;
+}
+
 async function parseJson(response: Response): Promise<Record<string, unknown> | null> {
   const raw: unknown = await response.json().catch(() => null);
   return raw && typeof raw === "object" && !Array.isArray(raw)
@@ -45,8 +55,12 @@ function errorMessage(status: number, body: Record<string, unknown> | null): str
 
 function sanitizeError(error: unknown): string {
   return error instanceof Error && error.message.trim()
-    ? error.message.slice(0, 500)
+    ? redactSecrets(error.message).slice(0, 500)
     : "Meta WhatsApp request failed";
+}
+
+function twilioWhatsAppAddress(value: string): string {
+  return value.toLowerCase().startsWith("whatsapp:") ? value : `whatsapp:${value}`;
 }
 
 async function requestWithRetry(
@@ -130,6 +144,72 @@ export class WorkerMetaWhatsAppProvider implements WorkerMessagingProvider {
         status: "ACCEPTED" as const,
         providerMessageId: id,
         providerStatus: "accepted",
+        lastError: null
+      };
+    } catch (error) {
+      return {
+        status: "FAILED" as const,
+        providerMessageId: null,
+        providerStatus: null,
+        lastError: sanitizeError(error)
+      };
+    }
+  }
+}
+
+export class WorkerTwilioWhatsAppProvider implements WorkerMessagingProvider {
+  public constructor(
+    private readonly config: MessagingConfig,
+    private readonly transport: MessagingTransport = fetch
+  ) {}
+
+  public async sendTemplateMessage(input: Parameters<WorkerMessagingProvider["sendTemplateMessage"]>[0]) {
+    const missing = missingTwilioConfig(this.config);
+    if (missing.length > 0) {
+      return {
+        status: "NOT_CONFIGURED" as const,
+        providerMessageId: null,
+        providerStatus: null,
+        lastError: `Missing configuration: ${missing.join(", ")}`
+      };
+    }
+
+    try {
+      const body = new URLSearchParams({
+        From: twilioWhatsAppAddress(this.config.twilioWhatsApp.sandboxFrom),
+        To: twilioWhatsAppAddress(input.to),
+        Body: this.config.twilioWhatsApp.defaultBody
+      });
+      const response = await requestWithRetry(
+        this.config,
+        this.transport,
+        `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(
+          this.config.twilioWhatsApp.accountSid
+        )}/Messages.json`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Basic ${Buffer.from(
+              `${this.config.twilioWhatsApp.accountSid}:${this.config.twilioWhatsApp.authToken}`
+            ).toString("base64")}`,
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Idempotency-Key": input.idempotencyKey
+          },
+          body
+        }
+      );
+      const rawBody = await parseJson(response);
+      if (!response.ok) {
+        throw new Error(errorMessage(response.status, rawBody));
+      }
+      const sid = typeof rawBody?.sid === "string" ? rawBody.sid : null;
+      if (!sid) {
+        throw new Error("Twilio WhatsApp send response was malformed");
+      }
+      return {
+        status: "ACCEPTED" as const,
+        providerMessageId: sid,
+        providerStatus: typeof rawBody?.status === "string" ? rawBody.status : "accepted",
         lastError: null
       };
     } catch (error) {

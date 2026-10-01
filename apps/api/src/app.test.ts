@@ -7,7 +7,15 @@ const apiConfig: ApiConfig = {
   host: "0.0.0.0",
   port: 4000,
   nodeEnv: "development",
-  webOrigin: "http://localhost:5173"
+  webOrigin: "http://localhost:5173",
+  trustProxy: "loopback",
+  jsonBodyLimit: "1mb",
+  webhookBodyLimit: "512kb",
+  globalRateLimitWindowMs: 900000,
+  globalRateLimitMax: 1000,
+  webhookRateLimitWindowMs: 60000,
+  webhookRateLimitMax: 120,
+  realtimeInternalSecret: ""
 };
 
 describe("api health endpoints", () => {
@@ -24,6 +32,28 @@ describe("api health endpoints", () => {
 
   it("returns readiness status", async () => {
     const response = await request(app).get("/ready").expect(200);
+
+    expect(response.body).toMatchObject({
+      status: "ok",
+      service: "api"
+    });
+  });
+
+  it("registers the R13 follow-up lead hydration route", async () => {
+    const response = await request(app).get("/api/followups/leads/lead_1").expect(401);
+
+    expect(response.body).toMatchObject({
+      error: {
+        code: "AUTHENTICATION_ERROR"
+      }
+    });
+  });
+
+  it("accepts proxied requests from trusted local reverse proxies without rate-limit proxy errors", async () => {
+    const response = await request(app)
+      .get("/health")
+      .set("X-Forwarded-For", "54.251.51.3")
+      .expect(200);
 
     expect(response.body).toMatchObject({
       status: "ok",

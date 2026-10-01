@@ -2,12 +2,13 @@ import type { ZohoTimelineAppendDto } from "@shilabs/shared-types";
 import { getZohoBiginConfig } from "../../../config/zoho-bigin.js";
 import { AppError } from "../../../shared/errors.js";
 import { prisma } from "../../../shared/prisma.js";
+import { redactSecrets } from "../../../shared/redaction.js";
 import { upsertIntegrationAccount } from "../integration-mapping.repository.js";
 import { ZohoBiginAuthClient, type FetchTransport } from "./zoho-bigin.client.js";
 import { ZohoBiginProvider } from "./zoho-bigin.provider.js";
 
 function sanitizeError(error: unknown): string {
-  if (error instanceof Error) return error.message;
+  if (error instanceof Error) return redactSecrets(error.message).slice(0, 500);
   return "Zoho Bigin timeline append failed";
 }
 

@@ -434,6 +434,23 @@ Usage indicators are counts from persisted evidence only. Cost remains explicitl
 unavailable unless a provider billing/token-cost feed is implemented later. R28 does not
 add external alert channels, billing systems or provider-side remediation behavior.
 
+## R29 Security And Compliance Hardening
+
+R29 adds API security headers, explicit body limits, global/webhook rate limits and
+centralized redaction for client error responses and persisted provider failure messages.
+Webhook endpoints remain signature-verified and replay-safe through timestamped SES
+signatures where available plus provider event IDs/idempotency for SES, Meta WhatsApp and
+Twilio.
+
+The Twilio development test TwiML endpoint is blocked in production unless calling consent
+mode is explicitly confirmed. Email, WhatsApp and calling flows continue to rely on the
+existing execution-time suppression, `doNotContact`, terminal-state, human-control and
+provider-configuration gates.
+
+PII and retention boundaries are documented in
+`docs/architecture/r29-security-compliance-review.md`. No retention deletion automation or
+new compliance policy is implemented because the client decisions remain open.
+
 ## R7 Email Deliverability & Suppression
 
 R7 makes pre-send validation an explicit reusable service. The same server-owned

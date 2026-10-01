@@ -31,6 +31,7 @@ import { leadEvents } from "./lead.events.js";
 import { canAssignLead, canCreateLeadWithOwner } from "./lead.permissions.js";
 import { findPipelineStageById as findStageById } from "../pipeline/pipeline.repository.js";
 import { toPipelineStageDto } from "../pipeline/pipeline.service.js";
+import { publishRealtimeEvent } from "../realtime/realtime.service.js";
 
 export function toLeadDto(lead: LeadRecord): LeadDto {
   return {
@@ -242,6 +243,7 @@ export async function createLead(
     }
   });
 
+  await publishRealtimeEvent({ entityType: "lead", action: "lead-created", leadId: lead.id });
   return toLeadDto(lead);
 }
 
@@ -304,6 +306,7 @@ export async function updateLead(
     before: getEditableLeadSnapshot(existing)
   });
 
+  await publishRealtimeEvent({ entityType: "lead", action: "lead-updated", leadId });
   return toLeadDto(lead);
 }
 
@@ -334,6 +337,7 @@ export async function assignLead(
     }
   });
 
+  await publishRealtimeEvent({ entityType: "lead", action: "lead-assigned", leadId });
   return toLeadDto(lead);
 }
 
@@ -353,6 +357,7 @@ export async function updateLeadStatus(
     }
   });
 
+  await publishRealtimeEvent({ entityType: "lead", action: "lead-status-changed", leadId });
   return toLeadDto(lead);
 }
 
@@ -381,5 +386,6 @@ export async function updateLeadStage(
     activityDescription: `Stage changed from ${existing.stage.label} to ${targetStage.label}`
   });
 
+  await publishRealtimeEvent({ entityType: "lead", action: "lead-stage-changed", leadId });
   return toLeadDto(lead);
 }

@@ -13,6 +13,7 @@ import { getRequiredUser } from "../../middleware/auth.middleware.js";
 import {
   getAwsSesHealth,
   createEmailSuppression,
+  ingestE2ECustomerReply,
   ingestSesFeedbackEvent,
   ingestSesInboundEmail,
   listEmailSuppressions,
@@ -22,6 +23,7 @@ import {
 } from "./email.service.js";
 import type {
   CreateEmailSuppressionInput,
+  E2ECustomerReplyInput,
   SendEmailInput,
   ValidatePreSendEmailInput
 } from "./email.schemas.js";
@@ -102,4 +104,11 @@ export async function ingestSesInboundEmailController(
       }
     })
   );
+}
+
+export async function ingestE2ECustomerReplyController(
+  request: Request<ParamsDictionary, SesInboundEmailDto, E2ECustomerReplyInput>,
+  response: Response<SesInboundEmailDto>
+): Promise<void> {
+  response.status(200).json(await ingestE2ECustomerReply(getRequiredUser(request), request.body));
 }

@@ -3,6 +3,7 @@ import { normalizeEmail, normalizePhone, normalizeWebsite } from "@shilabs/valid
 import { getZohoBiginConfig } from "../../../config/zoho-bigin.js";
 import { AppError } from "../../../shared/errors.js";
 import { prisma } from "../../../shared/prisma.js";
+import { redactSecrets } from "../../../shared/redaction.js";
 import type { AuthenticatedUser } from "../../auth/auth.types.js";
 import type { CRMContact } from "../../crm/crm.provider.js";
 import { upsertIntegrationAccount } from "../integration-mapping.repository.js";
@@ -23,7 +24,7 @@ function nowIso(date: Date): string {
 }
 
 function sanitizeError(error: unknown): string {
-  if (error instanceof Error) return error.message;
+  if (error instanceof Error) return redactSecrets(error.message).slice(0, 500);
   return "Zoho Bigin lead/contact sync failed";
 }
 

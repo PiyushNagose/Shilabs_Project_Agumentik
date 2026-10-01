@@ -27,3 +27,35 @@ export const twilioRecordingWebhookSchema = z.object({
 
 export type TwilioStatusWebhookInput = z.infer<typeof twilioStatusWebhookSchema>;
 export type TwilioRecordingWebhookInput = z.infer<typeof twilioRecordingWebhookSchema>;
+
+export const exotelStatusWebhookSchema = z
+  .object({
+    CallSid: z.string().trim().min(1).max(120).optional(),
+    Sid: z.string().trim().min(1).max(120).optional(),
+    CallStatus: z.string().trim().min(1).max(80).optional(),
+    Status: z.string().trim().min(1).max(80).optional(),
+    Duration: z.coerce.string().trim().max(20).optional(),
+    CallDuration: z.coerce.string().trim().max(20).optional(),
+    DateUpdated: z.string().trim().max(120).optional(),
+    Timestamp: z.string().trim().max(120).optional(),
+    CustomField: z.string().trim().max(200).optional()
+  })
+  .loose()
+  .superRefine((value, context) => {
+    if (!value.CallSid && !value.Sid) {
+      context.addIssue({
+        code: "custom",
+        message: "Exotel callback is missing CallSid/Sid",
+        path: ["CallSid"]
+      });
+    }
+    if (!value.CallStatus && !value.Status) {
+      context.addIssue({
+        code: "custom",
+        message: "Exotel callback is missing CallStatus/Status",
+        path: ["CallStatus"]
+      });
+    }
+  });
+
+export type ExotelStatusWebhookInput = z.infer<typeof exotelStatusWebhookSchema>;

@@ -28,7 +28,9 @@ import { scoringRoutes } from "./modules/scoring/scoring.routes.js";
 import { zohoBiginRoutes } from "./modules/integrations/zoho-bigin/zoho-bigin.routes.js";
 import { userRoutes } from "./modules/users/user.routes.js";
 import { voiceRoutes } from "./modules/voice/voice.routes.js";
+import { realtimeRoutes } from "./modules/realtime/realtime.routes.js";
 import { errorHandler, notFoundHandler } from "./middleware/error.middleware.js";
+import { createGlobalRateLimiter, securityHeaders } from "./middleware/security.middleware.js";
 
 const startedAt = new Date();
 
@@ -57,6 +59,9 @@ export function createApp(): Express {
   const config = getApiConfig();
 
   app.disable("x-powered-by");
+  app.set("trust proxy", config.trustProxy);
+  app.use(securityHeaders);
+  app.use(createGlobalRateLimiter(config));
   app.use(
     cors({
       origin: (origin, callback) => {
@@ -67,6 +72,7 @@ export function createApp(): Express {
   );
   app.use(
     express.json({
+      limit: config.jsonBodyLimit,
       verify: (request, _response, buffer) => {
         (request as Request & { rawBody?: string }).rawBody = buffer.toString("utf8");
       }
@@ -123,6 +129,7 @@ export function createApp(): Express {
   app.use("/api/scoring", scoringRoutes);
   app.use("/api/integrations/zoho-bigin", zohoBiginRoutes);
   app.use("/api/voice", voiceRoutes);
+  app.use("/api/realtime", realtimeRoutes);
   app.use(notFoundHandler);
   app.use(errorHandler);
 

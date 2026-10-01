@@ -1,5 +1,5 @@
 import type React from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CONVERSATION_MODES,
   type ActivityDto,
@@ -7,9 +7,12 @@ import {
   type BriefingRunDto,
   type ConversationDto,
   type ConversationModeName,
+  type FollowUpSequenceDto,
+  type HumanConversationReplyDto,
   type HumanTakeoverBriefingDto,
   type InternalNotificationDto,
   type LeadDto,
+  type LeadQualificationDto,
   type LeadTemperatureName,
   type MeetingRequestDto,
   type MessageDto,
@@ -17,13 +20,17 @@ import {
   type PipelineStageDto,
   type ProposalDto,
   type ProposalSendResultDto,
-  type PublicUser
+  type PublicUser,
+  type ZohoLeadContactSyncDto
 } from "@shilabs/shared-types";
 import { Icon } from "../../components/Icon.js";
 import { StateBlock } from "../../components/StateBlock.js";
 import { StatusBadge } from "../../components/StatusBadge.js";
+import { useToast } from "../../components/ToastProvider.js";
 import {
+  accelerateFollowUpSequenceForE2E,
   assignLead,
+  apiErrorMessage,
   appendConversationMessage,
   acknowledgeNotification,
   approveProposal,
@@ -33,11 +40,14 @@ import {
   createMeetingRequest,
   generateLeadBriefing,
   generateMeetingBriefing,
+  generateProposal,
   getLead,
   getHumanTakeoverBriefing,
+  getLeadQualification,
   listBriefings,
   listConversationMessages,
   listConversations,
+  listFollowUpSequences,
   listLeadActivities,
   listLeads,
   listMeetingRequests,
@@ -47,15 +57,31 @@ import {
   listAgentCorrections,
   listUsers,
   markNotificationRead,
+  processInboundReply,
   sendApprovedProposal,
+  sendHumanConversationReply,
+  startFollowUpSequence,
   startHumanTakeover,
+  syncZohoLeadContacts,
+  submitE2ECustomerReply,
   updateConversationMode,
   updateLeadStage,
   updateProposalDraft,
   type LeadListParams
 } from "../../services/api-client.js";
+import { useRealtime } from "../realtime/RealtimeProvider.js";
+
+function isE2ELocalUi(): boolean {
+  const viteEnv = import.meta.env as Readonly<Record<string, string | undefined>>;
+  return viteEnv.VITE_APP_ENV === "e2e-local";
+}
 
 type WorkspaceView = "leads" | "pipeline";
+interface SelectOption {
+  label: string;
+  value: string;
+}
+
 export type DetailTab =
   | "Overview"
   | "Conversation"
@@ -77,11 +103,93 @@ const detailTabs: DetailTab[] = [
   "AI Insights"
 ];
 
+function ThemedSelect({
+  ariaLabel,
+  disabled = false,
+  onChange,
+  options,
+  value
+}: {
+  ariaLabel: string;
+  disabled?: boolean;
+  onChange: (value: string) => void;
+  options: SelectOption[];
+  value: string;
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const selected = options.find((option) => option.value === value) ?? options[0];
+
+  useEffect(() => {
+    if (!open) return;
+    function onPointerDown(event: PointerEvent): void {
+      if (!rootRef.current?.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [open]);
+
+  return (
+    <div className={`themed-select${open ? " open" : ""}`} ref={rootRef}>
+      <select
+        aria-label={ariaLabel}
+        className="native-select-proxy"
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.value)}
+        tabIndex={-1}
+        value={value}
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      <button
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        className="themed-select-trigger"
+        disabled={disabled}
+        onClick={() => setOpen((current) => !current)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") setOpen(false);
+        }}
+        type="button"
+      >
+        <span>{selected?.label ?? ""}</span>
+        <Icon name="chevron-down" size={16} />
+      </button>
+      {open ? (
+        <div className="themed-select-menu" role="listbox" aria-label={ariaLabel}>
+          {options.map((option) => (
+            <button
+              aria-selected={option.value === value}
+              className={option.value === value ? "selected" : ""}
+              key={option.value}
+              onClick={() => {
+                onChange(option.value);
+                setOpen(false);
+              }}
+              role="option"
+              type="button"
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 interface CrmWorkspaceProps {
   accessToken: string;
   currentUser: PublicUser;
   initialLeadId?: string | null;
   initialTab?: DetailTab;
+  onRouteChange?: (leadId: string | null, tab?: DetailTab) => void;
 }
 
 interface WorkspaceState {
@@ -99,10 +207,19 @@ interface ConversationState {
   conversations: ConversationDto[];
   selectedConversation: ConversationDto | null;
   messages: MessageDto[];
+  followUpSequences: FollowUpSequenceDto[];
   takeoverBriefing: HumanTakeoverBriefingDto | null;
   input: string;
+  humanReplyInput: string;
+  e2eReplyInput: string;
   loading: boolean;
   saving: boolean;
+  error: string | null;
+}
+
+interface QualificationState {
+  qualification: LeadQualificationDto | null;
+  loading: boolean;
   error: string | null;
 }
 
@@ -115,6 +232,7 @@ interface ProposalState {
   draftContent: string;
   loading: boolean;
   saving: boolean;
+  generating: boolean;
   correctionSaving: boolean;
   error: string | null;
   sendResult: ProposalSendResultDto | null;
@@ -139,6 +257,48 @@ interface BriefingState {
   error: string | null;
 }
 
+interface ZohoSyncState {
+  syncing: boolean;
+  result: ZohoLeadContactSyncDto | null;
+  error: string | null;
+}
+
+function padDatePart(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+function toLocalDateTimeInputValue(date: Date): string {
+  return `${String(date.getFullYear())}-${padDatePart(date.getMonth() + 1)}-${padDatePart(
+    date.getDate()
+  )}T${padDatePart(date.getHours())}:${padDatePart(date.getMinutes())}`;
+}
+
+function nextBusinessWindow(): { windowStart: string; windowEnd: string } {
+  const start = new Date();
+  start.setDate(start.getDate() + 1);
+  start.setHours(9, 0, 0, 0);
+  const end = new Date(start);
+  end.setHours(17, 0, 0, 0);
+  return {
+    windowStart: toLocalDateTimeInputValue(start),
+    windowEnd: toLocalDateTimeInputValue(end)
+  };
+}
+
+function createInitialMeetingState(): MeetingState {
+  const window = nextBusinessWindow();
+  return {
+    requests: [],
+    title: "",
+    windowStart: window.windowStart,
+    windowEnd: window.windowEnd,
+    durationMinutes: 30,
+    loading: false,
+    saving: false,
+    error: null
+  };
+}
+
 const initialFilters: LeadListParams = {
   page: 1,
   pageSize: 10,
@@ -150,8 +310,11 @@ const initialConversationState: ConversationState = {
   conversations: [],
   selectedConversation: null,
   messages: [],
+  followUpSequences: [],
   takeoverBriefing: null,
   input: "",
+  humanReplyInput: "",
+  e2eReplyInput: "",
   loading: false,
   saving: false,
   error: null
@@ -166,20 +329,10 @@ const initialProposalState: ProposalState = {
   draftContent: "",
   loading: false,
   saving: false,
+  generating: false,
   correctionSaving: false,
   error: null,
   sendResult: null
-};
-
-const initialMeetingState: MeetingState = {
-  requests: [],
-  title: "",
-  windowStart: "",
-  windowEnd: "",
-  durationMinutes: 30,
-  loading: false,
-  saving: false,
-  error: null
 };
 
 const initialBriefingState: BriefingState = {
@@ -187,6 +340,12 @@ const initialBriefingState: BriefingState = {
   meetingBriefings: [],
   loading: false,
   saving: false,
+  error: null
+};
+
+const initialQualificationState: QualificationState = {
+  qualification: null,
+  loading: false,
   error: null
 };
 
@@ -224,14 +383,81 @@ function temperatureTone(temperature: LeadTemperatureName): "hot" | "warm" | "ne
   return "neutral";
 }
 
+function formatZohoSyncResult(result: ZohoLeadContactSyncDto): string {
+  const status = result.status.replaceAll("_", " ").toLowerCase();
+  const failed = result.failedRecords > 0 ? `, ${String(result.failedRecords)} failed` : "";
+  const skipped = result.skippedRecords > 0 ? `, ${String(result.skippedRecords)} skipped` : "";
+  const imported = `${String(result.succeededRecords)}/${String(result.totalRecords)} imported`;
+  return `Zoho sync ${status}: ${imported}${failed}${skipped}`;
+}
+
+function hasText(value: string | null | undefined): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function qualificationValue(
+  qualification: LeadQualificationDto | null,
+  key: keyof Pick<
+    LeadQualificationDto,
+    | "need"
+    | "requirement"
+    | "budget"
+    | "budgetBand"
+    | "authority"
+    | "timeline"
+    | "businessFit"
+    | "urgency"
+  >,
+  fallback: string | null | undefined,
+  unknownLabel: string
+): string {
+  const extracted = qualification?.[key];
+  if (hasText(extracted)) {
+    return extracted;
+  }
+
+  if (hasText(fallback)) {
+    return fallback;
+  }
+
+  return unknownLabel;
+}
+
+function decisionMakerValue(qualification: LeadQualificationDto | null): string {
+  if (qualification?.decisionMakerIdentified === true) {
+    return "Yes";
+  }
+
+  if (qualification?.decisionMakerIdentified === false) {
+    return "No";
+  }
+
+  return "Unknown";
+}
+
+function budgetValue(qualification: LeadQualificationDto | null): string {
+  if (hasText(qualification?.budget)) {
+    return qualification.budget;
+  }
+
+  if (hasText(qualification?.budgetBand)) {
+    return qualification.budgetBand;
+  }
+
+  return "Budget unknown";
+}
+
 export function CrmWorkspace({
   accessToken,
   currentUser,
   initialLeadId = null,
-  initialTab
+  initialTab,
+  onRouteChange
 }: CrmWorkspaceProps): React.JSX.Element {
+  const toast = useToast();
+  const realtime = useRealtime();
   const [view, setView] = useState<WorkspaceView>("leads");
-  const [activeTab, setActiveTab] = useState<DetailTab>("Overview");
+  const [activeTab, setActiveTab] = useState<DetailTab>(initialTab ?? "Overview");
   const [filters, setFilters] = useState<LeadListParams>(initialFilters);
   const [state, setState] = useState<WorkspaceState>({
     leadsPage: null,
@@ -245,9 +471,16 @@ export function CrmWorkspace({
   });
   const [conversationState, setConversationState] =
     useState<ConversationState>(initialConversationState);
+  const [qualificationState, setQualificationState] =
+    useState<QualificationState>(initialQualificationState);
   const [proposalState, setProposalState] = useState<ProposalState>(initialProposalState);
-  const [meetingState, setMeetingState] = useState<MeetingState>(initialMeetingState);
+  const [meetingState, setMeetingState] = useState<MeetingState>(() => createInitialMeetingState());
   const [briefingState, setBriefingState] = useState<BriefingState>(initialBriefingState);
+  const [zohoSyncState, setZohoSyncState] = useState<ZohoSyncState>({
+    syncing: false,
+    result: null,
+    error: null
+  });
 
   async function loadWorkspace(
     nextFilters = filters,
@@ -272,6 +505,9 @@ export function CrmWorkspace({
             () => []
           )
         : [];
+      const qualification = selectedLead
+        ? await getLeadQualification(accessToken, selectedLead.id).catch(() => null)
+        : null;
 
       setState({
         leadsPage,
@@ -282,6 +518,11 @@ export function CrmWorkspace({
         notifications,
         loading: false,
         error: null
+      });
+      setQualificationState({
+        qualification,
+        loading: false,
+        error: selectedLead && !qualification ? "Qualification could not be loaded" : null
       });
     } catch {
       setState((current) => ({
@@ -297,13 +538,18 @@ export function CrmWorkspace({
   }, [accessToken]);
 
   useEffect(() => {
-    if (initialLeadId) {
-      if (initialTab) {
-        setActiveTab(initialTab);
-      }
-      void selectLead(initialLeadId);
+    if (initialTab) {
+      setActiveTab(initialTab);
     }
-  }, [initialLeadId, initialTab]);
+  }, [initialTab]);
+
+  useEffect(() => {
+    if (!initialLeadId || state.loading || state.selectedLead?.id === initialLeadId) {
+      return;
+    }
+
+    void selectLead(initialLeadId, false);
+  }, [initialLeadId, state.loading, state.selectedLead?.id]);
 
   useEffect(() => {
     if (activeTab === "Conversation" && state.selectedLead) {
@@ -329,12 +575,48 @@ export function CrmWorkspace({
     }
   }, [accessToken, activeTab, state.selectedLead?.id]);
 
+  useEffect(
+    () =>
+      realtime.subscribe((event) => {
+        const selectedLeadId = state.selectedLead?.id ?? null;
+        const shouldRefreshWorkspace =
+          event.type === "realtime:reconnected" ||
+          ["workspace", "lead", "notifications", "domain-event"].includes(event.entityType);
+        if (!shouldRefreshWorkspace) return;
+
+        const affectsSelectedLead =
+          event.type === "realtime:reconnected" ||
+          !event.leadId ||
+          (selectedLeadId !== null && event.leadId === selectedLeadId);
+
+        void loadWorkspace(filters, selectedLeadId);
+        if (selectedLeadId && affectsSelectedLead) {
+          void loadLeadConversations(selectedLeadId);
+          void loadLeadQualification(selectedLeadId);
+          void loadLeadProposals(selectedLeadId);
+          void loadLeadMeetings(selectedLeadId);
+          void loadLeadBriefings(selectedLeadId);
+          void loadLeadNotifications(selectedLeadId);
+        }
+      }),
+    [accessToken, filters, realtime, state.selectedLead?.id]
+  );
+
   async function loadLeadConversations(leadId: string): Promise<void> {
     setConversationState((current) => ({ ...current, loading: true, error: null }));
 
     try {
-      const conversations = await listConversations(accessToken, { leadId });
-      const selectedConversation = conversations[0] ?? null;
+      const [conversations, followUpSequences] = await Promise.all([
+        listConversations(accessToken, { leadId }),
+        listFollowUpSequences(accessToken, leadId)
+      ]);
+      const currentSelection = conversationState.selectedConversation?.id;
+      const linkedConversationId = followUpSequences[0]?.conversationId;
+      const selectedConversation =
+        conversations.find((conversation) => conversation.id === currentSelection) ??
+        conversations.find((conversation) => conversation.id === linkedConversationId) ??
+        conversations[0] ??
+        null;
       const messages = selectedConversation
         ? await listConversationMessages(accessToken, selectedConversation.id)
         : [];
@@ -348,6 +630,7 @@ export function CrmWorkspace({
         conversations,
         selectedConversation,
         messages,
+        followUpSequences,
         takeoverBriefing,
         loading: false,
         error: null
@@ -370,9 +653,18 @@ export function CrmWorkspace({
         proposals.find((proposal) => proposal.id === proposalState.selectedProposalId) ??
         proposals[0] ??
         null;
-      const corrections = selectedProposal
-        ? await listAgentCorrections(accessToken, { proposalId: selectedProposal.id, limit: 10 })
-        : [];
+      let corrections: AgentCorrectionDto[] = [];
+      let correctionError: string | null = null;
+      if (selectedProposal) {
+        try {
+          corrections = await listAgentCorrections(accessToken, {
+            proposalId: selectedProposal.id,
+            limit: 10
+          });
+        } catch (error) {
+          correctionError = apiErrorMessage(error, "Correction history could not be loaded");
+        }
+      }
 
       setProposalState((current) => ({
         ...current,
@@ -384,17 +676,19 @@ export function CrmWorkspace({
         draftContent: selectedProposal?.currentVersion?.content ?? "",
         loading: false,
         saving: false,
+        generating: false,
         correctionSaving: false,
-        error: null,
+        error: correctionError,
         sendResult: null
       }));
-    } catch {
+    } catch (error) {
       setProposalState((current) => ({
         ...current,
         loading: false,
         saving: false,
+        generating: false,
         correctionSaving: false,
-        error: "Proposals could not be loaded"
+        error: apiErrorMessage(error, "Proposals could not be loaded")
       }));
     }
   }
@@ -451,6 +745,21 @@ export function CrmWorkspace({
     }
   }
 
+  async function loadLeadQualification(leadId: string): Promise<void> {
+    setQualificationState((current) => ({ ...current, loading: true, error: null }));
+
+    try {
+      const qualification = await getLeadQualification(accessToken, leadId);
+      setQualificationState({ qualification, loading: false, error: null });
+    } catch {
+      setQualificationState((current) => ({
+        ...current,
+        loading: false,
+        error: "Qualification could not be loaded"
+      }));
+    }
+  }
+
   const leads = state.leadsPage?.items ?? [];
   const groupedLeads = useMemo(
     () =>
@@ -467,17 +776,60 @@ export function CrmWorkspace({
     await loadWorkspace(merged, null);
   }
 
-  async function selectLead(leadId: string): Promise<void> {
+  async function syncZohoLeadsContacts(): Promise<void> {
+    setZohoSyncState({ syncing: true, result: null, error: null });
+
+    try {
+      const result = await syncZohoLeadContacts(accessToken);
+      setZohoSyncState({ syncing: false, result, error: null });
+      await loadWorkspace(filters);
+      toast.success({
+        title: "Zoho sync completed",
+        detail: `${String(result.succeededRecords)}/${String(result.totalRecords)} records imported`
+      });
+    } catch (error) {
+      const message = apiErrorMessage(error, "Zoho lead/contact sync could not be started");
+      setZohoSyncState({
+        syncing: false,
+        result: null,
+        error: message
+      });
+      toast.error({ title: "Zoho sync failed", detail: message });
+    }
+  }
+
+  async function selectLead(leadId: string, updateRoute = true): Promise<void> {
+    if (updateRoute) {
+      onRouteChange?.(leadId, activeTab);
+    }
     const lead = await getLead(accessToken, leadId);
     const activities = await listLeadActivities(accessToken, leadId).catch(() => []);
     const notifications = await listNotifications(accessToken, { leadId, limit: 10 }).catch(
       () => []
     );
+    const qualification = await getLeadQualification(accessToken, leadId).catch(() => null);
     setState((current) => ({ ...current, selectedLead: lead, activities, notifications }));
+    setQualificationState({
+      qualification,
+      loading: false,
+      error: qualification ? null : "Qualification could not be loaded"
+    });
     setConversationState(initialConversationState);
     setProposalState(initialProposalState);
-    setMeetingState(initialMeetingState);
+    setMeetingState(createInitialMeetingState());
     setBriefingState(initialBriefingState);
+  }
+
+  async function loadLeadNotifications(leadId: string): Promise<void> {
+    const notifications = await listNotifications(accessToken, { leadId, limit: 10 }).catch(
+      () => state.notifications
+    );
+    setState((current) => ({ ...current, notifications }));
+  }
+
+  function changeDetailTab(tab: DetailTab): void {
+    setActiveTab(tab);
+    onRouteChange?.(state.selectedLead?.id ?? initialLeadId ?? null, tab);
   }
 
   async function persistStage(stageId: string): Promise<void> {
@@ -485,18 +837,26 @@ export function CrmWorkspace({
       return;
     }
 
-    const lead = await updateLeadStage(accessToken, state.selectedLead.id, stageId);
-    setState((current) => ({
-      ...current,
-      selectedLead: lead,
-      leadsPage: current.leadsPage
-        ? {
-            ...current.leadsPage,
-            items: current.leadsPage.items.map((item) => (item.id === lead.id ? lead : item))
-          }
-        : current.leadsPage
-    }));
-    await loadWorkspace(filters, lead.id);
+    try {
+      const lead = await updateLeadStage(accessToken, state.selectedLead.id, stageId);
+      setState((current) => ({
+        ...current,
+        selectedLead: lead,
+        leadsPage: current.leadsPage
+          ? {
+              ...current.leadsPage,
+              items: current.leadsPage.items.map((item) => (item.id === lead.id ? lead : item))
+            }
+          : current.leadsPage
+      }));
+      await loadWorkspace(filters, lead.id);
+      toast.success({ title: "Stage updated", detail: lead.stage.label });
+    } catch (error) {
+      toast.error({
+        title: "Stage update failed",
+        detail: apiErrorMessage(error, "Lead stage could not be updated")
+      });
+    }
   }
 
   async function persistOwner(ownerId: string): Promise<void> {
@@ -504,17 +864,28 @@ export function CrmWorkspace({
       return;
     }
 
-    const lead = await assignLead(accessToken, state.selectedLead.id, ownerId || null);
-    setState((current) => ({
-      ...current,
-      selectedLead: lead,
-      leadsPage: current.leadsPage
-        ? {
-            ...current.leadsPage,
-            items: current.leadsPage.items.map((item) => (item.id === lead.id ? lead : item))
-          }
-        : current.leadsPage
-    }));
+    try {
+      const lead = await assignLead(accessToken, state.selectedLead.id, ownerId || null);
+      setState((current) => ({
+        ...current,
+        selectedLead: lead,
+        leadsPage: current.leadsPage
+          ? {
+              ...current.leadsPage,
+              items: current.leadsPage.items.map((item) => (item.id === lead.id ? lead : item))
+            }
+          : current.leadsPage
+      }));
+      toast.success({
+        title: "Owner updated",
+        detail: lead.owner ? `${lead.owner.firstName} ${lead.owner.lastName}` : "Unassigned"
+      });
+    } catch (error) {
+      toast.error({
+        title: "Owner update failed",
+        detail: apiErrorMessage(error, "Lead owner could not be updated")
+      });
+    }
   }
 
   async function startSimulatorConversation(): Promise<void> {
@@ -538,12 +909,95 @@ export function CrmWorkspace({
         saving: false,
         error: null
       }));
-    } catch {
+      toast.success({ title: "Simulator conversation started" });
+    } catch (error) {
+      const message = apiErrorMessage(error, "Conversation could not be started");
       setConversationState((current) => ({
         ...current,
         saving: false,
-        error: "Conversation could not be started"
+        error: message
       }));
+      toast.error({ title: "Conversation start failed", detail: message });
+    }
+  }
+
+  async function startProductionFollowUp(): Promise<void> {
+    if (!state.selectedLead) {
+      return;
+    }
+
+    setConversationState((current) => ({ ...current, saving: true, error: null }));
+
+    try {
+      const sequence = await startFollowUpSequence(accessToken, state.selectedLead.id, {
+        idempotencyKey: `crm-follow-up:${state.selectedLead.id}`
+      });
+      const [conversations, followUpSequences] = await Promise.all([
+        listConversations(accessToken, { leadId: state.selectedLead.id }),
+        listFollowUpSequences(accessToken, state.selectedLead.id).catch(() => [sequence])
+      ]);
+      const selectedConversation =
+        conversations.find((conversation) => conversation.id === sequence.conversationId) ??
+        conversations[0] ??
+        null;
+      const messages = selectedConversation
+        ? await listConversationMessages(accessToken, selectedConversation.id).catch(() => [])
+        : [];
+      setConversationState((current) => ({
+        ...current,
+        conversations,
+        selectedConversation,
+        messages,
+        followUpSequences,
+        loading: false,
+        saving: false,
+        error: null
+      }));
+      await loadWorkspace(filters, state.selectedLead.id);
+      toast.success({ title: "Follow-up automation started", detail: sequence.status.replaceAll("_", " ") });
+    } catch (error) {
+      const message = apiErrorMessage(error, "Follow-up automation could not be started");
+      setConversationState((current) => ({
+        ...current,
+        saving: false,
+        error: message
+      }));
+      toast.error({ title: "Follow-up start failed", detail: message });
+    }
+  }
+
+  async function accelerateProductionFollowUpForE2E(sequenceId: string): Promise<void> {
+    if (!state.selectedLead) {
+      return;
+    }
+
+    setConversationState((current) => ({ ...current, saving: true, error: null }));
+
+    try {
+      const accelerated = await accelerateFollowUpSequenceForE2E(accessToken, sequenceId);
+      const followUpSequences = await listFollowUpSequences(accessToken, state.selectedLead.id).catch(
+        () => [accelerated]
+      );
+      setConversationState((current) => ({
+        ...current,
+        followUpSequences:
+          followUpSequences.length > 0
+            ? followUpSequences
+            : current.followUpSequences.map((sequence) =>
+                sequence.id === accelerated.id ? accelerated : sequence
+              ),
+        saving: false,
+        error: null
+      }));
+      toast.success({ title: "E2E cadence applied" });
+    } catch (error) {
+      const message = apiErrorMessage(error, "E2E follow-up acceleration could not be applied");
+      setConversationState((current) => ({
+        ...current,
+        saving: false,
+        error: message
+      }));
+      toast.error({ title: "E2E acceleration failed", detail: message });
     }
   }
 
@@ -590,19 +1044,27 @@ export function CrmWorkspace({
       return;
     }
 
-    const conversation = await updateConversationMode(
-      accessToken,
-      conversationState.selectedConversation.id,
-      mode
-    );
-    setConversationState((current) => ({
-      ...current,
-      selectedConversation: conversation,
-      conversations: current.conversations.map((item) =>
-        item.id === conversation.id ? conversation : item
-      ),
-      takeoverBriefing: conversation.mode === "HUMAN" ? current.takeoverBriefing : null
-    }));
+    try {
+      const conversation = await updateConversationMode(
+        accessToken,
+        conversationState.selectedConversation.id,
+        mode
+      );
+      setConversationState((current) => ({
+        ...current,
+        selectedConversation: conversation,
+        conversations: current.conversations.map((item) =>
+          item.id === conversation.id ? conversation : item
+        ),
+        takeoverBriefing: conversation.mode === "HUMAN" ? current.takeoverBriefing : null
+      }));
+      toast.success({ title: "Conversation mode updated", detail: mode.replaceAll("_", " ") });
+    } catch (error) {
+      toast.error({
+        title: "Mode update failed",
+        detail: apiErrorMessage(error, "Conversation mode could not be updated")
+      });
+    }
   }
 
   async function startSelectedHumanTakeover(): Promise<void> {
@@ -639,12 +1101,15 @@ export function CrmWorkspace({
         saving: false,
         error: null
       }));
-    } catch {
+      toast.success({ title: "Human takeover started" });
+    } catch (error) {
+      const message = apiErrorMessage(error, "Human takeover could not be started");
       setConversationState((current) => ({
         ...current,
         saving: false,
-        error: "Human takeover could not be started"
+        error: message
       }));
+      toast.error({ title: "Human takeover failed", detail: message });
     }
   }
 
@@ -681,12 +1146,123 @@ export function CrmWorkspace({
         saving: false,
         error: null
       }));
-    } catch {
+      toast.success({ title: "Inbound message saved" });
+    } catch (error) {
+      const message = apiErrorMessage(error, "Message could not be saved");
       setConversationState((current) => ({
         ...current,
         saving: false,
-        error: "Message could not be saved"
+        error: message
       }));
+      toast.error({ title: "Message save failed", detail: message });
+    }
+  }
+
+  async function sendHumanReply(): Promise<void> {
+    if (!state.selectedLead || !conversationState.selectedConversation) {
+      return;
+    }
+    const body = conversationState.humanReplyInput.trim();
+    if (!body) {
+      return;
+    }
+
+    setConversationState((current) => ({ ...current, saving: true, error: null }));
+    try {
+      const idempotencyKey =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `human-reply-${Date.now().toString()}`;
+      const result: HumanConversationReplyDto = await sendHumanConversationReply(
+        accessToken,
+        conversationState.selectedConversation.id,
+        {
+          body,
+          idempotencyKey
+        }
+      );
+      await loadWorkspace(filters, state.selectedLead.id);
+      await loadLeadConversations(state.selectedLead.id);
+      await loadLeadNotifications(state.selectedLead.id);
+      const activities = await listLeadActivities(accessToken, state.selectedLead.id).catch(
+        () => state.activities
+      );
+      setState((current) => ({ ...current, activities }));
+      setConversationState((current) => ({
+        ...current,
+        humanReplyInput: "",
+        saving: false,
+        error: null
+      }));
+      if (result.outboundEmail.status === "SENT") {
+        toast.success({
+          title: "Human reply sent",
+          detail: result.zohoTimeline?.status
+            ? `Zoho timeline ${result.zohoTimeline.status.replaceAll("_", " ").toLowerCase()}`
+            : undefined
+        });
+      } else {
+        toast.error({
+          title: "Human reply not sent",
+          detail: result.outboundEmail.failureMessage ?? result.outboundEmail.status
+        });
+      }
+    } catch (error) {
+      const message = apiErrorMessage(error, "Human reply could not be sent");
+      setConversationState((current) => ({
+        ...current,
+        saving: false,
+        error: message
+      }));
+      toast.error({ title: "Human reply failed", detail: message });
+    }
+  }
+
+  async function submitE2ECustomerReplyFromConversation(): Promise<void> {
+    if (!state.selectedLead || !isE2ELocalUi() || currentUser.role !== "ADMIN") {
+      return;
+    }
+
+    const body = conversationState.e2eReplyInput.trim();
+    if (!body) {
+      return;
+    }
+
+    setConversationState((current) => ({ ...current, saving: true, error: null }));
+
+    try {
+      const inbound = await submitE2ECustomerReply(accessToken, {
+        leadId: state.selectedLead.id,
+        subject: `E2E Customer Reply - ${state.selectedLead.contact.firstName} ${state.selectedLead.contact.lastName}`.trim(),
+        body
+      });
+      if (inbound.inboundEmail.status === "PROCESSED") {
+        await processInboundReply(accessToken, inbound.inboundEmail.id);
+      }
+      await loadWorkspace(filters, state.selectedLead.id);
+      await loadLeadConversations(state.selectedLead.id);
+      await loadLeadQualification(state.selectedLead.id);
+      await loadLeadMeetings(state.selectedLead.id);
+      await loadLeadNotifications(state.selectedLead.id);
+      const activities = await listLeadActivities(accessToken, state.selectedLead.id).catch(
+        () => state.activities
+      );
+      setState((current) => ({ ...current, activities }));
+      setConversationState((current) => ({
+        ...current,
+        e2eReplyInput: "",
+        saving: false,
+        error: null
+      }));
+      toast.success({ title: "Customer reply processed" });
+    } catch (error) {
+      const message = apiErrorMessage(error, "E2E customer reply could not be ingested");
+      setConversationState((current) => ({
+        ...current,
+        saving: false,
+        error: message
+      }));
+      toast.error({ title: "Customer reply failed", detail: message });
     }
   }
 
@@ -752,12 +1328,15 @@ export function CrmWorkspace({
         correctionSaving: false,
         error: null
       }));
-    } catch {
+      toast.success({ title: "Correction recorded" });
+    } catch (error) {
+      const message = apiErrorMessage(error, "Correction could not be recorded");
       setProposalState((current) => ({
         ...current,
         correctionSaving: false,
-        error: "Correction could not be recorded"
+        error: message
       }));
+      toast.error({ title: "Correction failed", detail: message });
     }
   }
 
@@ -784,12 +1363,15 @@ export function CrmWorkspace({
         error: null
       }));
       setState((current) => ({ ...current, activities: current.activities }));
-    } catch {
+      toast.success({ title: "Proposal draft saved" });
+    } catch (error) {
+      const message = apiErrorMessage(error, "Draft could not be saved");
       setProposalState((current) => ({
         ...current,
         saving: false,
-        error: "Draft could not be saved"
+        error: message
       }));
+      toast.error({ title: "Draft save failed", detail: message });
     }
   }
 
@@ -813,12 +1395,85 @@ export function CrmWorkspace({
         saving: false,
         error: null
       }));
-    } catch {
+      toast.success({ title: "Proposal approved" });
+    } catch (error) {
+      const message = apiErrorMessage(error, "Proposal could not be approved");
       setProposalState((current) => ({
         ...current,
         saving: false,
-        error: "Proposal could not be approved"
+        error: message
       }));
+      toast.error({ title: "Proposal approval failed", detail: message });
+    }
+  }
+
+  async function generateSelectedProposal(): Promise<void> {
+    if (!state.selectedLead) {
+      return;
+    }
+
+    setProposalState((current) => ({ ...current, generating: true, error: null }));
+
+    try {
+      const result = await generateProposal(accessToken, {
+        leadId: state.selectedLead.id,
+        kind: "GENERAL",
+        idempotencyKey: `crm-proposal-generation:GENERAL:${state.selectedLead.id}`
+      });
+
+      if (!result.proposal || result.run.status !== "COMPLETED") {
+        const message =
+          result.run.failureMessage ??
+          result.run.failureCode ??
+          "Proposal generation needs attention";
+        setProposalState((current) => ({
+          ...current,
+          generating: false,
+          error: message
+        }));
+        toast.error({ title: "Proposal generation failed", detail: message });
+        return;
+      }
+
+      const generatedProposal = result.proposal;
+      const [proposals, activities] = await Promise.all([
+        listProposals(accessToken, { leadId: state.selectedLead.id, limit: 50 }).catch(() => [
+          generatedProposal
+        ]),
+        listLeadActivities(accessToken, state.selectedLead.id).catch(() => state.activities)
+      ]);
+      const selectedProposal =
+        proposals.find((proposal) => proposal.id === generatedProposal.id) ?? generatedProposal;
+      const corrections = await listAgentCorrections(accessToken, {
+        proposalId: selectedProposal.id,
+        limit: 10
+      }).catch(() => []);
+
+      setState((current) => ({ ...current, activities }));
+      setProposalState((current) => ({
+        ...current,
+        proposals,
+        selectedProposalId: selectedProposal.id,
+        corrections,
+        correctionSummary: "",
+        draftTitle: selectedProposal.title,
+        draftContent: selectedProposal.currentVersion?.content ?? "",
+        loading: false,
+        saving: false,
+        generating: false,
+        correctionSaving: false,
+        error: null,
+        sendResult: null
+      }));
+      toast.success({ title: "Grounded proposal generated", detail: selectedProposal.status.replaceAll("_", " ") });
+    } catch (error) {
+      const message = apiErrorMessage(error, "Grounded proposal could not be generated");
+      setProposalState((current) => ({
+        ...current,
+        generating: false,
+        error: message
+      }));
+      toast.error({ title: "Proposal generation failed", detail: message });
     }
   }
 
@@ -849,12 +1504,15 @@ export function CrmWorkspace({
         );
         setState((current) => ({ ...current, activities }));
       }
-    } catch {
+      toast.success({ title: "Approved proposal sent" });
+    } catch (error) {
+      const message = apiErrorMessage(error, "Approved proposal could not be sent");
       setProposalState((current) => ({
         ...current,
         saving: false,
-        error: "Approved proposal could not be sent"
+        error: message
       }));
+      toast.error({ title: "Proposal send failed", detail: message });
     }
   }
 
@@ -868,12 +1526,14 @@ export function CrmWorkspace({
 
     try {
       const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Kolkata";
+      const requestedTitle =
+        meetingState.title.trim().length > 0 && !isGeneratedMeetingTitle(meetingState.title)
+          ? meetingState.title.trim()
+          : defaultMeetingTitle(state.selectedLead);
       const request = await createMeetingRequest(accessToken, {
         leadId: state.selectedLead.id,
         ownerId: state.selectedLead.ownerId ?? currentUser.id,
-        title:
-          meetingState.title.trim() ||
-          `Meeting with ${state.selectedLead.contact.firstName} ${state.selectedLead.contact.lastName}`,
+        title: requestedTitle,
         timeZone,
         windowStart: new Date(meetingState.windowStart).toISOString(),
         windowEnd: new Date(meetingState.windowEnd).toISOString(),
@@ -893,12 +1553,21 @@ export function CrmWorkspace({
         )
       ]);
       setState((current) => ({ ...current, activities, notifications }));
-    } catch {
+      toast.success({
+        title: meetingRequestHasProposedSlots(request)
+          ? "Meeting slots requested"
+          : request.status === "CONFIRMED"
+            ? "Existing confirmed meeting loaded"
+            : "Meeting request loaded"
+      });
+    } catch (error) {
+      const message = apiErrorMessage(error, "Meeting slots could not be requested");
       setMeetingState((current) => ({
         ...current,
         saving: false,
-        error: "Meeting slots could not be requested"
+        error: message
       }));
+      toast.error({ title: "Meeting request failed", detail: message });
     }
   }
 
@@ -918,12 +1587,15 @@ export function CrmWorkspace({
         );
         setState((current) => ({ ...current, activities }));
       }
-    } catch {
+      toast.success({ title: "Meeting confirmed" });
+    } catch (error) {
+      const message = apiErrorMessage(error, "Meeting could not be confirmed");
       setMeetingState((current) => ({
         ...current,
         saving: false,
-        error: "Meeting could not be confirmed"
+        error: message
       }));
+      toast.error({ title: "Meeting confirmation failed", detail: message });
     }
   }
 
@@ -943,12 +1615,22 @@ export function CrmWorkspace({
         saving: false,
         error: run.status === "FAILED" ? (run.failureMessage ?? "Briefing generation failed") : null
       }));
-    } catch {
+      if (run.status === "FAILED") {
+        toast.error({
+          title: "Lead briefing failed",
+          detail: run.failureMessage ?? run.failureCode ?? "Briefing generation failed"
+        });
+      } else {
+        toast.success({ title: "Lead briefing generated" });
+      }
+    } catch (error) {
+      const message = apiErrorMessage(error, "Lead briefing could not be generated");
       setBriefingState((current) => ({
         ...current,
         saving: false,
-        error: "Lead briefing could not be generated"
+        error: message
       }));
+      toast.error({ title: "Lead briefing failed", detail: message });
     }
   }
 
@@ -968,55 +1650,96 @@ export function CrmWorkspace({
         saving: false,
         error: run.status === "FAILED" ? (run.failureMessage ?? "Briefing generation failed") : null
       }));
-    } catch {
+      if (run.status === "FAILED") {
+        toast.error({
+          title: "Meeting briefing failed",
+          detail: run.failureMessage ?? run.failureCode ?? "Briefing generation failed"
+        });
+      } else {
+        toast.success({ title: "Meeting briefing generated" });
+      }
+    } catch (error) {
+      const message = apiErrorMessage(error, "Meeting briefing could not be generated");
       setBriefingState((current) => ({
         ...current,
         saving: false,
-        error: "Meeting briefing could not be generated"
+        error: message
       }));
+      toast.error({ title: "Meeting briefing failed", detail: message });
     }
   }
 
   async function markLeadNotificationRead(notificationId: string): Promise<void> {
-    const notification = await markNotificationRead(accessToken, notificationId);
-    setState((current) => ({
-      ...current,
-      notifications: current.notifications.map((item) =>
-        item.id === notification.id ? notification : item
-      )
-    }));
+    try {
+      const notification = await markNotificationRead(accessToken, notificationId);
+      setState((current) => ({
+        ...current,
+        notifications: current.notifications.map((item) =>
+          item.id === notification.id ? notification : item
+        )
+      }));
+      toast.success({ title: "Notification marked read" });
+    } catch (error) {
+      toast.error({
+        title: "Notification update failed",
+        detail: apiErrorMessage(error, "Notification could not be marked read")
+      });
+    }
   }
 
   async function acknowledgeLeadNotification(notificationId: string): Promise<void> {
-    const notification = await acknowledgeNotification(accessToken, notificationId);
-    setState((current) => ({
-      ...current,
-      notifications: current.notifications.map((item) =>
-        item.id === notification.id ? notification : item
-      )
-    }));
+    try {
+      const notification = await acknowledgeNotification(accessToken, notificationId);
+      setState((current) => ({
+        ...current,
+        notifications: current.notifications.map((item) =>
+          item.id === notification.id ? notification : item
+        )
+      }));
+      toast.success({ title: "Notification acknowledged" });
+    } catch (error) {
+      toast.error({
+        title: "Acknowledgement failed",
+        detail: apiErrorMessage(error, "Notification could not be acknowledged")
+      });
+    }
   }
+
+  const canSyncZoho = currentUser.role === "ADMIN" || currentUser.role === "SALES_MANAGER";
 
   return (
     <section className="crm-workspace" aria-label="CRM workspace">
       <div className="workspace-rail">
-        <div className="workspace-switch" aria-label="Workspace view">
-          <button
-            className={view === "leads" ? "active" : ""}
-            onClick={() => setView("leads")}
-            type="button"
-          >
-            <Icon name="layout-list" size={16} />
-            Leads
-          </button>
-          <button
-            className={view === "pipeline" ? "active" : ""}
-            onClick={() => setView("pipeline")}
-            type="button"
-          >
-            <Icon name="bar-chart" size={16} />
-            Pipeline
-          </button>
+        <div className="workspace-actions">
+          <div className="workspace-switch" aria-label="Workspace view">
+            <button
+              className={view === "leads" ? "active" : ""}
+              onClick={() => setView("leads")}
+              type="button"
+            >
+              <Icon name="layout-list" size={16} />
+              Leads
+            </button>
+            <button
+              className={view === "pipeline" ? "active" : ""}
+              onClick={() => setView("pipeline")}
+              type="button"
+            >
+              <Icon name="bar-chart" size={16} />
+              Pipeline
+            </button>
+          </div>
+          {canSyncZoho ? (
+            <button
+              className="workspace-sync-button"
+              disabled={zohoSyncState.syncing || state.loading}
+              onClick={() => void syncZohoLeadsContacts()}
+              type="button"
+            >
+              <Icon name="refresh" size={16} />
+              {zohoSyncState.syncing ? "Syncing Zoho" : "Sync Zoho"}
+            </button>
+          ) : null}
         </div>
         <LeadFilters
           filters={filters}
@@ -1024,6 +1747,15 @@ export function CrmWorkspace({
           users={state.users}
           onChange={applyFilters}
         />
+        {zohoSyncState.result !== null || zohoSyncState.error !== null ? (
+          <div
+            aria-live="polite"
+            className={`workspace-sync-status${zohoSyncState.error ? " error" : ""}`}
+          >
+            {zohoSyncState.error ??
+              (zohoSyncState.result ? formatZohoSyncResult(zohoSyncState.result) : null)}
+          </div>
+        ) : null}
       </div>
 
       <div className="workspace-grid">
@@ -1068,6 +1800,12 @@ export function CrmWorkspace({
           onConversationInputChange={(input) =>
             setConversationState((current) => ({ ...current, input }))
           }
+          onHumanReplyInputChange={(humanReplyInput) =>
+            setConversationState((current) => ({ ...current, humanReplyInput }))
+          }
+          onE2ECustomerReplyInputChange={(e2eReplyInput) =>
+            setConversationState((current) => ({ ...current, e2eReplyInput }))
+          }
           onModeChange={persistConversationMode}
           meetingState={meetingState}
           briefingState={briefingState}
@@ -1083,17 +1821,23 @@ export function CrmWorkspace({
           onProposalDraftChange={(patch) =>
             setProposalState((current) => ({ ...current, ...patch, error: null }))
           }
+          onProposalGenerate={generateSelectedProposal}
           onProposalRefresh={() =>
             state.selectedLead ? loadLeadProposals(state.selectedLead.id) : Promise.resolve()
           }
+          qualificationState={qualificationState}
           onProposalSave={saveProposalDraft}
           onProposalSelect={selectProposal}
           onProposalSend={sendSelectedProposal}
           onProposalCorrection={recordProposalCorrection}
           onSendProspectMessage={sendProspectMessage}
+          onSendHumanReply={sendHumanReply}
+          onSubmitE2ECustomerReply={submitE2ECustomerReplyFromConversation}
+          onAccelerateFollowUpForE2E={accelerateProductionFollowUpForE2E}
+          onStartFollowUp={startProductionFollowUp}
           onStartConversation={startSimulatorConversation}
           onStartHumanTakeover={startSelectedHumanTakeover}
-          onTabChange={setActiveTab}
+          onTabChange={changeDetailTab}
           proposalState={proposalState}
         />
       </div>
@@ -1112,6 +1856,19 @@ function LeadFilters({
   users: PublicUser[];
   onChange: (filters: LeadListParams) => Promise<void>;
 }): React.JSX.Element {
+  const stageOptions = [
+    { label: "All stages", value: "" },
+    ...stages.map((stage) => ({ label: stage.label, value: stage.id }))
+  ];
+  const ownerOptions = [
+    { label: "All owners", value: "" },
+    ...users.map((user) => ({ label: `${user.firstName} ${user.lastName}`, value: user.id }))
+  ];
+  const sortOptions = [
+    { label: "Latest activity", value: "lastActivityAt" },
+    { label: "Created date", value: "createdAt" }
+  ];
+
   return (
     <form className="lead-filters" onSubmit={(event) => event.preventDefault()}>
       <div className="filter-search">
@@ -1124,40 +1881,26 @@ function LeadFilters({
           value={filters.search ?? ""}
         />
       </div>
-      <select
-        aria-label="Filter by stage"
-        onChange={(event) => void onChange({ stageId: event.target.value })}
+      <ThemedSelect
+        ariaLabel="Filter by stage"
+        onChange={(stageId) => void onChange({ stageId })}
+        options={stageOptions}
         value={filters.stageId ?? ""}
-      >
-        <option value="">All stages</option>
-        {stages.map((stage) => (
-          <option key={stage.id} value={stage.id}>
-            {stage.label}
-          </option>
-        ))}
-      </select>
-      <select
-        aria-label="Filter by owner"
-        onChange={(event) => void onChange({ ownerId: event.target.value })}
+      />
+      <ThemedSelect
+        ariaLabel="Filter by owner"
+        onChange={(ownerId) => void onChange({ ownerId })}
+        options={ownerOptions}
         value={filters.ownerId ?? ""}
-      >
-        <option value="">All owners</option>
-        {users.map((user) => (
-          <option key={user.id} value={user.id}>
-            {user.firstName} {user.lastName}
-          </option>
-        ))}
-      </select>
-      <select
-        aria-label="Sort leads"
-        onChange={(event) =>
-          void onChange({ sort: event.target.value as LeadListParams["sort"], direction: "desc" })
+      />
+      <ThemedSelect
+        ariaLabel="Sort leads"
+        onChange={(sort) =>
+          void onChange({ sort: sort as LeadListParams["sort"], direction: "desc" })
         }
+        options={sortOptions}
         value={filters.sort ?? "lastActivityAt"}
-      >
-        <option value="lastActivityAt">Latest activity</option>
-        <option value="createdAt">Created date</option>
-      </select>
+      />
     </form>
   );
 }
@@ -1258,12 +2001,15 @@ function LeadDetail({
   meetingState,
   notifications,
   proposalState,
+  qualificationState,
   stages,
   users,
   onAssignOwner,
   onChangeStage,
   onConversationChange,
   onConversationInputChange,
+  onHumanReplyInputChange,
+  onE2ECustomerReplyInputChange,
   onGenerateLeadBriefing,
   onGenerateMeetingBriefing,
   onAcknowledgeNotification,
@@ -1275,12 +2021,17 @@ function LeadDetail({
   onModeChange,
   onProposalApprove,
   onProposalDraftChange,
+  onProposalGenerate,
   onProposalRefresh,
   onProposalSave,
   onProposalSelect,
   onProposalSend,
   onProposalCorrection,
   onSendProspectMessage,
+  onSendHumanReply,
+  onSubmitE2ECustomerReply,
+  onAccelerateFollowUpForE2E,
+  onStartFollowUp,
   onStartConversation,
   onStartHumanTakeover,
   onTabChange
@@ -1294,12 +2045,15 @@ function LeadDetail({
   meetingState: MeetingState;
   notifications: InternalNotificationDto[];
   proposalState: ProposalState;
+  qualificationState: QualificationState;
   stages: PipelineStageDto[];
   users: PublicUser[];
   onAssignOwner: (ownerId: string) => Promise<void>;
   onChangeStage: (stageId: string) => Promise<void>;
   onConversationChange: (conversationId: string) => Promise<void>;
   onConversationInputChange: (input: string) => void;
+  onHumanReplyInputChange: (input: string) => void;
+  onE2ECustomerReplyInputChange: (input: string) => void;
   onGenerateLeadBriefing: () => Promise<void>;
   onGenerateMeetingBriefing: (meetingRequestId: string) => Promise<void>;
   onAcknowledgeNotification: (notificationId: string) => Promise<void>;
@@ -1313,12 +2067,17 @@ function LeadDetail({
   onProposalDraftChange: (
     patch: Partial<Pick<ProposalState, "draftTitle" | "draftContent" | "correctionSummary">>
   ) => void;
+  onProposalGenerate: () => Promise<void>;
   onProposalRefresh: () => Promise<void>;
   onProposalSave: () => Promise<void>;
   onProposalSelect: (proposalId: string) => void;
   onProposalSend: () => Promise<void>;
   onProposalCorrection: () => Promise<void>;
   onSendProspectMessage: () => Promise<void>;
+  onSendHumanReply: () => Promise<void>;
+  onSubmitE2ECustomerReply: () => Promise<void>;
+  onAccelerateFollowUpForE2E: (sequenceId: string) => Promise<void>;
+  onStartFollowUp: () => Promise<void>;
   onStartConversation: () => Promise<void>;
   onStartHumanTakeover: () => Promise<void>;
   onTabChange: (tab: DetailTab) => void;
@@ -1333,6 +2092,12 @@ function LeadDetail({
       </aside>
     );
   }
+
+  const stageOptions = stages.map((stage) => ({ label: stage.label, value: stage.id }));
+  const ownerOptions = [
+    { label: "Unassigned", value: "" },
+    ...users.map((user) => ({ label: `${user.firstName} ${user.lastName}`, value: user.id }))
+  ];
 
   return (
     <aside className="lead-detail" aria-label="Lead detail">
@@ -1353,33 +2118,22 @@ function LeadDetail({
 
       <div className="detail-controls">
         <label>
-          Stage
-          <select
-            aria-label="Change lead stage"
-            onChange={(event) => void onChangeStage(event.target.value)}
+          <span>Stage</span>
+          <ThemedSelect
+            ariaLabel="Change lead stage"
+            onChange={(stageId) => void onChangeStage(stageId)}
+            options={stageOptions}
             value={lead.stageId}
-          >
-            {stages.map((stage) => (
-              <option key={stage.id} value={stage.id}>
-                {stage.label}
-              </option>
-            ))}
-          </select>
+          />
         </label>
         <label>
-          Owner
-          <select
-            aria-label="Assign owner"
-            onChange={(event) => void onAssignOwner(event.target.value)}
+          <span>Owner</span>
+          <ThemedSelect
+            ariaLabel="Assign owner"
+            onChange={(ownerId) => void onAssignOwner(ownerId)}
+            options={ownerOptions}
             value={lead.ownerId ?? ""}
-          >
-            <option value="">Unassigned</option>
-            {users.map((user) => (
-              <option key={user.id} value={user.id}>
-                {user.firstName} {user.lastName}
-              </option>
-            ))}
-          </select>
+          />
         </label>
       </div>
 
@@ -1418,9 +2172,12 @@ function LeadDetail({
         briefingState={briefingState}
         meetingState={meetingState}
         proposalState={proposalState}
+        qualificationState={qualificationState}
         tab={activeTab}
         onConversationChange={onConversationChange}
         onConversationInputChange={onConversationInputChange}
+        onHumanReplyInputChange={onHumanReplyInputChange}
+        onE2ECustomerReplyInputChange={onE2ECustomerReplyInputChange}
         onModeChange={onModeChange}
         onGenerateLeadBriefing={onGenerateLeadBriefing}
         onGenerateMeetingBriefing={onGenerateMeetingBriefing}
@@ -1430,12 +2187,17 @@ function LeadDetail({
         onMeetingRequest={onMeetingRequest}
         onProposalApprove={onProposalApprove}
         onProposalDraftChange={onProposalDraftChange}
+        onProposalGenerate={onProposalGenerate}
         onProposalRefresh={onProposalRefresh}
         onProposalSave={onProposalSave}
         onProposalSelect={onProposalSelect}
         onProposalSend={onProposalSend}
         onProposalCorrection={onProposalCorrection}
         onSendProspectMessage={onSendProspectMessage}
+        onSendHumanReply={onSendHumanReply}
+        onSubmitE2ECustomerReply={onSubmitE2ECustomerReply}
+        onAccelerateFollowUpForE2E={onAccelerateFollowUpForE2E}
+        onStartFollowUp={onStartFollowUp}
         onStartConversation={onStartConversation}
         onStartHumanTakeover={onStartHumanTakeover}
       />
@@ -1502,9 +2264,12 @@ function DetailTabPanel({
   briefingState,
   meetingState,
   proposalState,
+  qualificationState,
   tab,
   onConversationChange,
   onConversationInputChange,
+  onHumanReplyInputChange,
+  onE2ECustomerReplyInputChange,
   onGenerateLeadBriefing,
   onGenerateMeetingBriefing,
   onModeChange,
@@ -1514,12 +2279,17 @@ function DetailTabPanel({
   onMeetingRequest,
   onProposalApprove,
   onProposalDraftChange,
+  onProposalGenerate,
   onProposalRefresh,
   onProposalSave,
   onProposalSelect,
   onProposalSend,
   onProposalCorrection,
   onSendProspectMessage,
+  onSendHumanReply,
+  onSubmitE2ECustomerReply,
+  onAccelerateFollowUpForE2E,
+  onStartFollowUp,
   onStartConversation,
   onStartHumanTakeover
 }: {
@@ -1530,9 +2300,12 @@ function DetailTabPanel({
   briefingState: BriefingState;
   meetingState: MeetingState;
   proposalState: ProposalState;
+  qualificationState: QualificationState;
   tab: DetailTab;
   onConversationChange: (conversationId: string) => Promise<void>;
   onConversationInputChange: (input: string) => void;
+  onHumanReplyInputChange: (input: string) => void;
+  onE2ECustomerReplyInputChange: (input: string) => void;
   onGenerateLeadBriefing: () => Promise<void>;
   onGenerateMeetingBriefing: (meetingRequestId: string) => Promise<void>;
   onModeChange: (mode: ConversationModeName) => Promise<void>;
@@ -1544,12 +2317,17 @@ function DetailTabPanel({
   onProposalDraftChange: (
     patch: Partial<Pick<ProposalState, "draftTitle" | "draftContent" | "correctionSummary">>
   ) => void;
+  onProposalGenerate: () => Promise<void>;
   onProposalRefresh: () => Promise<void>;
   onProposalSave: () => Promise<void>;
   onProposalSelect: (proposalId: string) => void;
   onProposalSend: () => Promise<void>;
   onProposalCorrection: () => Promise<void>;
   onSendProspectMessage: () => Promise<void>;
+  onSendHumanReply: () => Promise<void>;
+  onSubmitE2ECustomerReply: () => Promise<void>;
+  onAccelerateFollowUpForE2E: (sequenceId: string) => Promise<void>;
+  onStartFollowUp: () => Promise<void>;
   onStartConversation: () => Promise<void>;
   onStartHumanTakeover: () => Promise<void>;
 }): React.JSX.Element {
@@ -1558,11 +2336,19 @@ function DetailTabPanel({
       <ConversationSimulator
         activities={activities}
         conversationState={conversationState}
+        currentUser={currentUser}
         lead={lead}
+        qualification={qualificationState.qualification}
         onConversationChange={onConversationChange}
         onConversationInputChange={onConversationInputChange}
+        onHumanReplyInputChange={onHumanReplyInputChange}
+        onE2ECustomerReplyInputChange={onE2ECustomerReplyInputChange}
         onModeChange={onModeChange}
         onSendProspectMessage={onSendProspectMessage}
+        onSendHumanReply={onSendHumanReply}
+        onSubmitE2ECustomerReply={onSubmitE2ECustomerReply}
+        onAccelerateFollowUpForE2E={onAccelerateFollowUpForE2E}
+        onStartFollowUp={onStartFollowUp}
         onStartConversation={onStartConversation}
         onStartHumanTakeover={onStartHumanTakeover}
       />
@@ -1576,6 +2362,7 @@ function DetailTabPanel({
         proposalState={proposalState}
         onApprove={onProposalApprove}
         onDraftChange={onProposalDraftChange}
+        onGenerate={onProposalGenerate}
         onRefresh={onProposalRefresh}
         onSave={onProposalSave}
         onSelect={onProposalSelect}
@@ -1612,48 +2399,191 @@ function DetailTabPanel({
 
   if (tab === "Activities") {
     return (
-      <div className="tab-panel">
-        {activities.length === 0 ? (
-          <StateBlock title="No activities yet" />
-        ) : (
-          activities.map((activity) => (
-            <article className="activity-item" key={activity.id}>
-              <strong>{activity.type.replaceAll("_", " ")}</strong>
-              <span>{activity.description}</span>
-              <small>{formatDate(activity.createdAt)}</small>
-            </article>
-          ))
-        )}
+      <div className="tab-panel tab-panel-structured">
+        <TabSection
+          eyebrow="Activities"
+          title="Latest activity"
+          meta={`${String(activities.length)} records`}
+        >
+          {activities.length === 0 ? (
+            <StateBlock title="No activities yet" />
+          ) : (
+            <div className="activity-stack">
+              {activities.map((activity) => (
+                <article className="activity-item" key={activity.id}>
+                  <div>
+                    <strong>{activity.type.replaceAll("_", " ")}</strong>
+                    <small>{formatDate(activity.createdAt)}</small>
+                  </div>
+                  <span>{activity.description}</span>
+                </article>
+              ))}
+            </div>
+          )}
+        </TabSection>
       </div>
     );
   }
 
   if (tab === "Deal") {
     return (
-      <div className="tab-panel">
-        <p>{formatMoney(lead.estimatedValue, lead.currency)}</p>
-        <p>
-          {lead.stage.label} pipeline probability is {lead.stage.probability}%.
-        </p>
+      <div className="tab-panel tab-panel-structured">
+        <TabSection eyebrow="Deal" title="Pipeline context" meta={lead.stage.label}>
+          <div className="tab-data-grid">
+            <TabData label="Estimated value" value={formatMoney(lead.estimatedValue, lead.currency)} />
+            <TabData label="Stage" value={lead.stage.label} />
+            <TabData label="Probability" value={`${String(lead.stage.probability)}%`} />
+            <TabData label="Status" value={lead.status.replaceAll("_", " ")} />
+            <TabData label="Next action" value={lead.nextAction ?? "No next action"} />
+            <TabData label="Next action at" value={formatDate(lead.nextActionAt)} />
+          </div>
+        </TabSection>
       </div>
     );
   }
 
   if (tab === "Overview") {
     return (
-      <div className="tab-panel">
-        <p>{lead.requirement ?? "Requirement not captured yet."}</p>
-        <p>{lead.serviceInterest ?? "Service interest not captured yet."}</p>
+      <div className="tab-panel tab-panel-structured">
+        <TabSection eyebrow="Overview" title="Lead snapshot" meta={lead.status.replaceAll("_", " ")}>
+          <div className="tab-data-grid">
+            <TabData
+              label="Contact"
+              value={`${lead.contact.firstName} ${lead.contact.lastName}`}
+            />
+            <TabData label="Requirement" value={lead.requirement ?? "Requirement not captured yet"} />
+            <TabData
+              label="Service interest"
+              value={lead.serviceInterest ?? "Service interest not captured yet"}
+            />
+            <TabData label="Source" value={lead.source} />
+            <TabData
+              label="Owner"
+              value={lead.owner ? `${lead.owner.firstName} ${lead.owner.lastName}` : "Unassigned"}
+            />
+            <TabData label="Created" value={formatDate(lead.createdAt)} />
+          </div>
+        </TabSection>
       </div>
     );
   }
 
   return (
-    <div className="tab-panel">
-      <StateBlock
-        title={`${tab} comes in a later milestone`}
-        detail="This tab is reserved without fake runtime data."
-      />
+    <div className="tab-panel tab-panel-structured">
+      <TabSection
+        eyebrow="Qualification"
+        title="Qualification signals"
+        meta={lead.temperature}
+      >
+        {qualificationState.error ? <p className="form-error">{qualificationState.error}</p> : null}
+        <div className="tab-data-grid">
+          <TabData
+            label="Need"
+            value={qualificationValue(
+              qualificationState.qualification,
+              "need",
+              lead.requirement,
+              "Need unknown"
+            )}
+          />
+          <TabData
+            label="Requirement"
+            value={qualificationValue(
+              qualificationState.qualification,
+              "requirement",
+              lead.serviceInterest,
+              "Requirement unknown"
+            )}
+          />
+          <TabData
+            label="Budget"
+            value={budgetValue(qualificationState.qualification)}
+          />
+          <TabData
+            label="Authority"
+            value={qualificationValue(
+              qualificationState.qualification,
+              "authority",
+              null,
+              "Authority unknown"
+            )}
+          />
+          <TabData
+            label="Timeline"
+            value={qualificationValue(
+              qualificationState.qualification,
+              "timeline",
+              null,
+              "Timeline unknown"
+            )}
+          />
+          <TabData label="Decision maker" value={decisionMakerValue(qualificationState.qualification)} />
+          <TabData
+            label="Business fit"
+            value={qualificationValue(
+              qualificationState.qualification,
+              "businessFit",
+              null,
+              "Business fit unknown"
+            )}
+          />
+          <TabData
+            label="Urgency"
+            value={qualificationValue(
+              qualificationState.qualification,
+              "urgency",
+              null,
+              "Urgency unknown"
+            )}
+          />
+          <TabData label="Score" value={String(lead.score)} />
+          <TabData label="Temperature" value={lead.temperature} />
+          <TabData label="Stage" value={lead.stage.label} />
+          <TabData label="Last activity" value={formatDate(lead.lastActivityAt)} />
+        </div>
+        {qualificationState.qualification?.evidence.length ? (
+          <div className="qualification-evidence" aria-label="Qualification evidence">
+            <strong>Evidence</strong>
+            {qualificationState.qualification.evidence.slice(0, 3).map((item) => (
+              <span key={item.id}>{item.quote}</span>
+            ))}
+          </div>
+        ) : null}
+      </TabSection>
+    </div>
+  );
+}
+
+function TabSection({
+  children,
+  eyebrow,
+  meta,
+  title
+}: {
+  children: React.ReactNode;
+  eyebrow: string;
+  meta?: string;
+  title: string;
+}): React.JSX.Element {
+  return (
+    <section className="tab-section">
+      <header className="tab-section-header">
+        <div>
+          <p className="eyebrow">{eyebrow}</p>
+          <h3>{title}</h3>
+        </div>
+        {meta ? <StatusBadge tone="neutral">{meta}</StatusBadge> : null}
+      </header>
+      {children}
+    </section>
+  );
+}
+
+function TabData({ label, value }: { label: string; value: string }): React.JSX.Element {
+  return (
+    <div className="tab-data-item">
+      <span>{label}</span>
+      <strong>{value}</strong>
     </div>
   );
 }
@@ -1742,6 +2672,16 @@ function LeadBriefingPanel({
   onGenerate: () => Promise<void>;
 }): React.JSX.Element {
   const latest = briefingState.leadBriefings[0] ?? null;
+  const generateAction = (
+    <button
+      disabled={briefingState.saving || !lead.id}
+      onClick={() => void onGenerate()}
+      type="button"
+    >
+      <Icon name="sparkles" size={16} />
+      Generate briefing
+    </button>
+  );
 
   return (
     <div className="tab-panel ai-insights-panel">
@@ -1757,26 +2697,90 @@ function LeadBriefingPanel({
           Advisory briefing from persisted lead, qualification, conversation, proposal, meeting and
           approved-KB evidence only.
         </p>
-        <div className="proposal-actions">
-          <button
-            disabled={briefingState.saving || !lead.id}
-            onClick={() => void onGenerate()}
-            type="button"
-          >
-            <Icon name="sparkles" size={16} />
-            Generate briefing
-          </button>
-        </div>
         {briefingState.error ? <p className="form-error">{briefingState.error}</p> : null}
       </section>
       {briefingState.loading ? (
         <StateBlock title="Loading briefings" />
       ) : latest ? (
-        <BriefingCard run={latest} />
+        <>
+          <div className="ai-insights-actions">{generateAction}</div>
+          <BriefingCard run={latest} />
+        </>
       ) : (
-        <StateBlock title="No lead briefing yet" detail="Generate one from real persisted evidence." />
+        <>
+          <div className="ai-insights-actions">{generateAction}</div>
+          <StateBlock
+            title="No lead briefing yet"
+            detail="Generate one from real persisted evidence."
+          />
+        </>
       )}
     </div>
+  );
+}
+
+function meetingDatePart(value: string): string {
+  return value.split("T")[0] ?? "";
+}
+
+function meetingTimePart(value: string): string {
+  return value.split("T")[1]?.slice(0, 5) ?? "09:00";
+}
+
+function mergeMeetingDateTime(value: string, patch: { date?: string; time?: string }): string {
+  const fallback = nextBusinessWindow().windowStart;
+  const date = patch.date ?? (meetingDatePart(value) || meetingDatePart(fallback));
+  const time = patch.time ?? meetingTimePart(value);
+  return `${date}T${time}`;
+}
+
+function meetingRequestHasProposedSlots(request: MeetingRequestDto): boolean {
+  return (
+    request.status === "CONFIRMATION_REQUIRED" &&
+    request.slots.some((slot) => slot.status === "PROPOSED")
+  );
+}
+
+function selectCurrentMeetingRequest(requests: MeetingRequestDto[]): MeetingRequestDto | null {
+  return (
+    requests.find(meetingRequestHasProposedSlots) ??
+    requests.find((request) => request.status === "PROVIDER_PENDING") ??
+    requests.find((request) => request.status === "CONFIRMED") ??
+    requests.find((request) => request.status === "ATTENTION_REQUIRED") ??
+    requests[0] ??
+    null
+  );
+}
+
+function formatSlotRange(slot: MeetingRequestDto["slots"][number]): string {
+  const startsAt = new Date(slot.startsAt);
+  const endsAt = new Date(slot.endsAt);
+  const date = new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeZone: slot.timeZone
+  }).format(startsAt);
+  const time = new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: slot.timeZone
+  });
+  return `${date}, ${time.format(startsAt)}-${time.format(endsAt)} ${slot.timeZone}`;
+}
+
+function defaultMeetingTitle(lead: LeadDto): string {
+  const contactName = `${lead.contact.firstName} ${lead.contact.lastName}`.trim();
+  return `Meeting with ${contactName} from ${lead.company.name}`;
+}
+
+function isGeneratedMeetingTitle(value: string): boolean {
+  return /^Meeting with .+/i.test(value.trim());
+}
+
+function confirmedMeetingSlot(request: MeetingRequestDto): MeetingRequestDto["slots"][number] | null {
+  return (
+    request.slots.find((slot) => slot.id === request.selectedSlotId) ??
+    request.slots.find((slot) => slot.status === "SELECTED") ??
+    null
   );
 }
 
@@ -1799,8 +2803,104 @@ function MeetingPanel({
   onRefresh: (leadId: string) => Promise<void>;
   onRequest: () => Promise<void>;
 }): React.JSX.Element {
+  const currentRequest = selectCurrentMeetingRequest(meetingState.requests);
+  const historicalRequests = currentRequest
+    ? meetingState.requests.filter((request) => request.id !== currentRequest.id)
+    : [];
+  const currentHasSlots = currentRequest ? meetingRequestHasProposedSlots(currentRequest) : false;
   const canRequest =
-    meetingState.windowStart.trim().length > 0 && meetingState.windowEnd.trim().length > 0;
+    meetingState.windowStart.trim().length > 0 &&
+    meetingState.windowEnd.trim().length > 0 &&
+    !currentHasSlots;
+
+  const renderRequestCard = (
+    request: MeetingRequestDto,
+    options?: { historical?: boolean }
+  ) => {
+    const briefing = briefingState.meetingBriefings.find(
+      (item) => item.meetingRequestId === request.id
+    );
+    const proposedSlots = request.slots.filter((slot) => slot.status === "PROPOSED");
+    const visibleSlots = request.slots.filter((slot) => slot.status !== "PROPOSED");
+    const confirmedSlot = confirmedMeetingSlot(request);
+    return (
+      <article
+        className={`proposal-list-item meeting-request-card${options?.historical ? " historical" : ""}`}
+        key={request.id}
+      >
+        <div className="meeting-request-summary">
+          <strong>{request.title}</strong>
+          <span>{request.status.replaceAll("_", " ")}</span>
+          <small>
+            Provider {request.providerSyncStatus.replaceAll("_", " ")} / Zoho{" "}
+            {request.zohoSyncStatus.replaceAll("_", " ")}
+          </small>
+          {request.providerLastError ? <small>{request.providerLastError}</small> : null}
+          {request.partyNotificationNote ? <small>{request.partyNotificationNote}</small> : null}
+        </div>
+        {request.status === "CONFIRMED" ? (
+          <div className="meeting-provider-evidence" aria-label="Confirmed meeting provider evidence">
+            <span>
+              <strong>Confirmed time</strong>
+              {confirmedSlot ? formatSlotRange(confirmedSlot) : formatDate(request.confirmedAt)}
+            </span>
+            <span>
+              <strong>Provider</strong>
+              Google Calendar
+              {request.providerCalendarId ? ` / ${request.providerCalendarId}` : ""}
+            </span>
+            <span>
+              <strong>Organizer</strong>
+              {request.providerOrganizerEmail ?? "Verified organizer not stored yet"}
+            </span>
+            <span>
+              <strong>Event ID</strong>
+              {request.providerMeetingId ?? "Not available"}
+            </span>
+            {request.providerMeetingUrl ? (
+              <a href={request.providerMeetingUrl} rel="noreferrer" target="_blank">
+                Open in Google Calendar
+              </a>
+            ) : null}
+          </div>
+        ) : null}
+        {briefing ? <BriefingCard run={briefing} /> : null}
+        {proposedSlots.length > 0 ? (
+          <div className="meeting-slot-grid" aria-label="Available meeting slots">
+            {proposedSlots.map((slot) => (
+              <button
+                disabled={meetingState.saving || request.status !== "CONFIRMATION_REQUIRED"}
+                key={slot.id}
+                onClick={() => void onConfirm(request.id, slot.id)}
+                type="button"
+              >
+                <Icon name="check" size={15} />
+                Confirm {formatSlotRange(slot)}
+              </button>
+            ))}
+          </div>
+        ) : visibleSlots.length > 0 ? (
+          <div className="meeting-slot-list" aria-label="Persisted meeting slots">
+            {visibleSlots.map((slot) => (
+              <span className={slot.status.toLowerCase()} key={slot.id}>
+                <strong>{slot.status.replaceAll("_", " ")}</strong>
+                {formatSlotRange(slot)}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        <button
+          className="secondary-action"
+          disabled={briefingState.saving}
+          onClick={() => void onGenerateBriefing(request.id)}
+          type="button"
+        >
+          <Icon name="sparkles" size={15} />
+          Briefing
+        </button>
+      </article>
+    );
+  };
 
   return (
     <div className="tab-panel meeting-panel">
@@ -1818,27 +2918,71 @@ function MeetingPanel({
           <input
             disabled={meetingState.saving}
             onChange={(event) => onDraftChange({ title: event.target.value })}
-            placeholder={`Meeting with ${lead.contact.firstName} ${lead.contact.lastName}`}
+            placeholder={defaultMeetingTitle(lead)}
             value={meetingState.title}
           />
         </label>
         <div className="meeting-time-grid">
           <label className="proposal-field">
-            Window start
+            Start date
             <input
               disabled={meetingState.saving}
-              onChange={(event) => onDraftChange({ windowStart: event.target.value })}
-              type="datetime-local"
-              value={meetingState.windowStart}
+              onChange={(event) =>
+                onDraftChange({
+                  windowStart: mergeMeetingDateTime(meetingState.windowStart, {
+                    date: event.target.value
+                  })
+                })
+              }
+              type="date"
+              value={meetingDatePart(meetingState.windowStart)}
             />
           </label>
           <label className="proposal-field">
-            Window end
+            Start time
             <input
               disabled={meetingState.saving}
-              onChange={(event) => onDraftChange({ windowEnd: event.target.value })}
-              type="datetime-local"
-              value={meetingState.windowEnd}
+              onChange={(event) =>
+                onDraftChange({
+                  windowStart: mergeMeetingDateTime(meetingState.windowStart, {
+                    time: event.target.value
+                  })
+                })
+              }
+              step={900}
+              type="time"
+              value={meetingTimePart(meetingState.windowStart)}
+            />
+          </label>
+          <label className="proposal-field">
+            End date
+            <input
+              disabled={meetingState.saving}
+              onChange={(event) =>
+                onDraftChange({
+                  windowEnd: mergeMeetingDateTime(meetingState.windowEnd, {
+                    date: event.target.value
+                  })
+                })
+              }
+              type="date"
+              value={meetingDatePart(meetingState.windowEnd)}
+            />
+          </label>
+          <label className="proposal-field">
+            End time
+            <input
+              disabled={meetingState.saving}
+              onChange={(event) =>
+                onDraftChange({
+                  windowEnd: mergeMeetingDateTime(meetingState.windowEnd, {
+                    time: event.target.value
+                  })
+                })
+              }
+              step={900}
+              type="time"
+              value={meetingTimePart(meetingState.windowEnd)}
             />
           </label>
           <label className="proposal-field">
@@ -1863,7 +3007,7 @@ function MeetingPanel({
             type="button"
           >
             <Icon name="check" size={16} />
-            Request slots
+            {currentHasSlots ? "Slots available" : "Request slots"}
           </button>
           <button
             disabled={meetingState.saving}
@@ -1886,49 +3030,18 @@ function MeetingPanel({
           detail="Create a request to pull real availability from the configured calendar."
         />
       ) : (
-        <div className="proposal-list" aria-label="Meeting requests">
-          {meetingState.requests.map((request) => {
-            const briefing = briefingState.meetingBriefings.find(
-              (item) => item.meetingRequestId === request.id
-            );
-            return (
-            <article className="proposal-list-item" key={request.id}>
-              <strong>{request.title}</strong>
-              <span>{request.status.replaceAll("_", " ")}</span>
-              <small>
-                Provider {request.providerSyncStatus.replaceAll("_", " ")} · Zoho{" "}
-                {request.zohoSyncStatus.replaceAll("_", " ")}
-              </small>
-              {request.providerLastError ? <small>{request.providerLastError}</small> : null}
-              {request.partyNotificationNote ? (
-                <small>{request.partyNotificationNote}</small>
-              ) : null}
-              {briefing ? <BriefingCard run={briefing} /> : null}
-              {request.slots
-                .filter((slot) => slot.status === "PROPOSED")
-                .slice(0, 4)
-                .map((slot) => (
-                  <button
-                    disabled={meetingState.saving || request.status !== "CONFIRMATION_REQUIRED"}
-                    key={slot.id}
-                    onClick={() => void onConfirm(request.id, slot.id)}
-                    type="button"
-                  >
-                    <Icon name="check" size={15} />
-                    {formatDate(slot.startsAt)}
-                  </button>
-                ))}
-              <button
-                disabled={briefingState.saving}
-                onClick={() => void onGenerateBriefing(request.id)}
-                type="button"
-              >
-                <Icon name="sparkles" size={15} />
-                Briefing
-              </button>
-            </article>
-            );
-          })}
+        <div className="meeting-request-stack" aria-label="Meeting requests">
+          {currentRequest ? renderRequestCard(currentRequest) : null}
+          {historicalRequests.length > 0 ? (
+            <details className="meeting-history">
+              <summary>Historical meeting request evidence ({historicalRequests.length})</summary>
+              <div className="proposal-list">
+                {historicalRequests.map((request) =>
+                  renderRequestCard(request, { historical: true })
+                )}
+              </div>
+            </details>
+          ) : null}
         </div>
       )}
     </div>
@@ -1941,6 +3054,7 @@ function ProposalReviewPanel({
   onApprove,
   onCorrection,
   onDraftChange,
+  onGenerate,
   onRefresh,
   onSave,
   onSelect,
@@ -1953,6 +3067,7 @@ function ProposalReviewPanel({
   onDraftChange: (
     patch: Partial<Pick<ProposalState, "draftTitle" | "draftContent" | "correctionSummary">>
   ) => void;
+  onGenerate: () => Promise<void>;
   onRefresh: () => Promise<void>;
   onSave: () => Promise<void>;
   onSelect: (proposalId: string) => void;
@@ -1978,16 +3093,32 @@ function ProposalReviewPanel({
   if (proposalState.proposals.length === 0) {
     return (
       <div className="tab-panel proposal-review">
-        <StateBlock
-          title="No proposals"
-          detail="Proposal generation or manual creation must create records before review."
-          action={
-            <button onClick={() => void onRefresh()} type="button">
+        <section className="proposal-empty-state" aria-label="Proposal generation">
+          <strong>No proposals</strong>
+          <span>
+            Generate a grounded draft from persisted lead, qualification, conversation and approved
+            knowledge evidence.
+          </span>
+          <div className="proposal-actions">
+            <button
+              aria-label="Generate grounded proposal"
+              disabled={proposalState.generating}
+              onClick={() => void onGenerate()}
+              type="button"
+            >
+              <Icon name="sparkles" size={16} />
+              {proposalState.generating ? "Generating proposal" : "Generate grounded proposal"}
+            </button>
+            <button
+              disabled={proposalState.generating}
+              onClick={() => void onRefresh()}
+              type="button"
+            >
               <Icon name="refresh" size={16} />
               Refresh
             </button>
-          }
-        />
+          </div>
+        </section>
         {proposalState.error ? <p className="form-error">{proposalState.error}</p> : null}
       </div>
     );
@@ -1995,6 +3126,12 @@ function ProposalReviewPanel({
 
   return (
     <div className="tab-panel proposal-review">
+      <div className="proposal-actions proposal-toolbar">
+        <button disabled={proposalState.saving} onClick={() => void onRefresh()} type="button">
+          <Icon name="refresh" size={16} />
+          Refresh
+        </button>
+      </div>
       <div className="proposal-list" aria-label="Proposal list">
         {proposalState.proposals.map((proposal) => (
           <button
@@ -2098,7 +3235,7 @@ function ProposalReviewPanel({
                     <strong>v{correction.version} correction</strong>
                     <span>{correction.correctionSummary}</span>
                     <small>
-                      {correction.agentModule} · {formatDate(correction.createdAt)}
+                      {correction.agentModule} - {formatDate(correction.createdAt)}
                     </small>
                   </article>
                 ))}
@@ -2174,31 +3311,125 @@ function ProposalReviewPanel({
   );
 }
 
+function nextFollowUpAttempt(sequence: FollowUpSequenceDto | null) {
+  if (!sequence) {
+    return null;
+  }
+  return sequence.attempts.find((attempt) => ["SCHEDULED", "SENDING"].includes(attempt.status)) ?? null;
+}
+
+function formatFollowUpNextAction(sequence: FollowUpSequenceDto | null): string {
+  if (!sequence) {
+    return "No follow-up automation has been started for this lead.";
+  }
+
+  if (sequence.status === "ATTENTION_REQUIRED") {
+    return sequence.lastErrorMessage ?? "Attention required before follow-up automation can continue.";
+  }
+
+  if (sequence.status === "STOPPED") {
+    return sequence.stopReason ?? "Follow-up automation is stopped.";
+  }
+
+  if (sequence.status === "COMPLETED") {
+    return "No next action";
+  }
+
+  const attempt = nextFollowUpAttempt(sequence);
+  if (!attempt) {
+    return "No scheduled follow-up attempts are pending.";
+  }
+
+  return `${attempt.kind.replaceAll("_", " ")} ${attempt.status.toLowerCase()} for ${formatDate(
+    attempt.scheduledAt
+  )}`;
+}
+
 function ConversationSimulator({
   activities,
   conversationState,
+  currentUser,
   lead,
+  qualification,
   onConversationChange,
   onConversationInputChange,
+  onHumanReplyInputChange,
+  onE2ECustomerReplyInputChange,
   onModeChange,
   onSendProspectMessage,
+  onSendHumanReply,
+  onSubmitE2ECustomerReply,
+  onAccelerateFollowUpForE2E,
+  onStartFollowUp,
   onStartConversation,
   onStartHumanTakeover
 }: {
   activities: ActivityDto[];
   conversationState: ConversationState;
+  currentUser: PublicUser;
   lead: LeadDto;
+  qualification: LeadQualificationDto | null;
   onConversationChange: (conversationId: string) => Promise<void>;
   onConversationInputChange: (input: string) => void;
+  onHumanReplyInputChange: (input: string) => void;
+  onE2ECustomerReplyInputChange: (input: string) => void;
   onModeChange: (mode: ConversationModeName) => Promise<void>;
   onSendProspectMessage: () => Promise<void>;
+  onSendHumanReply: () => Promise<void>;
+  onSubmitE2ECustomerReply: () => Promise<void>;
+  onAccelerateFollowUpForE2E: (sequenceId: string) => Promise<void>;
+  onStartFollowUp: () => Promise<void>;
   onStartConversation: () => Promise<void>;
   onStartHumanTakeover: () => Promise<void>;
 }): React.JSX.Element {
   const selectedConversation = conversationState.selectedConversation;
+  const isHumanConversation = selectedConversation?.mode === "HUMAN";
+  const isEmailConversation = selectedConversation?.channel === "EMAIL";
+  const latestFollowUp = conversationState.followUpSequences[0] ?? null;
+  const nextAttempt = nextFollowUpAttempt(latestFollowUp);
+  const canSubmitE2ECustomerReply = isE2ELocalUi() && currentUser.role === "ADMIN";
+  const e2eAcceleratableSequenceId =
+    isE2ELocalUi() &&
+    currentUser.role === "ADMIN" &&
+    latestFollowUp?.status === "ACTIVE" &&
+    latestFollowUp.e2eAccelerationEligible &&
+    latestFollowUp.cadenceMode !== "E2E_ACCELERATED_MINUTES"
+      ? latestFollowUp.id
+      : null;
   const messageActivities = activities
     .filter((activity) => activity.type === "MESSAGE_RECEIVED" || activity.type === "MESSAGE_SENT")
     .slice(0, 4);
+  const e2eCustomerReplyPanel = canSubmitE2ECustomerReply ? (
+    <section className="e2e-customer-reply-panel" aria-label="E2E Customer Reply">
+      <header>
+        <div>
+          <p className="eyebrow">E2E Customer Reply</p>
+          <h3>Signed inbound email test</h3>
+        </div>
+      </header>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          void onSubmitE2ECustomerReply();
+        }}
+      >
+        <textarea
+          aria-label="E2E Customer Reply"
+          onChange={(event) => onE2ECustomerReplyInputChange(event.target.value)}
+          placeholder="Customer reply received by email"
+          rows={3}
+          value={conversationState.e2eReplyInput}
+        />
+        <button
+          disabled={conversationState.saving || conversationState.e2eReplyInput.trim().length === 0}
+          type="submit"
+        >
+          <Icon name="send" size={16} />
+          Submit inbound reply
+        </button>
+      </form>
+    </section>
+  ) : null;
 
   if (conversationState.loading) {
     return (
@@ -2211,9 +3442,50 @@ function ConversationSimulator({
   if (!selectedConversation) {
     return (
       <div className="tab-panel simulator-panel">
-        <div className="simulator-empty">
+        <section className="production-outreach-panel" aria-label="Production outreach">
+          <header>
+            <div>
+              <p className="eyebrow">Production outreach</p>
+              <h3>Follow-up automation</h3>
+            </div>
+            {latestFollowUp ? (
+              <StatusBadge tone={latestFollowUp.status === "ATTENTION_REQUIRED" ? "warm" : "won"}>
+                {latestFollowUp.status.replaceAll("_", " ")}
+              </StatusBadge>
+            ) : null}
+          </header>
+          <p>{formatFollowUpNextAction(latestFollowUp)}</p>
+          <div className="proposal-actions">
+            <button
+              disabled={
+                conversationState.saving ||
+                latestFollowUp?.status === "ACTIVE" ||
+                isHumanConversation
+              }
+              onClick={() => void onStartFollowUp()}
+              type="button"
+            >
+              <Icon name="send" size={16} />
+              {conversationState.saving ? "Starting automation" : "Start follow-up automation"}
+            </button>
+            {e2eAcceleratableSequenceId ? (
+              <button
+                disabled={conversationState.saving || isHumanConversation}
+                onClick={() => void onAccelerateFollowUpForE2E(e2eAcceleratableSequenceId)}
+                type="button"
+              >
+                <Icon name="sparkles" size={16} />
+                Accelerate E2E
+              </button>
+            ) : null}
+          </div>
+        </section>
+        {e2eCustomerReplyPanel}
+        <div className="simulator-empty internal-simulator">
+          <p className="eyebrow">Internal simulator</p>
           <StateBlock
-            title="No conversation yet"
+            title="No simulator conversation"
+            detail="Use production follow-up automation for real salesperson testing."
             action={
               <button
                 disabled={conversationState.saving}
@@ -2221,7 +3493,7 @@ function ConversationSimulator({
                 type="button"
               >
                 <Icon name="sparkles" size={16} />
-                Start simulator
+                Start internal simulator
               </button>
             }
           />
@@ -2233,42 +3505,137 @@ function ConversationSimulator({
 
   return (
     <div className="tab-panel simulator-panel">
+      <section className="production-outreach-panel" aria-label="Production outreach">
+        <header>
+          <div>
+            <p className="eyebrow">Production outreach</p>
+            <h3>Follow-up automation</h3>
+          </div>
+          {latestFollowUp ? (
+            <StatusBadge tone={latestFollowUp.status === "ATTENTION_REQUIRED" ? "warm" : "won"}>
+              {latestFollowUp.status.replaceAll("_", " ")}
+            </StatusBadge>
+          ) : null}
+        </header>
+        <p>{formatFollowUpNextAction(latestFollowUp)}</p>
+        {isHumanConversation ? (
+          <p className="muted-copy">
+            Automation is paused while the assigned salesperson handles this conversation.
+          </p>
+        ) : null}
+        {nextAttempt ? (
+          <div className="automation-grid">
+            <span>
+              <strong>Next action</strong>
+              {nextAttempt.kind.replaceAll("_", " ")}
+            </span>
+            <span>
+              <strong>Scheduled</strong>
+              {formatDate(nextAttempt.scheduledAt)}
+            </span>
+            <span>
+              <strong>Attempt status</strong>
+              {nextAttempt.status.replaceAll("_", " ")}
+            </span>
+          </div>
+        ) : null}
+        <div className="proposal-actions">
+          <button
+            disabled={
+              conversationState.saving ||
+              latestFollowUp?.status === "ACTIVE" ||
+              isHumanConversation
+            }
+            onClick={() => void onStartFollowUp()}
+            type="button"
+          >
+            <Icon name="send" size={16} />
+            {latestFollowUp ? "Refresh/start idempotently" : "Start follow-up automation"}
+          </button>
+          {e2eAcceleratableSequenceId ? (
+            <button
+              disabled={conversationState.saving || isHumanConversation}
+              onClick={() => void onAccelerateFollowUpForE2E(e2eAcceleratableSequenceId)}
+              type="button"
+            >
+              <Icon name="sparkles" size={16} />
+              Accelerate E2E
+            </button>
+          ) : null}
+        </div>
+      </section>
+      {e2eCustomerReplyPanel}
+
+      <p className="eyebrow">Internal simulator</p>
       <div className="simulator-toolbar">
-        <select
-          aria-label="Select conversation"
-          onChange={(event) => void onConversationChange(event.target.value)}
+        <ThemedSelect
+          ariaLabel="Select conversation"
+          onChange={(conversationId) => void onConversationChange(conversationId)}
+          options={conversationState.conversations.map((conversation) => ({
+            label: `${conversation.channel} - ${formatDate(conversation.lastMessageAt)}`,
+            value: conversation.id
+          }))}
           value={selectedConversation.id}
-        >
-          {conversationState.conversations.map((conversation) => (
-            <option key={conversation.id} value={conversation.id}>
-              {conversation.channel} - {formatDate(conversation.lastMessageAt)}
-            </option>
-          ))}
-        </select>
-        <select
-          aria-label="AI mode"
-          onChange={(event) => void onModeChange(event.target.value as ConversationModeName)}
+        />
+        <ThemedSelect
+          ariaLabel="AI mode"
+          onChange={(mode) => void onModeChange(mode as ConversationModeName)}
+          options={CONVERSATION_MODES.map((mode) => ({
+            label: mode.replaceAll("_", " "),
+            value: mode
+          }))}
           value={selectedConversation.mode}
-        >
-          {CONVERSATION_MODES.map((mode) => (
-            <option key={mode} value={mode}>
-              {mode.replaceAll("_", " ")}
-            </option>
-          ))}
-        </select>
-        <button
-          disabled={conversationState.saving || selectedConversation.mode === "HUMAN"}
-          onClick={() => void onStartHumanTakeover()}
-          type="button"
-        >
-          <Icon name="users" size={16} />
-          Take over
-        </button>
+        />
+        {!isHumanConversation ? (
+          <button
+            disabled={conversationState.saving}
+            onClick={() => void onStartHumanTakeover()}
+            type="button"
+          >
+            <Icon name="users" size={16} />
+            Take over
+          </button>
+        ) : null}
       </div>
 
       {conversationState.error ? <p className="form-error">{conversationState.error}</p> : null}
       {conversationState.takeoverBriefing ? (
         <HumanTakeoverBriefing briefing={conversationState.takeoverBriefing} />
+      ) : null}
+
+      {isHumanConversation && isEmailConversation ? (
+        <section className="human-reply-panel" aria-label="Human reply">
+          <header>
+            <div>
+              <p className="eyebrow">Human reply</p>
+              <h3>Reply to customer</h3>
+            </div>
+            <StatusBadge tone="warm">HUMAN</StatusBadge>
+          </header>
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void onSendHumanReply();
+            }}
+          >
+            <textarea
+              aria-label="Human reply"
+              onChange={(event) => onHumanReplyInputChange(event.target.value)}
+              placeholder="Write the salesperson reply"
+              rows={4}
+              value={conversationState.humanReplyInput}
+            />
+            <button
+              disabled={
+                conversationState.saving || conversationState.humanReplyInput.trim().length === 0
+              }
+              type="submit"
+            >
+              <Icon name="send" size={16} />
+              Send human reply
+            </button>
+          </form>
+        </section>
       ) : null}
 
       <div className="simulator-grid">
@@ -2292,8 +3659,17 @@ function ConversationSimulator({
         <aside className="simulator-side" aria-label="Lead qualification and score">
           <section>
             <strong>Qualification</strong>
-            <span>{lead.requirement ?? "Unknown requirement"}</span>
-            <span>{lead.serviceInterest ?? "Unknown service interest"}</span>
+            <span>
+              {qualificationValue(qualification, "need", lead.requirement, "Unknown requirement")}
+            </span>
+            <span>
+              {qualificationValue(
+                qualification,
+                "requirement",
+                lead.serviceInterest,
+                "Unknown service interest"
+              )}
+            </span>
           </section>
           <section>
             <strong>Score</strong>

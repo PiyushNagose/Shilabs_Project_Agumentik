@@ -4,9 +4,18 @@ import { UserRole, UserStatus } from "@prisma/client";
 import { prisma } from "../../shared/prisma.js";
 import type { AIProvider, FollowUpResult } from "../ai/ai.provider.js";
 import { hashPassword } from "../auth/auth.service.js";
-import { startFollowUpSequence } from "./followup.service.js";
+import {
+  accelerateFollowUpSequenceForE2E,
+  listFollowUpSequencesForLead,
+  startFollowUpSequence
+} from "./followup.service.js";
 
 const actorEmail = "r13-followup-admin@example.local";
+const productionTimingEnv = {
+  APP_ENV: "development",
+  NODE_ENV: "development",
+  FOLLOW_UP_CADENCE_MODE: "production_days"
+};
 
 class FollowUpTestProvider implements AIProvider {
   public generateSalesReply: AIProvider["generateSalesReply"] = () =>
@@ -149,12 +158,24 @@ describe("R13 follow-up sequence service", () => {
       actor,
       lead.id,
       { idempotencyKey: `r13-sequence-${lead.id}` },
-      { provider: new FollowUpTestProvider(), now: new Date("2026-09-17T00:00:00.000Z") }
+      {
+        provider: new FollowUpTestProvider(),
+        now: new Date("2026-09-17T00:00:00.000Z"),
+        env: productionTimingEnv
+      }
     );
 
     expect(sequence.status).toBe("ACTIVE");
     expect(sequence.cadenceDays).toEqual([0, 1, 5, 9]);
+    expect(sequence.cadenceMode).toBe("PRODUCTION_DAYS");
+    expect(sequence.cadenceOffsetsMinutes).toEqual([0, 1440, 7200, 12960]);
     expect(sequence.attempts).toHaveLength(4);
+    expect(sequence.attempts.map((attempt) => attempt.scheduledAt)).toEqual([
+      "2026-09-17T00:00:00.000Z",
+      "2026-09-18T00:00:00.000Z",
+      "2026-09-22T00:00:00.000Z",
+      "2026-09-26T00:00:00.000Z"
+    ]);
     expect(sequence.attempts.map((attempt) => attempt.kind)).toEqual([
       "FIRST_EMAIL",
       "FOLLOW_UP",
@@ -179,5 +200,174 @@ describe("R13 follow-up sequence service", () => {
     expect(sequence.status).toBe("ATTENTION_REQUIRED");
     expect(sequence.lastErrorCode).toBe("CONTACT_DO_NOT_CONTACT");
     expect(sequence.attempts).toHaveLength(0);
+  }, 45000);
+
+  it("lists persisted follow-up sequences for a lead", async () => {
+    const actor = await seedActor();
+    const lead = await seedLead();
+    const started = await startFollowUpSequence(
+      actor,
+      lead.id,
+      { idempotencyKey: `r13-list-${lead.id}` },
+      {
+        provider: new FollowUpTestProvider(),
+        now: new Date("2026-09-17T00:00:00.000Z"),
+        env: productionTimingEnv
+      }
+    );
+
+    const sequences = await listFollowUpSequencesForLead(lead.id);
+
+    expect(sequences).toHaveLength(1);
+    expect(sequences[0]).toMatchObject({
+      id: started.id,
+      leadId: lead.id,
+      status: "ACTIVE"
+    });
+    expect(sequences[0]?.attempts).toHaveLength(4);
+  }, 45000);
+
+  it("creates real attempts with accelerated minute offsets only in the E2E environment", async () => {
+    const actor = await seedActor();
+    const lead = await seedLead();
+
+    const sequence = await startFollowUpSequence(
+      actor,
+      lead.id,
+      { idempotencyKey: `r13-e2e-cadence-${lead.id}` },
+      {
+        provider: new FollowUpTestProvider(),
+        now: new Date("2026-09-17T00:00:00.000Z"),
+        env: {
+          APP_ENV: "e2e-local",
+          NODE_ENV: "development",
+          FOLLOW_UP_CADENCE_MODE: "e2e_accelerated_minutes",
+          FOLLOW_UP_E2E_CADENCE_MINUTES: "0,1,3,5"
+        }
+      }
+    );
+
+    expect(sequence.cadenceDays).toEqual([0, 1, 5, 9]);
+    expect(sequence.cadenceMode).toBe("E2E_ACCELERATED_MINUTES");
+    expect(sequence.cadenceOffsetsMinutes).toEqual([0, 1, 3, 5]);
+    expect(sequence.attempts.map((attempt) => attempt.scheduledAt)).toEqual([
+      "2026-09-17T00:00:00.000Z",
+      "2026-09-17T00:01:00.000Z",
+      "2026-09-17T00:03:00.000Z",
+      "2026-09-17T00:05:00.000Z"
+    ]);
+  }, 45000);
+
+  it("prevents accelerated timing in production", async () => {
+    const actor = await seedActor();
+    const lead = await seedLead();
+
+    await expect(
+      startFollowUpSequence(
+        actor,
+        lead.id,
+        { idempotencyKey: `r13-prod-guard-${lead.id}` },
+        {
+          provider: new FollowUpTestProvider(),
+          env: {
+            APP_ENV: "e2e-local",
+            NODE_ENV: "production",
+            FOLLOW_UP_CADENCE_MODE: "e2e_accelerated_minutes",
+            FOLLOW_UP_E2E_CADENCE_MINUTES: "0,1,3,5"
+          }
+        }
+      )
+    ).rejects.toThrow("only allowed");
+  }, 45000);
+
+  it("reschedules only pending scheduled attempts for E2E acceleration", async () => {
+    const actor = await seedActor();
+    const lead = await seedLead();
+    const sequence = await startFollowUpSequence(
+      actor,
+      lead.id,
+      { idempotencyKey: `r13-reschedule-${lead.id}` },
+      {
+        provider: new FollowUpTestProvider(),
+        now: new Date("2026-09-17T00:00:00.000Z"),
+        env: productionTimingEnv
+      }
+    );
+    const firstAttempt = sequence.attempts[0];
+    if (!firstAttempt) throw new Error("Expected first follow-up attempt");
+    await prisma.followUpAttempt.update({
+      where: { id: firstAttempt.id },
+      data: { status: "SENT", sentAt: new Date("2026-09-17T00:00:30.000Z") }
+    });
+    await prisma.domainEventOutbox.update({
+      where: { id: firstAttempt.domainEventId ?? "" },
+      data: { status: "PROCESSED", processedAt: new Date("2026-09-17T00:00:30.000Z") }
+    });
+
+    const accelerated = await accelerateFollowUpSequenceForE2E(actor, sequence.id, {
+      now: new Date("2026-09-17T01:00:00.000Z"),
+      env: {
+        APP_ENV: "e2e-local",
+        NODE_ENV: "development",
+        FOLLOW_UP_CADENCE_MODE: "e2e_accelerated_minutes",
+        FOLLOW_UP_E2E_CADENCE_MINUTES: "0,1,3,5"
+      }
+    });
+
+    expect(accelerated.cadenceMode).toBe("E2E_ACCELERATED_MINUTES");
+    expect(accelerated.attempts.map((attempt) => [attempt.status, attempt.scheduledAt])).toEqual([
+      ["SENT", "2026-09-17T00:00:00.000Z"],
+      ["SCHEDULED", "2026-09-17T01:01:00.000Z"],
+      ["SCHEDULED", "2026-09-17T01:03:00.000Z"],
+      ["SCHEDULED", "2026-09-17T01:05:00.000Z"]
+    ]);
+    await expect(
+      prisma.domainEventOutbox.findMany({
+        where: { correlationId: sequence.id },
+        orderBy: { nextAttemptAt: "asc" },
+        select: { status: true, nextAttemptAt: true }
+      })
+    ).resolves.toEqual([
+      { status: "PROCESSED", nextAttemptAt: new Date("2026-09-17T00:00:00.000Z") },
+      { status: "PENDING", nextAttemptAt: new Date("2026-09-17T01:01:00.000Z") },
+      { status: "PENDING", nextAttemptAt: new Date("2026-09-17T01:03:00.000Z") },
+      { status: "PENDING", nextAttemptAt: new Date("2026-09-17T01:05:00.000Z") }
+    ]);
+  }, 45000);
+
+  it("marks an existing sequence ineligible for E2E acceleration once a scheduled event is queued", async () => {
+    const actor = await seedActor();
+    const lead = await seedLead();
+    const sequence = await startFollowUpSequence(
+      actor,
+      lead.id,
+      { idempotencyKey: `r13-queued-ineligible-${lead.id}` },
+      {
+        provider: new FollowUpTestProvider(),
+        now: new Date("2026-09-17T00:00:00.000Z"),
+        env: productionTimingEnv
+      }
+    );
+    const scheduledAttempt = sequence.attempts.find((attempt) => attempt.status === "SCHEDULED");
+    if (!scheduledAttempt?.domainEventId) throw new Error("Expected scheduled follow-up event");
+    await prisma.domainEventOutbox.update({
+      where: { id: scheduledAttempt.domainEventId },
+      data: { status: "QUEUED", queuedAt: new Date("2026-09-17T00:00:30.000Z") }
+    });
+
+    const [listed] = await listFollowUpSequencesForLead(lead.id);
+
+    expect(listed?.e2eAccelerationEligible).toBe(false);
+    await expect(
+      accelerateFollowUpSequenceForE2E(actor, sequence.id, {
+        now: new Date("2026-09-17T01:00:00.000Z"),
+        env: {
+          APP_ENV: "e2e-local",
+          NODE_ENV: "development",
+          FOLLOW_UP_CADENCE_MODE: "e2e_accelerated_minutes",
+          FOLLOW_UP_E2E_CADENCE_MINUTES: "0,1,3,5"
+        }
+      })
+    ).rejects.toThrow("already been queued");
   }, 45000);
 });

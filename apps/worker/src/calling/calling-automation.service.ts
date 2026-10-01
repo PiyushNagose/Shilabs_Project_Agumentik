@@ -7,7 +7,11 @@ import {
 } from "@shilabs/shared-config";
 import { PermanentDomainEventError } from "../domain-events/domain-event.errors.js";
 import { workerPrisma } from "../domain-events/domain-event.repository.js";
-import { WorkerTwilioVoiceProvider, type WorkerVoiceProvider } from "../integrations/twilio-voice.provider.js";
+import {
+  WorkerExotelVoiceProvider,
+  WorkerTwilioVoiceProvider,
+  type WorkerVoiceProvider
+} from "../integrations/twilio-voice.provider.js";
 import { ZohoTimelineSyncer, type TimelineSyncer } from "../followups/zoho-timeline.syncer.js";
 
 type EligibilityBlock = readonly [
@@ -40,6 +44,26 @@ function twilioCallStatus(status: string | null): "QUEUED" | "RINGING" | "IN_PRO
   return "FAILED";
 }
 
+function providerName(config: VoiceConfig): "TWILIO" | "EXOTEL" {
+  return config.provider === "exotel" ? "EXOTEL" : "TWILIO";
+}
+
+function providerDisplayName(config: VoiceConfig): "Twilio" | "Exotel" {
+  return config.provider === "exotel" ? "Exotel" : "Twilio";
+}
+
+function providerFromNumber(config: VoiceConfig): string {
+  return config.provider === "exotel" ? config.exotel.callerId : config.twilio.fromNumber;
+}
+
+function providerCallStatus(status: string | null): "QUEUED" | "RINGING" | "IN_PROGRESS" | "FAILED" {
+  const normalized = (status ?? "queued").trim().toLowerCase();
+  if (["queued", "initiated", "in-progress", "active"].includes(normalized)) return "QUEUED";
+  if (normalized === "ringing") return "RINGING";
+  if (["answered", "completed"].includes(normalized)) return "IN_PROGRESS";
+  return twilioCallStatus(status);
+}
+
 function callingOffsets(config: CallingAutomationConfig): number[] {
   return Array.from({ length: config.maxAttempts }, (_, index) => {
     if (index < config.attemptsSameDay) return index * config.sameDaySpacingMinutes;
@@ -56,12 +80,30 @@ function addMinutes(date: Date, minutes: number): Date {
 
 function missingVoiceConfig(config: VoiceConfig): string[] {
   const missing: string[] = [];
-  if (config.provider !== "twilio") missing.push("VOICE_PROVIDER");
-  if (!config.twilio.accountSid) missing.push("TWILIO_ACCOUNT_SID");
-  if (!config.twilio.authToken) missing.push("TWILIO_AUTH_TOKEN");
-  if (!config.twilio.fromNumber) missing.push("TWILIO_FROM_NUMBER");
+  if (config.provider === "none") {
+    missing.push("VOICE_PROVIDER");
+  } else if (config.provider === "twilio") {
+    if (!config.twilio.accountSid) missing.push("TWILIO_ACCOUNT_SID");
+    if (!config.twilio.authToken) missing.push("TWILIO_AUTH_TOKEN");
+    if (!config.twilio.fromNumber) missing.push("TWILIO_FROM_NUMBER");
+  } else {
+    if (!config.exotel.accountSid) missing.push("EXOTEL_ACCOUNT_SID");
+    if (!config.exotel.apiKey) missing.push("EXOTEL_API_KEY");
+    if (!config.exotel.apiToken) missing.push("EXOTEL_API_TOKEN");
+    if (!config.exotel.apiSubdomain) missing.push("EXOTEL_API_SUBDOMAIN");
+    if (!config.exotel.callerId) missing.push("EXOTEL_CALLER_ID");
+    if (!config.exotel.appUrl && !config.exotel.agentNumber) {
+      missing.push("EXOTEL_APP_URL_OR_AGENT_NUMBER");
+    }
+  }
   if (!config.webhookBaseUrl) missing.push("VOICE_WEBHOOK_BASE_URL");
   return missing;
+}
+
+function createConfiguredVoiceProvider(config: VoiceConfig): WorkerVoiceProvider {
+  return config.provider === "exotel"
+    ? new WorkerExotelVoiceProvider(config)
+    : new WorkerTwilioVoiceProvider(config);
 }
 
 export async function scheduleCallingSequenceAfterFailedEmailSequence(input: {
@@ -91,98 +133,101 @@ export async function scheduleCallingSequenceAfterFailedEmailSequence(input: {
 
   const now = input.now ?? new Date();
   const offsets = callingOffsets(config);
-  await workerPrisma.$transaction(async (tx) => {
-    const callingSequence = await tx.callingSequence.create({
-      data: {
-        leadId: sequence.leadId,
-        contactId: sequence.contactId,
-        followUpSequenceId: sequence.id,
-        cadenceOffsets: offsets,
-        maxAttempts: offsets.length,
-        idempotencyKey
-      }
-    });
-
-    for (const [index, offset] of offsets.entries()) {
-      const scheduledAt = addMinutes(now, offset);
-      const attempt = await tx.callingAttempt.create({
+  await workerPrisma.$transaction(
+    async (tx) => {
+      const callingSequence = await tx.callingSequence.create({
         data: {
-          sequenceId: callingSequence.id,
           leadId: sequence.leadId,
           contactId: sequence.contactId,
-          attemptIndex: index,
-          scheduledAt,
-          idempotencyKey: `calling-attempt:${callingSequence.id}:${String(index)}`
-        }
-      });
-      const event = await tx.domainEventOutbox.upsert({
-        where: { idempotencyKey: `domain-event:calling-attempt:${attempt.id}` },
-        create: {
-          eventType: "CALL_AUTOMATION_ATTEMPT_DUE",
-          aggregateType: "CallingAttempt",
-          aggregateId: attempt.id,
-          payload: {
-            leadId: sequence.leadId,
-            contactId: sequence.contactId,
-            callingSequenceId: callingSequence.id,
-            callingAttemptId: attempt.id,
-            followUpSequenceId: sequence.id
-          },
-          correlationId: callingSequence.id,
-          idempotencyKey: `domain-event:calling-attempt:${attempt.id}`,
-          nextAttemptAt: scheduledAt,
-          maxAttempts: 5
-        },
-        update: {}
-      });
-      await tx.callingAttempt.update({
-        where: { id: attempt.id },
-        data: { domainEventId: event.id }
-      });
-      await tx.domainEventOutbox.upsert({
-        where: { idempotencyKey: `domain-event:whatsapp-send:${attempt.id}` },
-        create: {
-          eventType: "WHATSAPP_SEND_REQUESTED",
-          aggregateType: "CallingAttempt",
-          aggregateId: attempt.id,
-          payload: {
-            leadId: sequence.leadId,
-            contactId: sequence.contactId,
-            callingSequenceId: callingSequence.id,
-            callingAttemptId: attempt.id,
-            followUpSequenceId: sequence.id
-          },
-          correlationId: callingSequence.id,
-          idempotencyKey: `domain-event:whatsapp-send:${attempt.id}`,
-          nextAttemptAt: scheduledAt,
-          maxAttempts: 5
-        },
-        update: {}
-      });
-    }
-
-    await tx.activity.create({
-      data: {
-        leadId: sequence.leadId,
-        type: "CALL_REQUESTED",
-        description: "Calling automation scheduled after completed email follow-up sequence"
-      }
-    });
-    await tx.auditEvent.create({
-      data: {
-        actorType: "SYSTEM",
-        entityType: "CallingSequence",
-        entityId: callingSequence.id,
-        action: "CALLING_SEQUENCE_SCHEDULED",
-        after: {
           followUpSequenceId: sequence.id,
           cadenceOffsets: offsets,
-          voicemailPolicy: "UNRESOLVED_OC_01",
-          compliancePolicy: "UNRESOLVED_OC_13"
+          maxAttempts: offsets.length,
+          idempotencyKey
         }
+      });
+
+      for (const [index, offset] of offsets.entries()) {
+        const scheduledAt = addMinutes(now, offset);
+        const attempt = await tx.callingAttempt.create({
+          data: {
+            sequenceId: callingSequence.id,
+            leadId: sequence.leadId,
+            contactId: sequence.contactId,
+            attemptIndex: index,
+            scheduledAt,
+            idempotencyKey: `calling-attempt:${callingSequence.id}:${String(index)}`
+          }
+        });
+        const event = await tx.domainEventOutbox.upsert({
+          where: { idempotencyKey: `domain-event:calling-attempt:${attempt.id}` },
+          create: {
+            eventType: "CALL_AUTOMATION_ATTEMPT_DUE",
+            aggregateType: "CallingAttempt",
+            aggregateId: attempt.id,
+            payload: {
+              leadId: sequence.leadId,
+              contactId: sequence.contactId,
+              callingSequenceId: callingSequence.id,
+              callingAttemptId: attempt.id,
+              followUpSequenceId: sequence.id
+            },
+            correlationId: callingSequence.id,
+            idempotencyKey: `domain-event:calling-attempt:${attempt.id}`,
+            nextAttemptAt: scheduledAt,
+            maxAttempts: 5
+          },
+          update: {}
+        });
+        await tx.callingAttempt.update({
+          where: { id: attempt.id },
+          data: { domainEventId: event.id }
+        });
+        await tx.domainEventOutbox.upsert({
+          where: { idempotencyKey: `domain-event:whatsapp-send:${attempt.id}` },
+          create: {
+            eventType: "WHATSAPP_SEND_REQUESTED",
+            aggregateType: "CallingAttempt",
+            aggregateId: attempt.id,
+            payload: {
+              leadId: sequence.leadId,
+              contactId: sequence.contactId,
+              callingSequenceId: callingSequence.id,
+              callingAttemptId: attempt.id,
+              followUpSequenceId: sequence.id
+            },
+            correlationId: callingSequence.id,
+            idempotencyKey: `domain-event:whatsapp-send:${attempt.id}`,
+            nextAttemptAt: scheduledAt,
+            maxAttempts: 5
+          },
+          update: {}
+        });
       }
-    });
-  });
+
+      await tx.activity.create({
+        data: {
+          leadId: sequence.leadId,
+          type: "CALL_REQUESTED",
+          description: "Calling automation scheduled after completed email follow-up sequence"
+        }
+      });
+      await tx.auditEvent.create({
+        data: {
+          actorType: "SYSTEM",
+          entityType: "CallingSequence",
+          entityId: callingSequence.id,
+          action: "CALLING_SEQUENCE_SCHEDULED",
+          after: {
+            followUpSequenceId: sequence.id,
+            cadenceOffsets: offsets,
+            voicemailPolicy: "UNRESOLVED_OC_01",
+            compliancePolicy: "UNRESOLVED_OC_13"
+          }
+        }
+      });
+    },
+    { maxWait: 10000, timeout: 30000 }
+  );
 }
 
 async function markAttemptBlocked(input: {
@@ -308,11 +353,17 @@ export async function executeCallingAutomationAttempt(input: {
 
   const voiceConfig = getVoiceConfig(input.env);
   const normalizedToPhone = normalizePhone(lead.contact.phone);
-  const normalizedFromPhone = normalizePhone(voiceConfig.twilio.fromNumber);
+  const configuredFromPhone = providerFromNumber(voiceConfig);
+  const normalizedFromPhone =
+    voiceConfig.provider === "twilio" ? normalizePhone(configuredFromPhone) : configuredFromPhone.trim();
   const block: EligibilityBlock | null = !normalizedToPhone
     ? ["CONTACT_PHONE_MISSING", "Contact phone is not usable", "ATTENTION_REQUIRED"]
     : !normalizedFromPhone
-      ? ["VOICE_FROM_PHONE_MISSING", "Twilio from number is not usable", "ATTENTION_REQUIRED"]
+      ? [
+          "VOICE_FROM_PHONE_MISSING",
+          `${providerDisplayName(voiceConfig)} from number is not usable`,
+          "ATTENTION_REQUIRED"
+        ]
       : lead.contact.doNotContact
         ? ["CONTACT_DO_NOT_CONTACT", "Contact is marked do-not-contact", "STOPPED"]
         : ["WON", "LOST", "DISQUALIFIED"].includes(lead.status)
@@ -367,10 +418,10 @@ export async function executeCallingAutomationAttempt(input: {
       data: {
         leadId: lead.id,
         contactId: lead.contactId,
-        provider: "TWILIO",
+        provider: providerName(voiceConfig),
         toPhone: lead.contact.phone ?? "",
         normalizedToPhone: normalizedToPhone ?? "",
-        fromPhone: voiceConfig.twilio.fromNumber || "not-configured",
+        fromPhone: configuredFromPhone || "not-configured",
         status: "PROVIDER_PENDING",
         regionalVoice: voiceConfig.defaultRegion,
         accent: voiceConfig.defaultAccent,
@@ -386,12 +437,17 @@ export async function executeCallingAutomationAttempt(input: {
       data: { status: "CALLING", startedAt: new Date(), voiceCallAttemptId: voiceCall.id }
     });
 
-    const provider = input.provider ?? new WorkerTwilioVoiceProvider(voiceConfig);
+    const provider = input.provider ?? createConfiguredVoiceProvider(voiceConfig);
     const result = await provider.createOutboundCall({
       to: normalizedToPhone ?? "",
       from: normalizedFromPhone ?? "",
       twimlUrl: `${voiceConfig.webhookBaseUrl.replace(/\/$/, "")}/api/voice/twilio/twiml/test-call?attemptId=${voiceCall.id}`,
-      statusCallbackUrl: webhookUrl(voiceConfig, voiceConfig.twilio.statusCallbackPath),
+      statusCallbackUrl: webhookUrl(
+        voiceConfig,
+        voiceConfig.provider === "exotel"
+          ? voiceConfig.exotel.statusCallbackPath
+          : voiceConfig.twilio.statusCallbackPath
+      ),
       recordingCallbackUrl: voiceConfig.recordingEnabled
         ? webhookUrl(voiceConfig, voiceConfig.twilio.recordingCallbackPath)
         : null,
@@ -433,7 +489,7 @@ export async function executeCallingAutomationAttempt(input: {
         where: { id: voiceCallId },
         data: {
           providerCallId,
-          status: twilioCallStatus(result.providerStatus),
+          status: providerCallStatus(result.providerStatus),
           providerAcceptedAt: now,
           failureCode: null,
           failureMessage: null
@@ -443,7 +499,7 @@ export async function executeCallingAutomationAttempt(input: {
         data: {
           leadId: lead.id,
           type: "CALL_REQUESTED",
-          description: `Calling automation attempt ${String(attempt.attemptIndex + 1)} accepted by Twilio`
+          description: `Calling automation attempt ${String(attempt.attemptIndex + 1)} accepted by ${providerDisplayName(voiceConfig)}`
         }
       });
       await tx.auditEvent.create({
@@ -454,6 +510,7 @@ export async function executeCallingAutomationAttempt(input: {
           action: "CALLING_ATTEMPT_ACCEPTED",
           after: {
             voiceCallAttemptId: updatedCall.id,
+            provider: providerName(voiceConfig),
             providerCallId,
             voicemailPolicy: "UNRESOLVED_OC_01",
             compliancePolicy: "UNRESOLVED_OC_13"
@@ -463,20 +520,20 @@ export async function executeCallingAutomationAttempt(input: {
       await tx.externalRecordMapping.upsert({
         where: {
           provider_entityType_localEntityId: {
-            provider: "TWILIO",
+            provider: providerName(voiceConfig),
             entityType: "CALL",
             localEntityId: updatedCall.id
           }
         },
         create: {
-          provider: "TWILIO",
+          provider: providerName(voiceConfig),
           entityType: "CALL",
           localEntityId: updatedCall.id,
           externalRecordId: providerCallId,
           syncDirection: "OUTBOUND",
           syncStatus: "SYNCED",
           lastSyncedAt: now,
-          idempotencyKey: `twilio:call:${updatedCall.id}`
+          idempotencyKey: `${voiceConfig.provider}:call:${updatedCall.id}`
         },
         update: {
           externalRecordId: providerCallId,

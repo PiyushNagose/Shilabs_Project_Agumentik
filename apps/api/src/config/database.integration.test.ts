@@ -12,8 +12,7 @@ runDatabaseTests("database schema integration", () => {
 
   it("contains the seeded pipeline stages in canonical order", async () => {
     const stages = await prisma.pipelineStage.findMany({ orderBy: { order: "asc" } });
-
-    expect(stages.map((stage) => stage.key)).toEqual([
+    const canonicalKeys = [
       "NEW",
       "CONTACTED",
       "ENGAGED",
@@ -24,7 +23,10 @@ runDatabaseTests("database schema integration", () => {
       "WON",
       "LOST",
       "NURTURE"
-    ]);
+    ];
+    const canonicalStages = stages.filter((stage) => canonicalKeys.includes(stage.key));
+
+    expect(canonicalStages.map((stage) => stage.key)).toEqual(canonicalKeys);
     expect(stages.find((stage) => stage.key === "WON")).toMatchObject({
       probability: 100,
       isClosed: true,

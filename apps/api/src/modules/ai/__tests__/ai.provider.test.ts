@@ -257,7 +257,7 @@ describe("M9 AI provider", () => {
     });
     expect(transport).toHaveBeenCalledTimes(2);
   });
-  it("aborts a hanging request and normalizes timeout", async () => {
+  it("retries timed-out requests and normalizes exhausted timeout", async () => {
     const transport = vi.fn<typeof fetch>().mockImplementation(
       (_url, options) =>
         new Promise((_resolve, reject) => {
@@ -268,13 +268,13 @@ describe("M9 AI provider", () => {
           );
         })
     );
-    const config = getAIConfig({ ...env, AI_TIMEOUT_MS: "100" });
+    const config = getAIConfig({ ...env, AI_TIMEOUT_MS: "100", AI_MAX_RETRIES: "1" });
     if (config.AI_PROVIDER !== "openai") throw new Error("Unexpected OpenAI test config");
     const provider = new OpenAIProvider(config, transport);
     await expect(provider.generateSalesReply(input)).rejects.toMatchObject({
       code: "RETRYABLE_PROVIDER_ERROR"
     });
-    expect(transport).toHaveBeenCalledTimes(1);
+    expect(transport).toHaveBeenCalledTimes(2);
   });
   it("normalizes connection errors", async () => {
     const { provider, transport } = setup();
@@ -363,6 +363,27 @@ describe("Gemini AI provider", () => {
     if (config.AI_PROVIDER !== "gemini") throw new Error("Unexpected Gemini test config");
     const provider = new GeminiProvider(config, transport);
     expect(await provider.generateSalesReply(input)).toEqual(reply);
+    expect(transport).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries timed-out Gemini requests within the configured bound", async () => {
+    const transport = vi.fn<typeof fetch>().mockImplementation(
+      (_url, options) =>
+        new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener(
+            "abort",
+            () => reject(new Error("sensitive network detail")),
+            { once: true }
+          );
+        })
+    );
+    const config = getAIConfig({ ...geminiEnv, AI_TIMEOUT_MS: "100", AI_MAX_RETRIES: "1" });
+    if (config.AI_PROVIDER !== "gemini") throw new Error("Unexpected Gemini test config");
+    const provider = new GeminiProvider(config, transport);
+    await expect(provider.generateSalesReply(input)).rejects.toMatchObject({
+      code: "RETRYABLE_PROVIDER_ERROR",
+      message: "AI provider temporarily unavailable"
+    });
     expect(transport).toHaveBeenCalledTimes(2);
   });
 });

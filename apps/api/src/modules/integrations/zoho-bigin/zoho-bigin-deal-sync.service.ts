@@ -3,6 +3,7 @@ import type { ZohoDealSyncDto } from "@shilabs/shared-types";
 import { getZohoBiginConfig } from "../../../config/zoho-bigin.js";
 import { AppError } from "../../../shared/errors.js";
 import { prisma } from "../../../shared/prisma.js";
+import { redactSecrets } from "../../../shared/redaction.js";
 import type { AuthenticatedUser } from "../../auth/auth.types.js";
 import type { CRMDeal } from "../../crm/crm.provider.js";
 import { upsertIntegrationAccount } from "../integration-mapping.repository.js";
@@ -19,7 +20,7 @@ interface SyncCounters {
 }
 
 function sanitizeError(error: unknown): string {
-  if (error instanceof Error) return error.message;
+  if (error instanceof Error) return redactSecrets(error.message).slice(0, 500);
   return "Zoho Bigin deal sync failed";
 }
 

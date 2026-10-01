@@ -127,6 +127,17 @@ export async function recalculateLeadScore(
   actor: AuthenticatedUser,
   leadId: string
 ): Promise<LeadScoreResultDto> {
+  return recalculateLeadScoreWithActor({ type: "USER", id: actor.id }, leadId);
+}
+
+export async function recalculateLeadScoreForSystem(leadId: string): Promise<LeadScoreResultDto> {
+  return recalculateLeadScoreWithActor({ type: "SYSTEM", id: null }, leadId);
+}
+
+async function recalculateLeadScoreWithActor(
+  actor: { type: "USER" | "SYSTEM"; id: string | null },
+  leadId: string
+): Promise<LeadScoreResultDto> {
   const [configRecord, lead] = await Promise.all([
     findDefaultScoringConfig(),
     findLeadWithQualification(leadId)
@@ -170,7 +181,7 @@ export async function recalculateLeadScore(
     factors: factorSnapshot,
     config: getScoringConfigSnapshot(existingConfig),
     qualificationSnapshot,
-    actorId: actor.id,
+    actor,
     action: scoringEvents.scoreChanged
   });
   return {

@@ -63,6 +63,7 @@ async function clean(): Promise<void> {
       OR: [
         { provider: "TWILIO", externalRecordId: { startsWith: "CA-r23-" } },
         { provider: "TWILIO", externalRecordId: "CA-should-not-call" },
+        { provider: "EXOTEL", externalRecordId: { startsWith: "exotel-r23-" } },
         { provider: "ZOHO_BIGIN", externalRecordId: { startsWith: "zoho-note-" } }
       ]
     }
@@ -179,7 +180,11 @@ describe("R23 calling automation", () => {
     ]);
     await expect(
       workerPrisma.domainEventOutbox.count({
-        where: { aggregateType: "CallingAttempt", correlationId: calling.id }
+        where: {
+          aggregateType: "CallingAttempt",
+          correlationId: calling.id,
+          eventType: "CALL_AUTOMATION_ATTEMPT_DUE"
+        }
       })
     ).resolves.toBe(3);
   });
@@ -215,6 +220,55 @@ describe("R23 calling automation", () => {
       })
     ).resolves.toBe(1);
   });
+
+  it("uses Exotel behind the existing R23 execution path when configured", async () => {
+    const exotelEnv = {
+      ...env,
+      VOICE_PROVIDER: "exotel",
+      EXOTEL_ACCOUNT_SID: "exotel-account",
+      EXOTEL_API_KEY: "exotel-key",
+      EXOTEL_API_TOKEN: "exotel-token",
+      EXOTEL_API_SUBDOMAIN: "api.exotel.test",
+      EXOTEL_CALLER_ID: "08000000000",
+      EXOTEL_APP_URL: "https://voice-e2e.example.test/exotel-flow"
+    } as NodeJS.ProcessEnv;
+    const { sequence } = await createCompletedFollowUp();
+    await scheduleCallingSequenceAfterFailedEmailSequence({ followUpSequenceId: sequence.id, env: exotelEnv });
+    const attempt = await workerPrisma.callingAttempt.findFirstOrThrow({
+      where: { sequence: { followUpSequenceId: sequence.id }, attemptIndex: 0 }
+    });
+    const event = await workerPrisma.domainEventOutbox.findUniqueOrThrow({
+      where: { id: attempt.domainEventId ?? "" }
+    });
+    const provider = new TestVoiceProvider({
+      status: "ACCEPTED",
+      providerCallId: "exotel-r23-accepted",
+      providerStatus: "queued",
+      lastError: null
+    });
+    const timeline = new TestTimelineSyncer();
+
+    await executeCallingAutomationAttempt({ event, env: exotelEnv, provider, timelineSyncer: timeline });
+
+    expect(provider.calls).toHaveLength(1);
+    expect(provider.calls[0]).toMatchObject({
+      to: "+15551234567",
+      from: "08000000000",
+      statusCallbackUrl: "https://voice-e2e.example.test/api/voice/exotel/status"
+    });
+    const updated = await workerPrisma.callingAttempt.findUniqueOrThrow({
+      where: { id: attempt.id },
+      include: { voiceCallAttempt: true }
+    });
+    expect(updated.status).toBe("ACCEPTED");
+    expect(updated.voiceCallAttempt?.provider).toBe("EXOTEL");
+    expect(updated.voiceCallAttempt?.providerCallId).toBe("exotel-r23-accepted");
+    await expect(
+      workerPrisma.externalRecordMapping.count({
+        where: { provider: "EXOTEL", entityType: "CALL", localEntityId: updated.voiceCallAttemptId ?? "" }
+      })
+    ).resolves.toBe(1);
+  }, 90000);
 
   it("blocks execution-time ineligible contacts without calling the provider", async () => {
     const { contact, sequence } = await createCompletedFollowUp();

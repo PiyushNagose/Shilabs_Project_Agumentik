@@ -13,6 +13,7 @@ import type {
 } from "@shilabs/shared-types";
 import { AppError } from "../../shared/errors.js";
 import { prisma } from "../../shared/prisma.js";
+import { redactSecrets } from "../../shared/redaction.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
 import { publishDomainEvent } from "../domain-events/domain-events.service.js";
 import {
@@ -22,6 +23,7 @@ import {
 import { toLeadDto } from "../leads/lead.service.js";
 import { createVoiceProvider, type VoiceProvider } from "./voice.provider.js";
 import type {
+  ExotelStatusWebhookInput,
   ManualVoiceCallInput,
   TwilioRecordingWebhookInput,
   TwilioStatusWebhookInput
@@ -38,18 +40,20 @@ interface VoiceServiceOptions {
   provider?: VoiceProvider;
 }
 
-function displayVoiceProvider(): "TWILIO" {
-  return "TWILIO";
+function displayVoiceProvider(config: VoiceConfig): "TWILIO" | "EXOTEL" {
+  return config.provider === "exotel" ? "EXOTEL" : "TWILIO";
 }
 
 function voiceSecretRef(config: VoiceConfig): string | null {
-  return config.provider === "twilio" ? "env:TWILIO_AUTH_TOKEN" : null;
+  if (config.provider === "twilio") return "env:TWILIO_AUTH_TOKEN";
+  if (config.provider === "exotel") return "env:EXOTEL_API_TOKEN";
+  return null;
 }
 
 function voicePublicConfig(config: VoiceConfig): Prisma.InputJsonObject {
   return {
     webhookBaseUrlConfigured: Boolean(config.webhookBaseUrl),
-    fromNumberConfigured: Boolean(config.twilio.fromNumber),
+    fromNumberConfigured: Boolean(providerFromNumber(config)),
     defaultRegion: config.defaultRegion,
     defaultAccent: config.defaultAccent,
     recordingEnabled: config.recordingEnabled,
@@ -65,16 +69,30 @@ function missingVoiceConfig(config: VoiceConfig): string[] {
   }
 
   const missing: string[] = [];
-  if (!config.twilio.accountSid) missing.push("TWILIO_ACCOUNT_SID");
-  if (!config.twilio.authToken) missing.push("TWILIO_AUTH_TOKEN");
-  if (!config.twilio.fromNumber) missing.push("TWILIO_FROM_NUMBER");
+  if (config.provider === "twilio") {
+    if (!config.twilio.accountSid) missing.push("TWILIO_ACCOUNT_SID");
+    if (!config.twilio.authToken) missing.push("TWILIO_AUTH_TOKEN");
+    if (!config.twilio.fromNumber) missing.push("TWILIO_FROM_NUMBER");
+  } else {
+    if (!config.exotel.accountSid) missing.push("EXOTEL_ACCOUNT_SID");
+    if (!config.exotel.apiKey) missing.push("EXOTEL_API_KEY");
+    if (!config.exotel.apiToken) missing.push("EXOTEL_API_TOKEN");
+    if (!config.exotel.apiSubdomain) missing.push("EXOTEL_API_SUBDOMAIN");
+    if (!config.exotel.callerId) missing.push("EXOTEL_CALLER_ID");
+    if (!config.exotel.appUrl && !config.exotel.agentNumber && !config.voiceAi.enabled) {
+      missing.push("EXOTEL_APP_URL_OR_AGENT_NUMBER_OR_VOICE_AI_ENABLED");
+    }
+    if (config.voiceAi.enabled && !config.voiceAi.streamToken) {
+      missing.push("VOICE_AI_STREAM_TOKEN");
+    }
+  }
   if (!config.webhookBaseUrl) missing.push("VOICE_WEBHOOK_BASE_URL");
   return missing;
 }
 
 function sanitizeError(error: unknown): string {
   if (error instanceof Error && error.message.trim()) {
-    return error.message.slice(0, 500);
+    return redactSecrets(error.message).slice(0, 500);
   }
 
   return "Voice provider request failed";
@@ -89,12 +107,15 @@ function toIntegrationHealthDto(input: {
   lastError: string | null;
 }): IntegrationHealthDto {
   return {
-    provider: displayVoiceProvider(),
+    provider: displayVoiceProvider(input.config),
     status: input.status,
     configured: input.status === "CONFIGURED",
     checkedAt: input.checkedAt.toISOString(),
     accountId: input.accountId,
-    apiDomain: "https://api.twilio.com",
+    apiDomain:
+      input.config.provider === "exotel"
+        ? `https://${input.config.exotel.apiSubdomain || "api.exotel.com"}`
+        : "https://api.twilio.com",
     accountsUrl: null,
     missingConfig: input.missingConfig,
     scopes: [],
@@ -134,6 +155,37 @@ function twilioCallStatus(status: string): VoiceCallStatus {
   if (normalized === "completed") return "COMPLETED";
   if (normalized === "busy") return "BUSY";
   if (normalized === "no-answer") return "NO_ANSWER";
+  if (normalized === "canceled" || normalized === "cancelled") return "CANCELED";
+  if (normalized === "failed") return "FAILED";
+  return "FAILED";
+}
+
+function providerFromNumber(config: VoiceConfig): string {
+  return config.provider === "exotel" ? config.exotel.callerId : config.twilio.fromNumber;
+}
+
+function providerDisplayName(config: VoiceConfig): "Twilio" | "Exotel" {
+  return config.provider === "exotel" ? "Exotel" : "Twilio";
+}
+
+function providerCallStatus(status: string | null): VoiceCallStatus {
+  const normalized = (status ?? "queued").trim().toLowerCase();
+  if (["queued", "initiated", "in-progress", "active"].includes(normalized)) return "QUEUED";
+  if (normalized === "ringing") return "RINGING";
+  if (normalized === "answered") return "IN_PROGRESS";
+  return twilioCallStatus(status ?? "failed");
+}
+
+function exotelCallStatus(status: string): VoiceCallStatus {
+  const normalized = status.trim().toLowerCase();
+  if (normalized === "queued" || normalized === "initiated") return "QUEUED";
+  if (normalized === "ringing") return "RINGING";
+  if (normalized === "answered" || normalized === "in-progress" || normalized === "active") {
+    return "IN_PROGRESS";
+  }
+  if (normalized === "completed") return "COMPLETED";
+  if (normalized === "busy") return "BUSY";
+  if (normalized === "no-answer" || normalized === "noanswer") return "NO_ANSWER";
   if (normalized === "canceled" || normalized === "cancelled") return "CANCELED";
   if (normalized === "failed") return "FAILED";
   return "FAILED";
@@ -208,11 +260,13 @@ export async function getVoiceHealth(options?: VoiceServiceOptions): Promise<Int
   const checkedAt = new Date();
   const config = getVoiceConfig(options?.env);
   const missingConfig = missingVoiceConfig(config);
+  const provider = displayVoiceProvider(config);
+  const displayName = `${providerDisplayName(config)} Voice`;
   if (missingConfig.length > 0) {
     const account = await upsertIntegrationAccount({
-      provider: "TWILIO",
+      provider,
       key: "default",
-      displayName: "Twilio Voice",
+      displayName,
       status: "NOT_CONFIGURED",
       secretRef: voiceSecretRef(config),
       publicConfig: voicePublicConfig(config),
@@ -230,13 +284,13 @@ export async function getVoiceHealth(options?: VoiceServiceOptions): Promise<Int
   }
 
   try {
-    const provider = options?.provider ?? createVoiceProvider(config);
-    const health = await provider.getHealth();
+    const voiceProvider = options?.provider ?? createVoiceProvider(config);
+    const health = await voiceProvider.getHealth();
     const status = health.status === "CONFIGURED" ? "CONFIGURED" : "ERROR";
     const account = await upsertIntegrationAccount({
-      provider: "TWILIO",
+      provider,
       key: "default",
-      displayName: "Twilio Voice",
+      displayName,
       status,
       secretRef: voiceSecretRef(config),
       publicConfig: voicePublicConfig(config),
@@ -254,9 +308,9 @@ export async function getVoiceHealth(options?: VoiceServiceOptions): Promise<Int
   } catch (error) {
     const lastError = sanitizeError(error);
     const account = await upsertIntegrationAccount({
-      provider: "TWILIO",
+      provider,
       key: "default",
-      displayName: "Twilio Voice",
+      displayName,
       status: "ERROR",
       secretRef: voiceSecretRef(config),
       publicConfig: voicePublicConfig(config),
@@ -345,16 +399,20 @@ export async function createManualVoiceCall(
 
   const config = getVoiceConfig(options?.env);
   const normalizedToPhone = normalizePhone(lead.contact.phone);
-  const normalizedFromPhone = normalizePhone(config.twilio.fromNumber);
+  const configuredFromPhone = providerFromNumber(config);
+  const normalizedFromPhone =
+    config.provider === "twilio" ? normalizePhone(configuredFromPhone) : configuredFromPhone.trim();
+  const provider = displayVoiceProvider(config);
+  const providerName = providerDisplayName(config);
   const created = await prisma.voiceCallAttempt.create({
     data: {
       leadId: lead.id,
       contactId: lead.contactId,
       actorUserId: actor.id,
-      provider: "TWILIO",
+      provider,
       toPhone: lead.contact.phone ?? "",
       normalizedToPhone: normalizedToPhone ?? "",
-      fromPhone: config.twilio.fromNumber || "not-configured",
+      fromPhone: configuredFromPhone || "not-configured",
       status: "REQUESTED",
       regionalVoice: input.regionalVoice ?? config.defaultRegion,
       accent: input.accent ?? config.defaultAccent,
@@ -369,7 +427,9 @@ export async function createManualVoiceCall(
 
   const block = (() => {
     if (!normalizedToPhone) return { code: "CONTACT_PHONE_MISSING", message: "Contact phone is not usable" };
-    if (!normalizedFromPhone) return { code: "VOICE_FROM_PHONE_MISSING", message: "Twilio from number is not usable" };
+    if (!normalizedFromPhone) {
+      return { code: "VOICE_FROM_PHONE_MISSING", message: `${providerName} from number is not usable` };
+    }
     if (lead.contact.doNotContact) return { code: "CONTACT_DO_NOT_CONTACT", message: "Contact is marked do-not-contact" };
     if (isTerminalLead(lead.status)) return { code: "TERMINAL_LEAD", message: "Lead is terminal or disqualified" };
     if (config.nodeEnv === "production" && !config.productionCallingEnabled) {
@@ -378,7 +438,11 @@ export async function createManualVoiceCall(
     if (config.nodeEnv === "production" && config.complianceConsentMode !== "confirmed") {
       return { code: "VOICE_CONSENT_NOT_CONFIRMED", message: "Production calling consent/compliance is not confirmed" };
     }
-    if (config.nodeEnv !== "production" && config.e2eAllowedToNumbers.length > 0 && !config.e2eAllowedToNumbers.includes(normalizedToPhone)) {
+    if (
+      config.nodeEnv !== "production" &&
+      config.e2eAllowedToNumbers.length > 0 &&
+      !config.e2eAllowedToNumbers.includes(normalizedToPhone)
+    ) {
       return { code: "E2E_NUMBER_NOT_ALLOWED", message: "Destination number is not allowed for local E2E voice testing" };
     }
     if (config.recordingEnabled && config.complianceConsentMode === "disabled") {
@@ -418,12 +482,15 @@ export async function createManualVoiceCall(
     data: { status: "PROVIDER_PENDING" }
   });
 
-  const provider = options?.provider ?? createVoiceProvider(config);
-  const result = await provider.createOutboundCall({
+  const voiceProvider = options?.provider ?? createVoiceProvider(config);
+  const result = await voiceProvider.createOutboundCall({
     to: normalizedToPhone,
     from: normalizedFromPhone,
     twimlUrl: `${config.webhookBaseUrl.replace(/\/$/, "")}/api/voice/twilio/twiml/test-call?attemptId=${created.id}`,
-    statusCallbackUrl: webhookUrl(config, config.twilio.statusCallbackPath),
+    statusCallbackUrl: webhookUrl(
+      config,
+      config.provider === "exotel" ? config.exotel.statusCallbackPath : config.twilio.statusCallbackPath
+    ),
     recordingCallbackUrl: config.recordingEnabled
       ? webhookUrl(config, config.twilio.recordingCallbackPath)
       : null,
@@ -450,7 +517,7 @@ export async function createManualVoiceCall(
       where: { id: created.id },
       data: {
         providerCallId: result.providerCallId,
-        status: twilioCallStatus(result.providerStatus ?? "queued"),
+        status: providerCallStatus(result.providerStatus ?? "queued"),
         providerAcceptedAt: now,
         failureCode: null,
         failureMessage: null
@@ -462,7 +529,7 @@ export async function createManualVoiceCall(
         leadId: lead.id,
         actorUserId: actor.id,
         type: "CALL_REQUESTED",
-        description: "Manual R22 voice test call accepted by Twilio"
+        description: `Manual R22 voice test call accepted by ${providerName}`
       }
     });
     await tx.auditEvent.create({
@@ -474,7 +541,7 @@ export async function createManualVoiceCall(
         action: "VOICE_CALL_REQUESTED",
         after: {
           leadId: lead.id,
-          provider: "TWILIO",
+          provider,
           providerCallId: result.providerCallId,
           recordingEnabled: config.recordingEnabled,
           transcriptionEnabled: config.transcriptionEnabled
@@ -493,14 +560,14 @@ export async function createManualVoiceCall(
   });
 
   await upsertExternalRecordMapping({
-    provider: "TWILIO",
+    provider,
     entityType: "CALL",
     localEntityId: accepted.id,
     externalRecordId: result.providerCallId,
     syncDirection: "OUTBOUND",
     syncStatus: "SYNCED",
     lastSyncedAt: now,
-    idempotencyKey: `twilio:call:${accepted.id}`
+    idempotencyKey: `${config.provider}:call:${accepted.id}`
   });
 
   return toVoiceCallAttemptDto(accepted);
@@ -703,6 +770,116 @@ export async function ingestTwilioRecordingWebhook(input: {
     eventId,
     callAttemptId: event.callAttemptId,
     callStatus: null
+  };
+}
+
+function exotelProviderCallId(body: ExotelStatusWebhookInput): string {
+  return (body.CallSid ?? body.Sid ?? "").trim();
+}
+
+function exotelProviderStatus(body: ExotelStatusWebhookInput): string {
+  return (body.CallStatus ?? body.Status ?? "").trim();
+}
+
+export async function ingestExotelStatusWebhook(input: {
+  body: ExotelStatusWebhookInput;
+}): Promise<VoiceWebhookResultDto> {
+  const body = bodyAsStringRecord(input.body);
+  const providerCallId = exotelProviderCallId(input.body);
+  const providerStatus = exotelProviderStatus(input.body);
+  const status = exotelCallStatus(providerStatus);
+  const eventId = webhookEventId("exotel-status", providerCallId, body);
+  const duplicate = await prisma.voiceProviderEvent.findUnique({
+    where: { provider_providerEventId: { provider: "EXOTEL", providerEventId: eventId } }
+  });
+  if (duplicate) {
+    return {
+      provider: "EXOTEL",
+      status: "DUPLICATE",
+      eventId,
+      callAttemptId: duplicate.callAttemptId,
+      callStatus: null
+    };
+  }
+
+  const call = await prisma.voiceCallAttempt.findUnique({
+    where: { providerCallId }
+  });
+  const durationSeconds = parseDuration(input.body.CallDuration ?? input.body.Duration);
+  const now = new Date();
+  const event = await prisma.$transaction(async (tx) => {
+    const createdEvent = await tx.voiceProviderEvent.create({
+      data: {
+        provider: "EXOTEL",
+        providerEventId: eventId,
+        providerCallId,
+        callAttemptId: call?.id,
+        type: "CALL_STATUS",
+        payload: body,
+        processedAt: now
+      }
+    });
+    if (call) {
+      await tx.voiceCallAttempt.update({
+        where: { id: call.id },
+        data: {
+          status,
+          durationSeconds: durationSeconds ?? undefined,
+          answeredAt: status === "IN_PROGRESS" ? (call.answeredAt ?? now) : undefined,
+          completedAt: isTerminalCallStatus(status) ? now : undefined,
+          failureCode: ["FAILED", "BUSY", "NO_ANSWER", "CANCELED"].includes(status)
+            ? `EXOTEL_${status}`
+            : undefined,
+          failureMessage: ["FAILED", "BUSY", "NO_ANSWER", "CANCELED"].includes(status)
+            ? `Exotel call status: ${providerStatus}`
+            : undefined
+        }
+      });
+      if (isTerminalCallStatus(status)) {
+        await tx.callingAttempt.updateMany({
+          where: { voiceCallAttemptId: call.id },
+          data: {
+            status: status === "COMPLETED" ? "COMPLETED" : "FAILED",
+            completedAt: now,
+            failureCode: status === "COMPLETED" ? null : `EXOTEL_${status}`,
+            failureMessage: status === "COMPLETED" ? null : `Exotel call status: ${providerStatus}`
+          }
+        });
+      }
+      await tx.activity.create({
+        data: {
+          leadId: call.leadId,
+          type: status === "FAILED" ? "CALL_FAILED" : "CALL_STATUS_UPDATED",
+          description: `Exotel call status: ${providerStatus}`
+        }
+      });
+      await tx.auditEvent.create({
+        data: {
+          actorType: "SYSTEM",
+          entityType: "VoiceCallAttempt",
+          entityId: call.id,
+          action: "VOICE_CALL_STATUS_UPDATED",
+          after: { providerCallId, status, provider: "EXOTEL" }
+        }
+      });
+      await publishDomainEvent({
+        client: tx,
+        eventType: "CALL_STATUS_UPDATED",
+        aggregateType: "VoiceCallAttempt",
+        aggregateId: call.id,
+        idempotencyKey: `domain-event:voice-call-status:${createdEvent.id}`,
+        payload: { providerCallId, status, provider: "EXOTEL" }
+      });
+    }
+    return createdEvent;
+  });
+
+  return {
+    provider: "EXOTEL",
+    status: "PROCESSED",
+    eventId,
+    callAttemptId: event.callAttemptId,
+    callStatus: status
   };
 }
 

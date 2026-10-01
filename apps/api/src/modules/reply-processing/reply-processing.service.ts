@@ -8,9 +8,17 @@ import type { AIProvider, ReplyUnderstandingResult } from "../ai/ai.provider.js"
 import { replyUnderstandingResultSchema } from "../ai/ai.schemas.js";
 import { publishDomainEvent } from "../domain-events/domain-events.service.js";
 import { listApprovedKnowledge } from "../knowledge-base/knowledge-base.service.js";
+import { createMeetingRequestForReply } from "../meetings/meeting.service.js";
 import { createNegotiationHandoffForReply } from "../notifications/notification.service.js";
+import { recalculateQualification } from "../qualification/qualification.service.js";
+import { recalculateLeadScoreForSystem } from "../scoring/scoring.service.js";
+import {
+  explicitNegotiationSignals,
+  intentRequiresHumanReviewGate,
+  safeReplyUnderstandingOutput
+} from "./reply-policy.js";
 
-interface ProcessReplyOptions {
+export interface ProcessReplyOptions {
   provider?: AIProvider;
   env?: NodeJS.ProcessEnv;
 }
@@ -29,6 +37,7 @@ type EligibleReplyInboundRecord = ReplyInboundRecord & {
   message: NonNullable<ReplyInboundRecord["message"]>;
 };
 
+const replyProcessingTransactionOptions = { timeout: 15000 };
 function toDto(run: ReplyRunRecord): ReplyProcessingRunDto {
   return {
     id: run.id,
@@ -83,26 +92,34 @@ function validateGrounding(input: {
   }
 }
 
-function actionForIntent(intent: ReplyUnderstandingResult["intent"]): ReplyUnderstandingResult["recommendedAction"] {
-  if (intent === "NOT_INTERESTED") return "STOP_AUTOMATION";
-  if (intent === "NEGOTIATION") return "HUMAN_HANDOFF";
-  if (intent === "PROPOSAL_REQUEST") return "PROPOSAL_REVIEW";
-  if (intent === "MEETING_REQUEST") return "MEETING_REVIEW";
-  if (intent === "UNCLEAR") return "NO_ACTION";
-  return "DRAFT_RESPONSE";
-}
-
-function safeOutput(output: ReplyUnderstandingResult): ReplyUnderstandingResult {
-  const recommendedAction = actionForIntent(output.intent);
-  const humanHandoff =
-    output.intent === "NEGOTIATION" ||
-    output.intent === "PROPOSAL_REQUEST" ||
-    output.intent === "MEETING_REQUEST";
+function deterministicNegotiationOutput(
+  messages: { id: string; senderType: string; body: string }[]
+): ReplyUnderstandingResult | null {
+  const message = [...messages]
+    .reverse()
+    .find(
+      (item) =>
+        item.senderType === "PROSPECT" &&
+        explicitNegotiationSignals.some((signal) => item.body.toLowerCase().includes(signal))
+    );
+  if (!message) return null;
+  const matchedSignal =
+    explicitNegotiationSignals.find((signal) => message.body.toLowerCase().includes(signal)) ??
+    "negotiation";
+  const quoteStart = message.body.toLowerCase().indexOf(matchedSignal);
+  const quote =
+    quoteStart >= 0
+      ? message.body.slice(quoteStart, quoteStart + matchedSignal.length)
+      : matchedSignal;
   return {
-    ...output,
-    recommendedAction,
+    intent: "NEGOTIATION",
+    confidence: 0.7,
+    summary: "Prospect explicitly requested negotiation or improved commercial terms.",
+    draftResponse: null,
     requiresHumanReview: true,
-    draftResponse: humanHandoff || output.intent === "NOT_INTERESTED" ? null : output.draftResponse
+    recommendedAction: "HUMAN_HANDOFF",
+    evidence: [{ messageId: message.id, quote }],
+    usedKnowledgeIds: []
   };
 }
 
@@ -112,20 +129,31 @@ export async function processInboundReply(
 ): Promise<ReplyProcessingRunDto> {
   const idempotencyKey = `reply-processing:inbound:${inboundEmailId}`;
   const existing = await prisma.replyProcessingRun.findUnique({ where: { idempotencyKey } });
-  if (existing) return toDto(existing);
-
-  const inbound = await prisma.inboundEmail.findUnique({
-    where: { id: inboundEmailId },
-    include: {
-      lead: { include: { company: true, contact: true } },
-      conversation: true,
-      message: true
+  if (existing?.status === "COMPLETED") {
+    const completed =
+      intentRequiresHumanReviewGate(existing.intent) && !existing.humanHandoffRequired
+        ? await prisma.replyProcessingRun.update({
+            where: { id: existing.id },
+            data: { humanHandoffRequired: true, requiresHumanReview: true }
+          })
+        : existing;
+    const existingInbound = await findEligibleInbound(inboundEmailId);
+    if (existingInbound) {
+      await createMeetingRequestForMeetingIntent({
+        run: completed,
+        inbound: existingInbound,
+        intent: completed.intent,
+        summary: completed.summary
+      });
     }
-  });
-  if (!inbound?.lead || !inbound.conversation || !inbound.message) {
+    return toDto(completed);
+  }
+
+  const inbound = await findEligibleInbound(inboundEmailId);
+  if (!inbound) {
     throw new AppError(409, "CONFLICT", "Inbound email is not eligible for reply processing");
   }
-  const eligibleInbound: EligibleReplyInboundRecord = inbound as EligibleReplyInboundRecord;
+  const eligibleInbound: EligibleReplyInboundRecord = inbound;
 
   const messages = await prisma.message.findMany({
     where: { conversationId: eligibleInbound.conversationId ?? "" },
@@ -187,7 +215,9 @@ export async function processInboundReply(
       messages,
       approvedKnowledgeIds
     });
-    const output = safeOutput(parsed);
+    const output = safeReplyUnderstandingOutput(parsed);
+    await recalculateQualification(eligibleInbound.lead.id, provider);
+    await recalculateLeadScoreForSystem(eligibleInbound.lead.id);
     const run = await persistSuccessfulRun({
       inbound: eligibleInbound,
       idempotencyKey,
@@ -195,17 +225,177 @@ export async function processInboundReply(
       output,
       metadata
     });
+    await createMeetingRequestForMeetingIntent({
+      run,
+      inbound: eligibleInbound,
+      intent: output.intent,
+      summary: output.summary
+    });
     return toDto(run);
   } catch (error) {
+    const code = error instanceof AppError ? error.code : "PROVIDER_ERROR";
+    const message = error instanceof Error ? error.message : "Reply processing failed";
+    const fallbackOutput =
+      code === "RETRYABLE_PROVIDER_ERROR" ? deterministicNegotiationOutput(messages) : null;
+    if (fallbackOutput) {
+      const run = await persistSuccessfulRun({
+        inbound: eligibleInbound,
+        idempotencyKey,
+        inputContext,
+        output: safeReplyUnderstandingOutput(fallbackOutput),
+        metadata: {
+          providerName: "deterministic-negotiation-safety",
+          model: "explicit-commercial-terms-v1"
+        }
+      });
+      await createMeetingRequestForMeetingIntent({
+        run,
+        inbound: eligibleInbound,
+        intent: fallbackOutput.intent,
+        summary: fallbackOutput.summary
+      });
+      return toDto(run);
+    }
     const run = await createFailedRun({
       inbound: eligibleInbound,
       idempotencyKey,
       inputContext,
-      code: error instanceof AppError ? error.code : "PROVIDER_ERROR",
-      message: error instanceof Error ? error.message : "Reply processing failed",
+      code,
+      message,
       metadata
     });
     return toDto(run);
+  }
+}
+
+function messageProvider(message: Prisma.MessageGetPayload<Record<string, never>>): "TWILIO" | "META_WHATSAPP" {
+  const metadata = message.metadata;
+  if (
+    typeof metadata === "object" &&
+    metadata !== null &&
+    !Array.isArray(metadata) &&
+    metadata.provider === "TWILIO_WHATSAPP"
+  ) {
+    return "TWILIO";
+  }
+  return "META_WHATSAPP";
+}
+
+export async function processInboundMessageReply(
+  messageId: string,
+  options?: ProcessReplyOptions
+): Promise<ReplyProcessingRunDto> {
+  const message = await prisma.message.findUnique({
+    where: { id: messageId },
+    include: {
+      conversation: {
+        include: {
+          lead: { include: { company: true, contact: true } }
+        }
+      }
+    }
+  });
+  if (message?.direction !== "INBOUND" || message.senderType !== "PROSPECT" || message.conversation.channel !== "WHATSAPP") {
+    throw new AppError(409, "CONFLICT", "Inbound message is not eligible for reply processing");
+  }
+  const lead = message.conversation.lead;
+  const provider = messageProvider(message);
+  const providerMessageId = message.providerMessageId ?? message.id;
+  const inbound = await prisma.inboundEmail.upsert({
+    where: { messageId: message.id },
+    create: {
+      provider,
+      providerMessageId,
+      providerEventId: `whatsapp-message:${provider}:${providerMessageId}`,
+      leadId: lead.id,
+      contactId: lead.contactId,
+      conversationId: message.conversationId,
+      messageId: message.id,
+      fromEmail: `whatsapp:${providerMessageId}@local.invalid`,
+      normalizedFromEmail: `whatsapp:${providerMessageId}@local.invalid`,
+      toEmails: ["whatsapp@local.invalid"],
+      subject: "WhatsApp inbound reply",
+      textBody: message.body,
+      rawProviderPayload: {
+        provider,
+        channel: "WHATSAPP",
+        messageId: message.id,
+        providerMessageId
+      },
+      status: "PROCESSED",
+      replyProcessingStatus: "PENDING",
+      receivedAt: message.deliveredAt ?? message.createdAt,
+      processedAt: new Date()
+    },
+    update: {
+      leadId: lead.id,
+      contactId: lead.contactId,
+      conversationId: message.conversationId,
+      textBody: message.body,
+      status: "PROCESSED",
+      replyProcessingStatus: "PENDING",
+      processedAt: new Date()
+    }
+  });
+  return processInboundReply(inbound.id, options);
+}
+
+async function findEligibleInbound(inboundEmailId: string): Promise<EligibleReplyInboundRecord | null> {
+  const inbound = await prisma.inboundEmail.findUnique({
+    where: { id: inboundEmailId },
+    include: {
+      lead: { include: { company: true, contact: true } },
+      conversation: true,
+      message: true
+    }
+  });
+  if (!inbound?.lead || !inbound.conversation || !inbound.message) return null;
+  return inbound as EligibleReplyInboundRecord;
+}
+
+async function createMeetingRequestForMeetingIntent(input: {
+  run: ReplyRunRecord;
+  inbound: EligibleReplyInboundRecord;
+  intent: string | null;
+  summary: string | null;
+}): Promise<void> {
+  if (input.intent !== "MEETING_REQUEST") return;
+  try {
+    await createMeetingRequestForReply({
+      leadId: input.inbound.lead.id,
+      conversationId: input.inbound.conversation.id,
+      replyProcessingRunId: input.run.id,
+      inboundEmailId: input.inbound.id,
+      summary: input.summary
+    });
+  } catch (error) {
+    await prisma.auditEvent.create({
+      data: {
+        actorType: "SYSTEM",
+        entityType: "ReplyProcessingRun",
+        entityId: input.run.id,
+        action: "MEETING_REQUEST_CREATION_FAILED",
+        after: {
+          leadId: input.inbound.lead.id,
+          inboundEmailId: input.inbound.id,
+          code: error instanceof AppError ? error.code : "MEETING_REQUEST_FAILED",
+          message: error instanceof Error ? error.message : "Meeting request creation failed"
+        }
+      }
+    });
+    await publishDomainEvent({
+      eventType: "MEETING_REQUEST_CREATION_FAILED",
+      aggregateType: "ReplyProcessingRun",
+      aggregateId: input.run.id,
+      correlationId: input.inbound.id,
+      idempotencyKey: `domain-event:reply-processing:${input.inbound.id}:meeting-request-failed`,
+      payload: {
+        leadId: input.inbound.lead.id,
+        inboundEmailId: input.inbound.id,
+        conversationId: input.inbound.conversation.id,
+        code: error instanceof AppError ? error.code : "MEETING_REQUEST_FAILED"
+      }
+    });
   }
 }
 
@@ -218,8 +408,9 @@ async function createFailedRun(input: {
   metadata?: { providerName: string; model: string };
 }): Promise<ReplyRunRecord> {
   return prisma.$transaction(async (tx) => {
-    const run = await tx.replyProcessingRun.create({
-      data: {
+    const run = await tx.replyProcessingRun.upsert({
+      where: { idempotencyKey: input.idempotencyKey },
+      create: {
         leadId: input.inbound.leadId ?? "",
         conversationId: input.inbound.conversationId ?? "",
         messageId: input.inbound.messageId ?? "",
@@ -231,6 +422,22 @@ async function createFailedRun(input: {
         failureCode: input.code,
         failureMessage: input.message,
         idempotencyKey: input.idempotencyKey
+      },
+      update: {
+        status: "FAILED",
+        intent: null,
+        recommendedAction: null,
+        confidence: null,
+        summary: null,
+        draftResponse: null,
+        requiresHumanReview: true,
+        humanHandoffRequired: false,
+        provider: input.metadata?.providerName,
+        model: input.metadata?.model,
+        inputContext: input.inputContext,
+        output: Prisma.JsonNull,
+        failureCode: input.code,
+        failureMessage: input.message
       }
     });
     await tx.inboundEmail.update({
@@ -261,7 +468,7 @@ async function createFailedRun(input: {
       }
     });
     return run;
-  });
+  }, replyProcessingTransactionOptions);
 }
 
 async function persistSuccessfulRun(input: {
@@ -276,9 +483,10 @@ async function persistSuccessfulRun(input: {
     if (!conversationId) {
       throw new AppError(409, "CONFLICT", "Inbound email is missing conversation context");
     }
-    const humanHandoffRequired = input.output.recommendedAction === "HUMAN_HANDOFF";
-    const run = await tx.replyProcessingRun.create({
-      data: {
+    const humanHandoffRequired = intentRequiresHumanReviewGate(input.output.intent);
+    const run = await tx.replyProcessingRun.upsert({
+      where: { idempotencyKey: input.idempotencyKey },
+      create: {
         leadId: input.inbound.leadId ?? "",
         conversationId: input.inbound.conversationId ?? "",
         messageId: input.inbound.messageId ?? "",
@@ -296,6 +504,22 @@ async function persistSuccessfulRun(input: {
         inputContext: input.inputContext,
         output: input.output,
         idempotencyKey: input.idempotencyKey
+      },
+      update: {
+        status: "COMPLETED",
+        intent: input.output.intent,
+        recommendedAction: input.output.recommendedAction,
+        confidence: new Prisma.Decimal(input.output.confidence.toFixed(2)),
+        summary: input.output.summary,
+        draftResponse: input.output.draftResponse,
+        requiresHumanReview: true,
+        humanHandoffRequired,
+        provider: input.metadata.providerName,
+        model: input.metadata.model,
+        inputContext: input.inputContext,
+        output: input.output,
+        failureCode: null,
+        failureMessage: null
       }
     });
     await tx.inboundEmail.update({
@@ -362,5 +586,5 @@ async function persistSuccessfulRun(input: {
       }
     });
     return run;
-  });
+  }, replyProcessingTransactionOptions);
 }

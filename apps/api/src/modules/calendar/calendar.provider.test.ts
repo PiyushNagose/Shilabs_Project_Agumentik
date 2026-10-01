@@ -323,13 +323,25 @@ describe("calendar provider foundation", () => {
         );
       }
 
+      if (requestUrl.includes("/events/")) {
+        const eventId = decodeURIComponent(requestUrl.split("/events/")[1] ?? "");
+        return Promise.resolve(
+          Response.json({
+            id: eventId,
+            status: "confirmed",
+            htmlLink: `https://calendar.google.test/verified/${eventId}`,
+            organizer: { email: "calendar-owner@example.test" }
+          })
+        );
+      }
+
       const eventBody = parseJsonBody(init?.body);
       const eventId = String(eventBody.id);
       eventIds.push(eventId);
       return Promise.resolve(
         Response.json({
           id: eventId,
-          htmlLink: `https://calendar.google.test/event/${eventId}`
+          htmlLink: `https://calendar.google.test/insert/${eventId}`
         })
       );
     };
@@ -350,15 +362,25 @@ describe("calendar provider foundation", () => {
     expect(eventIds[0]).toBe(eventIds[1]);
     expect(eventIds[0]).toMatch(/^meeting[a-f0-9]{64}$/);
     expect(eventIds[0]).toMatch(/^[a-v0-9]+$/);
+    const eventId = eventIds[0];
+    if (!eventId) {
+      throw new Error("Expected deterministic Google event id");
+    }
     expect(first).toMatchObject({
       provider: "GOOGLE",
       status: "SYNCED",
-      externalMeetingId: eventIds[0]
+      externalMeetingId: eventId,
+      externalMeetingUrl: `https://calendar.google.test/verified/${eventId}`,
+      externalCalendarId: "primary",
+      organizerEmail: "calendar-owner@example.test"
     });
     expect(second).toMatchObject({
       provider: "GOOGLE",
       status: "SYNCED",
-      externalMeetingId: eventIds[0]
+      externalMeetingId: eventId,
+      externalMeetingUrl: `https://calendar.google.test/verified/${eventId}`,
+      externalCalendarId: "primary",
+      organizerEmail: "calendar-owner@example.test"
     });
   });
 
@@ -378,10 +400,22 @@ describe("calendar provider foundation", () => {
         );
       }
 
+      if (requestUrl.includes("/events/")) {
+        const eventId = decodeURIComponent(requestUrl.split("/events/")[1] ?? "");
+        return Promise.resolve(
+          Response.json({
+            id: eventId,
+            status: "confirmed",
+            htmlLink: `https://calendar.google.test/verified/${eventId}`,
+            organizer: { email: "calendar-owner@example.test" }
+          })
+        );
+      }
+
       const eventBody = parseJsonBody(init?.body);
       const eventId = String(eventBody.id);
       eventIds.push(eventId);
-      return Promise.resolve(Response.json({ id: eventId }));
+      return Promise.resolve(Response.json({ id: eventId, htmlLink: `https://calendar.google.test/insert/${eventId}` }));
     };
     const provider = new GoogleCalendarProvider(buildGoogleConfig(), transport);
     const baseInput = {

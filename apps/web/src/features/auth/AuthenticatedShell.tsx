@@ -1,5 +1,5 @@
 import type React from "react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { UserRoleName } from "@shilabs/shared-types";
 import { Icon } from "../../components/Icon.js";
 import { SalesActionDashboard } from "../dashboard/SalesActionDashboard.js";
@@ -55,19 +55,105 @@ function viewTitle(view: ShellView): string {
   return "Sales Workspace";
 }
 
+const routeByView: Record<ShellView, string> = {
+  Dashboard: "/dashboard",
+  CRM: "/crm",
+  Operations: "/operations",
+  Users: "/users",
+  Settings: "/settings",
+  Team: "/team",
+  Reports: "/reports",
+  "My Workspace": "/workspace"
+};
+
+function isDetailTab(value: string | null): value is DetailTab {
+  return (
+    value === "Overview" ||
+    value === "Conversation" ||
+    value === "Qualification" ||
+    value === "Proposals" ||
+    value === "Activities" ||
+    value === "Meetings" ||
+    value === "Deal" ||
+    value === "AI Insights"
+  );
+}
+
+function parseRoute(navItems: readonly NavItem[]): {
+  view: ShellView;
+  leadId: string | null;
+  tab?: DetailTab;
+} {
+  const path = window.location.pathname;
+  const params = new URLSearchParams(window.location.search);
+  const tabParam = params.get("tab");
+  const firstAllowedView = navItems[0]?.label ?? "Dashboard";
+  const canOpen = (view: ShellView) => navItems.some((item) => item.label === view);
+
+  if (path.startsWith("/crm/leads/") && canOpen("CRM")) {
+    return {
+      view: "CRM",
+      leadId: decodeURIComponent(path.slice("/crm/leads/".length)),
+      tab: isDetailTab(tabParam) ? tabParam : undefined
+    };
+  }
+
+  if (path === "/crm" && canOpen("CRM")) return { view: "CRM", leadId: null };
+  if (path === "/workspace" && canOpen("My Workspace")) return { view: "My Workspace", leadId: null };
+  if (path === "/operations" && canOpen("Operations")) return { view: "Operations", leadId: null };
+  if (path === "/users" && canOpen("Users")) return { view: "Users", leadId: null };
+  if (path === "/settings" && canOpen("Settings")) return { view: "Settings", leadId: null };
+  if (path === "/team" && canOpen("Team")) return { view: "Team", leadId: null };
+  if (path === "/reports" && canOpen("Reports")) return { view: "Reports", leadId: null };
+  return { view: canOpen("Dashboard") ? "Dashboard" : firstAllowedView, leadId: null };
+}
+
+function routeFor(input: { view: ShellView; leadId?: string | null; tab?: DetailTab }): string {
+  if ((input.view === "CRM" || input.view === "My Workspace") && input.leadId) {
+    const params = new URLSearchParams();
+    if (input.tab) params.set("tab", input.tab);
+    const query = params.toString();
+    return `/crm/leads/${encodeURIComponent(input.leadId)}${query ? `?${query}` : ""}`;
+  }
+  return routeByView[input.view];
+}
+
 export function AuthenticatedShell(): React.JSX.Element {
   const { accessToken, user, logout } = useAuth();
-  const [activeView, setActiveView] = useState<ShellView>("Dashboard");
+  const role = user?.role ?? "SALES_REP";
+  const navItems = navigationByRole[role];
+  const [routeState, setRouteState] = useState(() => parseRoute(navItems));
+  const activeView = routeState.view;
   const [workspaceTarget, setWorkspaceTarget] = useState<{
     leadId: string | null;
     tab?: DetailTab;
-  }>({ leadId: null });
+  }>({ leadId: routeState.leadId, tab: routeState.tab });
+
+  function navigate(input: { view: ShellView; leadId?: string | null; tab?: DetailTab }): void {
+    const nextRoute = {
+      view: input.view,
+      leadId: input.leadId ?? null,
+      tab: input.tab
+    };
+    window.history.pushState(null, "", routeFor(nextRoute));
+    setRouteState(nextRoute);
+    setWorkspaceTarget({ leadId: nextRoute.leadId, tab: nextRoute.tab });
+  }
+
+  useEffect(() => {
+    const applyRoute = (): void => {
+      const nextRoute = parseRoute(navigationByRole[role]);
+      setRouteState(nextRoute);
+      setWorkspaceTarget({ leadId: nextRoute.leadId, tab: nextRoute.tab });
+    };
+    applyRoute();
+    window.addEventListener("popstate", applyRoute);
+    return () => window.removeEventListener("popstate", applyRoute);
+  }, [role]);
 
   if (!user || !accessToken) {
     throw new Error("AuthenticatedShell requires a logged-in user");
   }
-
-  const navItems = navigationByRole[user.role];
 
   return (
     <main className="authenticated-shell">
@@ -96,11 +182,11 @@ export function AuthenticatedShell(): React.JSX.Element {
         {navItems.map((item) => (
           <a
             className={activeView === item.label ? "active-nav" : ""}
-            href="/"
+            href={routeFor({ view: item.label })}
             key={item.label}
             onClick={(event) => {
               event.preventDefault();
-              setActiveView(item.label);
+              navigate({ view: item.label });
             }}
           >
             <span className="nav-icon" aria-hidden="true">
@@ -118,8 +204,7 @@ export function AuthenticatedShell(): React.JSX.Element {
         <SalesActionDashboard
           accessToken={accessToken}
           onOpenLead={(leadId, tab) => {
-            setWorkspaceTarget({ leadId, tab });
-            setActiveView("CRM");
+            navigate({ view: "CRM", leadId, tab });
           }}
         />
       ) : activeView === "Operations" ? (
@@ -130,13 +215,14 @@ export function AuthenticatedShell(): React.JSX.Element {
           currentUser={user}
           initialLeadId={workspaceTarget.leadId}
           initialTab={workspaceTarget.tab}
+          onRouteChange={(leadId, tab) => navigate({ view: "CRM", leadId, tab })}
         />
       ) : (
         <section className="crm-workspace">
-          <div className="workspace-panel">
+          <div className="workspace-panel reserved-workspace">
             <div className="state-block" role="status">
-              <strong>{activeView} comes in a later milestone</strong>
-              <span>This view is reserved without fake runtime data.</span>
+              <strong>{activeView} is reserved for live platform data</strong>
+              <span>This milestone does not expose that workflow yet, so no demo or fake runtime data is shown.</span>
             </div>
           </div>
         </section>

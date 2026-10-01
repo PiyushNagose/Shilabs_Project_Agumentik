@@ -5,8 +5,16 @@ import { AppError } from "../../shared/errors.js";
 import {
   createMessagingProvider,
   type MessagingHealthDto,
+  TwilioWhatsAppProvider,
   type MessagingProvider
 } from "./messaging.provider.js";
+import {
+  processInboundMessageReply,
+  type ProcessReplyOptions
+} from "../reply-processing/reply-processing.service.js";
+
+type PersistedWhatsAppProvider = "META_WHATSAPP" | "TWILIO";
+type PublicWhatsAppProvider = "META_WHATSAPP" | "TWILIO_WHATSAPP";
 
 interface WebhookStatus {
   id: string;
@@ -22,6 +30,14 @@ interface WebhookMessage {
   timestamp?: string;
   type?: string;
   text?: { body?: string };
+}
+
+interface NormalizedInboundWhatsAppMessage {
+  id: string;
+  from: string;
+  timestamp?: string;
+  type?: string;
+  body: string;
 }
 
 interface WebhookValue {
@@ -89,6 +105,10 @@ function statusFailure(status: WebhookStatus): { code: string | null; message: s
 function inboundBody(message: WebhookMessage): string {
   if (message.text?.body?.trim()) return message.text.body.trim();
   return `[Unsupported WhatsApp ${message.type ?? "message"} message]`;
+}
+
+function publicProvider(provider: PersistedWhatsAppProvider): PublicWhatsAppProvider {
+  return provider === "META_WHATSAPP" ? "META_WHATSAPP" : "TWILIO_WHATSAPP";
 }
 
 async function findLeadForInboundWhatsApp(waId: string): Promise<
@@ -294,21 +314,27 @@ async function processStatus(status: WebhookStatus, payload: Prisma.InputJsonObj
   });
 }
 
-async function processInboundMessage(message: WebhookMessage, payload: Prisma.InputJsonObject): Promise<void> {
-  const providerEventId = `whatsapp-inbound:${message.id}`;
+async function processInboundMessage(input: {
+  provider: PersistedWhatsAppProvider;
+  message: NormalizedInboundWhatsAppMessage;
+  payload: Prisma.InputJsonObject;
+  replyProcessingOptions?: ProcessReplyOptions;
+}): Promise<void> {
+  const { provider, message, payload } = input;
+  const providerEventId = `whatsapp-inbound:${provider}:${message.id}`;
   const existingEvent = await prisma.whatsAppProviderEvent.findUnique({
-    where: { provider_providerEventId: { provider: "META_WHATSAPP", providerEventId } }
+    where: { provider_providerEventId: { provider, providerEventId } }
   });
   if (existingEvent) return;
 
   const match = await findLeadForInboundWhatsApp(message.from);
   const receivedAt = whatsappTimestamp(message.timestamp);
-  const body = inboundBody(message);
+  const body = message.body;
 
   if (!match.ok) {
     await prisma.whatsAppProviderEvent.create({
       data: {
-        provider: "META_WHATSAPP",
+        provider,
         providerEventId,
         providerMessageId: message.id,
         type: "INBOUND_MESSAGE",
@@ -321,7 +347,7 @@ async function processInboundMessage(message: WebhookMessage, payload: Prisma.In
     return;
   }
 
-  await prisma.$transaction(
+  const persistedMessageId = await prisma.$transaction(
     async (tx) => {
       const conversationId =
         match.conversationId ??
@@ -339,12 +365,12 @@ async function processInboundMessage(message: WebhookMessage, payload: Prisma.In
           body,
           deliveryStatus: "DELIVERED",
           deliveredAt: receivedAt,
-          metadata: { provider: "META_WHATSAPP", type: message.type ?? "text" }
+          metadata: { provider: publicProvider(provider), type: message.type ?? "text" }
         }
       });
       await tx.whatsAppProviderEvent.create({
         data: {
-          provider: "META_WHATSAPP",
+          provider,
           providerEventId,
           providerMessageId: message.id,
           type: "INBOUND_MESSAGE",
@@ -374,7 +400,7 @@ async function processInboundMessage(message: WebhookMessage, payload: Prisma.In
             entityType: "Message",
             entityId: persistedMessage.id,
             action: "WHATSAPP_REPLY_RECEIVED",
-            after: { provider: "META_WHATSAPP", conversationId }
+            after: { provider: publicProvider(provider), conversationId }
           },
           {
             actorType: "SYSTEM",
@@ -398,9 +424,11 @@ async function processInboundMessage(message: WebhookMessage, payload: Prisma.In
         update: {}
       });
       await stopIncompatibleAutomation(tx, match.leadId);
+      return persistedMessage.id;
     },
     { maxWait: 10000, timeout: 30000 }
   );
+  await processInboundMessageReply(persistedMessageId, input.replyProcessingOptions);
 }
 
 export async function ingestMetaWhatsAppWebhook(input: {
@@ -409,6 +437,7 @@ export async function ingestMetaWhatsAppWebhook(input: {
   signature: string | undefined;
   env?: NodeJS.ProcessEnv;
   provider?: MessagingProvider;
+  replyProcessingOptions?: ProcessReplyOptions;
 }): Promise<{ provider: "META_WHATSAPP"; processed: number }> {
   const config = getMessagingConfig(input.env);
   const provider = input.provider ?? createMessagingProvider(config);
@@ -427,10 +456,77 @@ export async function ingestMetaWhatsAppWebhook(input: {
     }
     for (const message of value.messages ?? []) {
       if (!message.id || !message.from) continue;
-      await processInboundMessage(message, payload);
+      await processInboundMessage({
+        provider: "META_WHATSAPP",
+        message: {
+          id: message.id,
+          from: message.from,
+          timestamp: message.timestamp,
+          type: message.type,
+          body: inboundBody(message)
+        },
+        payload,
+        replyProcessingOptions: input.replyProcessingOptions
+      });
       processed += 1;
     }
   }
 
   return { provider: "META_WHATSAPP", processed };
+}
+
+function twilioParam(body: Record<string, unknown>, key: string): string | undefined {
+  const value = body[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function normalizeTwilioWhatsAppIdentity(value: string | undefined): string | undefined {
+  return value?.replace(/^whatsapp:/iu, "").trim();
+}
+
+function twilioSignatureUrl(env: NodeJS.ProcessEnv | undefined, path: string): string {
+  const config = getMessagingConfig(env);
+  return `${config.webhookBaseUrl.replace(/\/$/u, "")}${path}`;
+}
+
+export async function ingestTwilioWhatsAppWebhook(input: {
+  body: Record<string, unknown>;
+  signature: string | undefined;
+  url?: string;
+  env?: NodeJS.ProcessEnv;
+  provider?: TwilioWhatsAppProvider;
+  replyProcessingOptions?: ProcessReplyOptions;
+}): Promise<{ provider: "TWILIO_WHATSAPP"; processed: number }> {
+  const config = getMessagingConfig(input.env);
+  const provider = input.provider ?? new TwilioWhatsAppProvider(config);
+  const params = Object.fromEntries(
+    Object.entries(input.body).flatMap(([key, value]) =>
+      typeof value === "string" ? [[key, value]] : []
+    )
+  );
+  const url = input.url ?? twilioSignatureUrl(input.env, "/api/messaging/twilio/webhook");
+  if (!provider.verifyTwilioWebhookSignature({ url, params, signature: input.signature })) {
+    throw new AppError(403, "AUTHORIZATION_ERROR", "Twilio WhatsApp webhook signature is invalid");
+  }
+
+  const messageSid = twilioParam(input.body, "MessageSid") ?? twilioParam(input.body, "SmsMessageSid");
+  const from = normalizeTwilioWhatsAppIdentity(twilioParam(input.body, "From"));
+  if (!messageSid || !from) {
+    return { provider: "TWILIO_WHATSAPP", processed: 0 };
+  }
+  const body = twilioParam(input.body, "Body") ?? "";
+  const timestamp = twilioParam(input.body, "Timestamp");
+  await processInboundMessage({
+    provider: "TWILIO",
+    message: {
+      id: messageSid,
+      from,
+      timestamp,
+      type: "text",
+      body: body.trim() || "[Unsupported WhatsApp message]"
+    },
+    payload: input.body as Prisma.InputJsonObject,
+    replyProcessingOptions: input.replyProcessingOptions
+  });
+  return { provider: "TWILIO_WHATSAPP", processed: 1 };
 }

@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import type { VoiceConfig } from "@shilabs/shared-config";
 import type { VoiceHealthDto } from "@shilabs/shared-types";
+import { redactSecrets } from "../../shared/redaction.js";
 
 export interface VoiceProvider {
   getHealth(): Promise<VoiceHealthDto>;
@@ -22,7 +23,7 @@ export interface VoiceOutboundCallInput {
 }
 
 export interface VoiceOutboundCallResult {
-  provider: "TWILIO";
+  provider: "TWILIO" | "EXOTEL";
   status: "ACCEPTED" | "FAILED" | "NOT_CONFIGURED";
   providerCallId: string | null;
   providerStatus: string | null;
@@ -44,9 +45,26 @@ function missingTwilioConfig(config: VoiceConfig): string[] {
   return missing;
 }
 
+function missingExotelConfig(config: VoiceConfig): string[] {
+  const missing: string[] = [];
+  if (!config.exotel.accountSid) missing.push("EXOTEL_ACCOUNT_SID");
+  if (!config.exotel.apiKey) missing.push("EXOTEL_API_KEY");
+  if (!config.exotel.apiToken) missing.push("EXOTEL_API_TOKEN");
+  if (!config.exotel.apiSubdomain) missing.push("EXOTEL_API_SUBDOMAIN");
+  if (!config.exotel.callerId) missing.push("EXOTEL_CALLER_ID");
+  if (!config.exotel.appUrl && !config.exotel.agentNumber && !config.voiceAi.enabled) {
+    missing.push("EXOTEL_APP_URL_OR_AGENT_NUMBER_OR_VOICE_AI_ENABLED");
+  }
+  if (config.voiceAi.enabled && !config.voiceAi.streamToken) {
+    missing.push("VOICE_AI_STREAM_TOKEN");
+  }
+  if (!config.webhookBaseUrl) missing.push("VOICE_WEBHOOK_BASE_URL");
+  return missing;
+}
+
 function baseHealth(config: VoiceConfig, status: VoiceHealthDto["status"]): VoiceHealthDto {
   return {
-    provider: config.provider === "twilio" ? "TWILIO" : "NONE",
+    provider: config.provider === "twilio" ? "TWILIO" : config.provider === "exotel" ? "EXOTEL" : "NONE",
     status,
     configured: status === "CONFIGURED",
     checkedAt: new Date().toISOString(),
@@ -63,14 +81,20 @@ function baseHealth(config: VoiceConfig, status: VoiceHealthDto["status"]): Voic
 
 function sanitizeError(error: unknown): string {
   if (error instanceof Error && error.message.trim()) {
-    return error.message.slice(0, 500);
+    return redactSecrets(error.message).slice(0, 500);
   }
 
-  return "Twilio Voice request failed";
+  return "Voice provider request failed";
 }
 
 function twilioAuthHeader(config: VoiceConfig): string {
   return `Basic ${Buffer.from(`${config.twilio.accountSid}:${config.twilio.authToken}`).toString(
+    "base64"
+  )}`;
+}
+
+function exotelAuthHeader(config: VoiceConfig): string {
+  return `Basic ${Buffer.from(`${config.exotel.apiKey}:${config.exotel.apiToken}`).toString(
     "base64"
   )}`;
 }
@@ -89,6 +113,59 @@ function twilioErrorMessage(status: number, body: Record<string, unknown> | null
   return `Twilio Voice request failed with status ${String(status)}${
     parts.length ? `: ${parts.join("; ")}` : ""
   }`;
+}
+
+function exotelApiBaseUrl(config: VoiceConfig): string {
+  const subdomain = config.exotel.apiSubdomain.replace(/^https?:\/\//iu, "").replace(/\/$/u, "");
+  return `https://${subdomain}`;
+}
+
+function exotelVoiceAiStreamUrl(config: VoiceConfig): string {
+  const base = config.webhookBaseUrl.replace(/\/$/u, "").replace(/^http:/u, "ws:").replace(/^https:/u, "wss:");
+  const streamPath = `${config.exotel.voicebotStreamPath.replace(/\/$/u, "")}/${encodeURIComponent(
+    config.voiceAi.streamToken
+  )}`;
+  const params = new URLSearchParams({
+    "sample-rate": String(config.voiceAi.sampleRate)
+  });
+  return `${base}${streamPath}?${params.toString()}`;
+}
+
+function exotelCallPayload(body: Record<string, unknown> | null): Record<string, unknown> | null {
+  const call = body?.Call;
+  if (call && typeof call === "object" && !Array.isArray(call)) {
+    return call as Record<string, unknown>;
+  }
+  return body;
+}
+
+function exotelErrorMessage(status: number, body: Record<string, unknown> | null): string {
+  const message =
+    typeof body?.Message === "string"
+      ? body.Message
+      : typeof body?.message === "string"
+        ? body.message
+        : null;
+  return `Exotel Voice request failed with status ${String(status)}${
+    message ? `: ${message}` : ""
+  }`;
+}
+
+function comparableDialableNumber(phone: string): string {
+  const digits = phone.replace(/\D/gu, "");
+  if (digits.length === 12 && digits.startsWith("91")) return digits.slice(2);
+  if (digits.length === 11 && digits.startsWith("0")) return digits.slice(1);
+  return digits;
+}
+
+function isSameDialableNumber(left: string, right: string): boolean {
+  const normalizedLeft = comparableDialableNumber(left);
+  const normalizedRight = comparableDialableNumber(right);
+  return (
+    normalizedLeft.length >= 10 &&
+    normalizedRight.length >= 10 &&
+    normalizedLeft === normalizedRight
+  );
 }
 
 async function requestWithRetry(
@@ -118,7 +195,7 @@ async function requestWithRetry(
     });
   }
 
-  throw new Error("Twilio Voice request failed after retries");
+  throw new Error("Voice provider request failed after retries");
 }
 
 export class NotConfiguredVoiceProvider implements VoiceProvider {
@@ -135,7 +212,7 @@ export class NotConfiguredVoiceProvider implements VoiceProvider {
 
   public createOutboundCall(): Promise<VoiceOutboundCallResult> {
     return Promise.resolve({
-      provider: "TWILIO",
+      provider: this.config.provider === "exotel" ? "EXOTEL" : "TWILIO",
       status: "NOT_CONFIGURED",
       providerCallId: null,
       providerStatus: null,
@@ -284,9 +361,136 @@ export class TwilioVoiceProvider implements VoiceProvider {
   }
 }
 
+export class ExotelVoiceProvider implements VoiceProvider {
+  public constructor(
+    private readonly config: VoiceConfig,
+    private readonly transport: VoiceTransport = fetch
+  ) {}
+
+  public async getHealth(): Promise<VoiceHealthDto> {
+    const missingConfig = missingExotelConfig(this.config);
+    if (missingConfig.length > 0) {
+      return {
+        ...baseHealth(this.config, "NOT_CONFIGURED"),
+        configured: false,
+        missingConfig,
+        lastError: `Missing configuration: ${missingConfig.join(", ")}`
+      };
+    }
+
+    try {
+      const response = await requestWithRetry(
+        this.config,
+        this.transport,
+        `${exotelApiBaseUrl(this.config)}/v1/Accounts/${encodeURIComponent(
+          this.config.exotel.accountSid
+        )}/Calls.json?PageSize=1`,
+        { headers: { Authorization: exotelAuthHeader(this.config) } }
+      );
+      const body = await parseTwilioResponse(response);
+      if (!response.ok) {
+        throw new Error(exotelErrorMessage(response.status, body));
+      }
+      return baseHealth(this.config, "CONFIGURED");
+    } catch (error) {
+      return {
+        ...baseHealth(this.config, "ERROR"),
+        configured: true,
+        lastError: sanitizeError(error)
+      };
+    }
+  }
+
+  public async createOutboundCall(
+    input: VoiceOutboundCallInput
+  ): Promise<VoiceOutboundCallResult> {
+    const missingConfig = missingExotelConfig(this.config);
+    if (missingConfig.length > 0) {
+      return {
+        provider: "EXOTEL",
+        status: "NOT_CONFIGURED",
+        providerCallId: null,
+        providerStatus: null,
+        lastError: `Missing configuration: ${missingConfig.join(", ")}`
+      };
+    }
+
+    try {
+      const body = new URLSearchParams({
+        From: input.to,
+        CallerId: input.from,
+        StatusCallback: input.statusCallbackUrl,
+        CustomField: input.idempotencyKey
+      });
+      if (this.config.exotel.agentNumber) {
+        if (isSameDialableNumber(this.config.exotel.agentNumber, input.to)) {
+          throw new Error("EXOTEL_AGENT_NUMBER must be different from the customer destination");
+        }
+        body.set("CallType", "trans");
+        body.set("To", this.config.exotel.agentNumber);
+      } else if (this.config.voiceAi.enabled) {
+        body.set("StreamUrl", exotelVoiceAiStreamUrl(this.config));
+        body.set("StreamType", "bidirectional");
+      } else {
+        body.set("CallType", "trans");
+        body.set("Url", this.config.exotel.appUrl);
+      }
+
+      const response = await requestWithRetry(
+        this.config,
+        this.transport,
+        `${exotelApiBaseUrl(this.config)}/v1/Accounts/${encodeURIComponent(
+          this.config.exotel.accountSid
+        )}/Calls/connect.json`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: exotelAuthHeader(this.config),
+            "Content-Type": "application/x-www-form-urlencoded"
+          },
+          body
+        }
+      );
+      const rawBody = await parseTwilioResponse(response);
+      if (!response.ok) {
+        throw new Error(exotelErrorMessage(response.status, rawBody));
+      }
+      const call = exotelCallPayload(rawBody);
+      const sid = call?.Sid ?? call?.sid;
+      if (typeof sid !== "string" || sid.trim().length === 0) {
+        throw new Error("Exotel call creation response was malformed");
+      }
+      const status = call?.Status ?? call?.status;
+
+      return {
+        provider: "EXOTEL",
+        status: "ACCEPTED",
+        providerCallId: sid,
+        providerStatus: typeof status === "string" ? status : null,
+        lastError: null
+      };
+    } catch (error) {
+      return {
+        provider: "EXOTEL",
+        status: "FAILED",
+        providerCallId: null,
+        providerStatus: null,
+        lastError: sanitizeError(error)
+      };
+    }
+  }
+
+  public verifyWebhook(): boolean {
+    return false;
+  }
+}
+
 export function createVoiceProvider(config: VoiceConfig): VoiceProvider {
   if (config.provider === "none") {
     return new NotConfiguredVoiceProvider(config);
+  }
+  if (config.provider === "exotel") {
+    return new ExotelVoiceProvider(config);
   }
   return new TwilioVoiceProvider(config);
 }

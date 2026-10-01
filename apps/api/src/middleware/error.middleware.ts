@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
 import { ZodError } from "zod";
 import { AppError, isAppError } from "../shared/errors.js";
+import { redactSecrets } from "../shared/redaction.js";
 
 interface ErrorResponse {
   error: {
@@ -27,7 +28,7 @@ export function errorHandler(
       error: {
         code: "VALIDATION_ERROR",
         message: "Request validation failed",
-        details: error.issues
+        details: redactSecrets(error.issues)
       }
     });
     return;
@@ -37,8 +38,23 @@ export function errorHandler(
     response.status(error.statusCode).json({
       error: {
         code: error.code,
-        message: error.message,
-        details: error.details
+        message: redactSecrets(error.message),
+        details: error.details === undefined ? undefined : redactSecrets(error.details)
+      }
+    });
+    return;
+  }
+
+  if (
+    error &&
+    typeof error === "object" &&
+    "type" in error &&
+    error.type === "entity.too.large"
+  ) {
+    response.status(413).json({
+      error: {
+        code: "VALIDATION_ERROR",
+        message: "Request body is too large"
       }
     });
     return;

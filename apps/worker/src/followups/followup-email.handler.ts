@@ -83,6 +83,71 @@ async function syncZohoTimelineAfterSend(input: {
   throw new Error(result.lastError ?? "Zoho timeline sync failed");
 }
 
+async function reconcileFollowUpSequenceAfterSend(input: {
+  sequenceId: string;
+  currentEventId: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<void> {
+  const sequence = await workerPrisma.followUpSequence.findUnique({
+    where: { id: input.sequenceId },
+    include: { attempts: { orderBy: { stepIndex: "asc" } } }
+  });
+  if (sequence?.status !== "ACTIVE") return;
+
+  const requiredSteps = sequence.cadenceDays.length;
+  const requiredAttempts = Array.from({ length: requiredSteps }, (_, index) =>
+    sequence.attempts.find((attempt) => attempt.stepIndex === index)
+  );
+  let contiguousSentSteps = 0;
+  for (const attempt of requiredAttempts) {
+    if (attempt?.status !== "SENT") break;
+    contiguousSentSteps += 1;
+  }
+
+  const eventIds = requiredAttempts
+    .map((attempt) => attempt?.domainEventId)
+    .filter(Boolean) as string[];
+  const events =
+    eventIds.length > 0
+      ? await workerPrisma.domainEventOutbox.findMany({
+          where: { id: { in: eventIds } },
+          select: { id: true, status: true }
+        })
+      : [];
+  const statusByEventId = new Map(events.map((event) => [event.id, event.status]));
+  const allRequiredAttemptsSent = requiredAttempts.every((attempt) => attempt?.status === "SENT");
+  const allRequiredEventsReady =
+    eventIds.length === requiredSteps &&
+    requiredAttempts.every((attempt) => {
+      const eventId = attempt?.domainEventId;
+      if (!eventId) return false;
+      const status = statusByEventId.get(eventId);
+      return eventId === input.currentEventId
+        ? status === "PROCESSING" || status === "PROCESSED"
+        : status === "PROCESSED";
+    });
+
+  if (!allRequiredAttemptsSent || !allRequiredEventsReady) {
+    await workerPrisma.followUpSequence.updateMany({
+      where: { id: sequence.id, status: "ACTIVE" },
+      data: { currentStep: contiguousSentSteps }
+    });
+    return;
+  }
+
+  const now = new Date();
+  const updated = await workerPrisma.followUpSequence.updateMany({
+    where: { id: sequence.id, status: "ACTIVE" },
+    data: { status: "COMPLETED", completedAt: now, currentStep: requiredSteps }
+  });
+  if (updated.count === 1) {
+    await scheduleCallingSequenceAfterFailedEmailSequence({
+      followUpSequenceId: sequence.id,
+      env: input.env
+    });
+  }
+}
+
 async function sendFollowUpEmail(input: {
   event: DomainEventOutbox;
   env?: NodeJS.ProcessEnv;
@@ -281,25 +346,12 @@ async function sendFollowUpEmail(input: {
             where: { id: attempt.id },
             data: { status: "SENT", sentAt: now, outboundEmailId: updated.id }
           });
-          await tx.followUpSequence.update({
-            where: { id: attempt.sequenceId },
-            data:
-              attempt.stepIndex >= attempt.sequence.cadenceDays.length - 1
-                ? { status: "COMPLETED", completedAt: now, currentStep: attempt.stepIndex + 1 }
-                : { currentStep: attempt.stepIndex + 1 }
-          });
           return { updated, activityId: activity.id };
         },
         { maxWait: 10000, timeout: 30000 }
       );
       outbound = result.updated;
       activityId = result.activityId;
-      if (attempt.stepIndex >= attempt.sequence.cadenceDays.length - 1) {
-        await scheduleCallingSequenceAfterFailedEmailSequence({
-          followUpSequenceId: attempt.sequenceId,
-          env: input.env ?? process.env
-        });
-      }
     } catch (error) {
       const failureCode = `${config.provider}_SEND_FAILED`;
       await workerPrisma.outboundEmail.update({
@@ -344,6 +396,11 @@ async function sendFollowUpEmail(input: {
     activityId: activityId ?? outbound.id,
     env: input.env ?? process.env,
     timelineSyncer: input.timelineSyncer
+  });
+  await reconcileFollowUpSequenceAfterSend({
+    sequenceId: attempt.sequenceId,
+    currentEventId: input.event.id,
+    env: input.env ?? process.env
   });
 }
 

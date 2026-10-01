@@ -32,8 +32,17 @@ class TestTimelineSyncer implements TimelineSyncer {
 
 async function cleanup(): Promise<void> {
   await workerPrisma.domainEventOutbox.deleteMany({
-    where: { idempotencyKey: { startsWith: "r13-worker-domain-event:" } }
+    where: {
+      OR: [
+        { idempotencyKey: { startsWith: "r13-worker-domain-event:" } },
+        { idempotencyKey: { startsWith: "domain-event:calling-attempt:" } },
+        { idempotencyKey: { startsWith: "domain-event:whatsapp-send:" } }
+      ]
+    }
   });
+  await workerPrisma.outboundWhatsAppMessage.deleteMany({ where: { lead: { source: "r13-worker-followup" } } });
+  await workerPrisma.callingAttempt.deleteMany({ where: { lead: { source: "r13-worker-followup" } } });
+  await workerPrisma.callingSequence.deleteMany({ where: { lead: { source: "r13-worker-followup" } } });
   await workerPrisma.followUpAttempt.deleteMany({ where: { lead: { source: "r13-worker-followup" } } });
   await workerPrisma.followUpSequence.deleteMany({ where: { lead: { source: "r13-worker-followup" } } });
   await workerPrisma.outboundEmail.deleteMany({ where: { lead: { source: "r13-worker-followup" } } });
@@ -108,6 +117,97 @@ async function fixture() {
     }
   });
   return { event, attempt };
+}
+
+async function outOfOrderFinalAttemptFixture() {
+  const stage = await workerPrisma.pipelineStage.findFirstOrThrow({ where: { key: "NEW" } });
+  const company = await workerPrisma.company.create({ data: { name: `R13 Worker ${crypto.randomUUID()}` } });
+  const contact = await workerPrisma.contact.create({
+    data: {
+      companyId: company.id,
+      firstName: "Worker",
+      lastName: "OutOfOrder",
+      email: "r13-worker-out-of-order@example.com",
+      normalizedEmail: "r13-worker-out-of-order@example.com",
+      phone: "+919999000002",
+      normalizedPhone: "+919999000002",
+      source: "r13-worker-followup"
+    }
+  });
+  const lead = await workerPrisma.lead.create({
+    data: {
+      companyId: company.id,
+      contactId: contact.id,
+      stageId: stage.id,
+      source: "r13-worker-followup"
+    }
+  });
+  const conversation = await workerPrisma.conversation.create({
+    data: { leadId: lead.id, channel: "EMAIL", mode: "AUTO" }
+  });
+  const sequence = await workerPrisma.followUpSequence.create({
+    data: {
+      leadId: lead.id,
+      contactId: contact.id,
+      conversationId: conversation.id,
+      cadenceDays: [0, 1, 5, 9],
+      idempotencyKey: `r13-worker-sequence:${lead.id}`
+    }
+  });
+  const attempts = [];
+  const events = [];
+  for (const index of [0, 1, 2, 3]) {
+    const sent = index < 2;
+    const attempt = await workerPrisma.followUpAttempt.create({
+      data: {
+        sequenceId: sequence.id,
+        leadId: lead.id,
+        stepIndex: index,
+        kind: index === 0 ? "FIRST_EMAIL" : "FOLLOW_UP",
+        status: sent ? "SENT" : "SCHEDULED",
+        scheduledAt: new Date(Date.now() + index * 60_000),
+        sentAt: sent ? new Date(Date.now() - (4 - index) * 60_000) : null,
+        subject: `Following up ${String(index)}`,
+        textBody: `Hello from Shilabs ${String(index)}`,
+        idempotencyKey: `r13-worker-attempt:${sequence.id}:${String(index)}`
+      }
+    });
+    const event = await workerPrisma.domainEventOutbox.create({
+      data: {
+        eventType: "FOLLOWUP_EMAIL_SEND_REQUESTED",
+        aggregateType: "FollowUpAttempt",
+        aggregateId: attempt.id,
+        payload: {
+          followUpSequenceId: sequence.id,
+          followUpAttemptId: attempt.id,
+          leadId: lead.id,
+          conversationId: conversation.id,
+          stepIndex: index
+        },
+        status: index < 2 ? "PROCESSED" : index === 2 ? "QUEUED" : "PROCESSING",
+        processedAt: index < 2 ? new Date(Date.now() - (4 - index) * 60_000) : null,
+        correlationId: sequence.id,
+        idempotencyKey: `r13-worker-domain-event:${attempt.id}`,
+        queueJobId: index === 3 ? `r13-worker-job:${attempt.id}` : null,
+        queuedAt: index >= 2 ? new Date() : null,
+        lockedAt: index === 3 ? new Date() : null,
+        lockedBy: index === 3 ? "r13-worker-test" : null
+      }
+    });
+    await workerPrisma.followUpAttempt.update({
+      where: { id: attempt.id },
+      data: { domainEventId: event.id }
+    });
+    attempts.push({ ...attempt, domainEventId: event.id });
+    events.push(event);
+  }
+  const finalAttempt = attempts[3];
+  const finalEvent = events[3];
+  const queuedMiddleEvent = events[2];
+  if (!finalAttempt || !finalEvent || !queuedMiddleEvent) {
+    throw new Error("Out-of-order final attempt fixture was not created");
+  }
+  return { lead, sequence, finalAttempt, finalEvent, queuedMiddleEvent };
 }
 
 describe("R13 follow-up email worker handler", () => {
@@ -218,5 +318,38 @@ describe("R13 follow-up email worker handler", () => {
         zohoSyncStatus: "FAILED",
         zohoLastError: "Missing configuration: ZOHO_BIGIN_CLIENT_ID"
       });
+  }, 45000);
+
+  it("does not complete R13 or create R23 when an earlier required attempt event is still queued", async () => {
+    const { lead, sequence, finalAttempt, finalEvent, queuedMiddleEvent } =
+      await outOfOrderFinalAttemptFixture();
+    const provider = new TestEmailProvider();
+    const timelineSyncer = new TestTimelineSyncer([
+      { status: "SYNCED", externalRecordId: "zoho-note-final", lastError: null }
+    ]);
+    const env = {
+      AWS_SES_REGION: "us-east-1",
+      AWS_SES_FROM_EMAIL: "sales@example.com",
+      AWS_SES_ACCESS_KEY_ID: "test",
+      AWS_SES_SECRET_ACCESS_KEY: "test",
+      CALLING_AUTOMATION_ENABLED: "true",
+      CALLING_AUTOMATION_ATTEMPTS_SAME_DAY: "2",
+      CALLING_AUTOMATION_SAME_DAY_SPACING_MINUTES: "60",
+      CALLING_AUTOMATION_WAIT_DAYS_AFTER_SAME_DAY: "3",
+      CALLING_AUTOMATION_MAX_ATTEMPTS: "3"
+    };
+
+    await sendFollowUpEmail({ event: finalEvent, provider, env, timelineSyncer });
+
+    await expect(workerPrisma.followUpAttempt.findUniqueOrThrow({ where: { id: finalAttempt.id } }))
+      .resolves.toMatchObject({ status: "SENT" });
+    await expect(workerPrisma.followUpSequence.findUniqueOrThrow({ where: { id: sequence.id } }))
+      .resolves.toMatchObject({ status: "ACTIVE", completedAt: null, currentStep: 2 });
+    await expect(workerPrisma.domainEventOutbox.findUniqueOrThrow({ where: { id: queuedMiddleEvent.id } }))
+      .resolves.toMatchObject({ status: "QUEUED" });
+    await expect(workerPrisma.callingSequence.count({ where: { leadId: lead.id } })).resolves.toBe(0);
+    await expect(workerPrisma.domainEventOutbox.count({
+      where: { eventType: "WHATSAPP_SEND_REQUESTED", payload: { path: ["leadId"], equals: lead.id } }
+    })).resolves.toBe(0);
   }, 45000);
 });

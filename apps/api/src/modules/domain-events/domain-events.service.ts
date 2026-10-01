@@ -15,6 +15,7 @@ import {
   type TransactionClient,
   upsertDomainEvent
 } from "./domain-events.repository.js";
+import { publishRealtimeEvent } from "../realtime/realtime.service.js";
 
 export interface PublishDomainEventInput {
   eventType: string;
@@ -79,6 +80,17 @@ export async function publishDomainEvent(
       nextAttemptAt: input.nextAttemptAt ?? new Date()
     }
   });
+  const payload = input.payload as Prisma.JsonObject;
+  const leadId = typeof payload.leadId === "string" ? payload.leadId : null;
+  const conversationId = typeof payload.conversationId === "string" ? payload.conversationId : null;
+  await publishRealtimeEvent({
+    entityType: leadId ? "lead" : "workspace",
+    action: "domain-event-published",
+    leadId,
+    conversationId,
+    domainEventId: event.id,
+    sourceEventType: event.eventType
+  }).catch(() => undefined);
   return toDomainEventDto(event);
 }
 

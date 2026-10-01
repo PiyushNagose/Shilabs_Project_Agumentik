@@ -100,6 +100,7 @@ enum ActivityType {
   MEETING_CONFIRMED
   CALL_REQUESTED
   CALL_STATUS_UPDATED
+  CALL_CONVERSATION_COMPLETED
   CALL_FAILED
   WHATSAPP_SENT
   WHATSAPP_STATUS_UPDATED
@@ -195,6 +196,7 @@ enum IntegrationProvider {
   SEMRUSH
   GOOGLE_CALENDAR
   TWILIO
+  EXOTEL
   META_WHATSAPP
 }
 
@@ -463,6 +465,13 @@ enum VoiceTranscriptStatus {
 enum VoiceProviderEventType {
   CALL_STATUS
   RECORDING_STATUS
+  VOICE_STREAM
+}
+
+enum VoiceConversationRunStatus {
+  STARTED
+  COMPLETED
+  FAILED
 }
 
 enum CallingSequenceStatus {
@@ -795,6 +804,7 @@ model Lead {
   agentCorrections         AgentCorrection[]
   meetingRequests          MeetingRequest[]
   voiceCallAttempts        VoiceCallAttempt[]
+  voiceConversationRuns    VoiceConversationRun[]
   outboundWhatsAppMessages OutboundWhatsAppMessage[]
   briefingRuns             BriefingRun[]
 
@@ -1111,6 +1121,7 @@ model Conversation {
   meetingRequests          MeetingRequest[]
   outboundWhatsAppMessages OutboundWhatsAppMessage[]
   agentCorrections         AgentCorrection[]
+  voiceConversationRuns    VoiceConversationRun[]
 
   @@index([leadId])
   @@index([channel])
@@ -1243,6 +1254,8 @@ model MeetingRequest {
   provider                IntegrationProvider
   providerMeetingId       String?
   providerMeetingUrl      String?
+  providerCalendarId      String?
+  providerOrganizerEmail  String?
   providerSyncStatus      MeetingSyncStatus    @default(PENDING)
   providerLastError       String?
   zohoSyncStatus          MeetingSyncStatus    @default(PENDING)
@@ -1334,7 +1347,8 @@ model VoiceCallAttempt {
   contact        Contact              @relation(fields: [contactId], references: [id], onDelete: Restrict)
   actor          User?                @relation("VoiceCallActor", fields: [actorUserId], references: [id], onDelete: SetNull)
   events         VoiceProviderEvent[]
-  callingAttempt CallingAttempt?
+  callingAttempt  CallingAttempt?
+  conversationRun VoiceConversationRun?
 
   @@index([leadId])
   @@index([contactId])
@@ -1367,6 +1381,46 @@ model VoiceProviderEvent {
   @@index([receivedAt])
 }
 
+model VoiceConversationRun {
+  id                   String                     @id @default(cuid())
+  voiceCallAttemptId   String                     @unique
+  leadId               String
+  conversationId       String?
+  messageId            String?
+  replyProcessingRunId String?                    @unique
+  status               VoiceConversationRunStatus @default(STARTED)
+  provider             String?
+  model                String?
+  transcriptText       String?
+  outcome              Json?
+  intent               ReplyIntent?
+  recommendedAction    ReplyRecommendedAction?
+  summary              String?
+  humanHandoffRequired Boolean                    @default(false)
+  failureCode          String?
+  failureMessage       String?
+  idempotencyKey       String                     @unique
+  startedAt            DateTime                   @default(now())
+  completedAt          DateTime?
+  createdAt            DateTime                   @default(now())
+  updatedAt            DateTime                   @updatedAt
+
+  voiceCallAttempt  VoiceCallAttempt   @relation(fields: [voiceCallAttemptId], references: [id], onDelete: Cascade)
+  lead              Lead               @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  conversation      Conversation?      @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  message           Message?           @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  replyProcessingRun ReplyProcessingRun? @relation(fields: [replyProcessingRunId], references: [id], onDelete: SetNull)
+
+  @@index([leadId])
+  @@index([conversationId])
+  @@index([messageId])
+  @@index([replyProcessingRunId])
+  @@index([status])
+  @@index([intent])
+  @@index([startedAt])
+  @@index([completedAt])
+}
+
 model FollowUpSequence {
   id               String                 @id @default(cuid())
   leadId           String
@@ -1381,6 +1435,8 @@ model FollowUpSequence {
   lastErrorCode    String?
   lastErrorMessage String?
   idempotencyKey   String                 @unique
+  cadenceMode           String                 @default("PRODUCTION_DAYS")
+  cadenceOffsetsMinutes Int[]             @default([])
   createdAt        DateTime               @default(now())
   updatedAt        DateTime               @updatedAt
 
@@ -1586,6 +1642,7 @@ model Message {
   qualificationEvidence LeadQualificationEvidence[]
   inboundEmail          InboundEmail?
   replyProcessingRuns   ReplyProcessingRun[]
+  voiceConversationRuns VoiceConversationRun[]
 
   @@index([conversationId])
   @@index([senderUserId])
@@ -1850,6 +1907,7 @@ model ReplyProcessingRun {
   inboundEmail       InboundEmail?       @relation(fields: [inboundEmailId], references: [id], onDelete: SetNull)
   negotiationHandoff NegotiationHandoff?
   corrections        AgentCorrection[]
+  voiceConversationRun VoiceConversationRun?
 
   @@index([leadId])
   @@index([conversationId])

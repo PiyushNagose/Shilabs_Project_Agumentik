@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import request from "supertest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { UserRole, UserStatus } from "@prisma/client";
 import type {
   AuthResponse,
@@ -12,6 +13,8 @@ import type {
 import { createApp } from "../../app.js";
 import { prisma } from "../../shared/prisma.js";
 import { hashPassword } from "../auth/auth.service.js";
+import type { EmailProvider, EmailSendInput, EmailSendResult } from "../email/email.provider.js";
+import { sendHumanReply } from "./conversation.service.js";
 
 const app = createApp();
 const adminEmail = "conversation-api-admin@example.local";
@@ -25,6 +28,30 @@ const newStage = {
   isWon: false,
   isLost: false
 };
+const configuredEmailEnv = {
+  EMAIL_PROVIDER: "AWS_SES",
+  ALLOW_EXTERNAL_EMAIL_IN_NON_PRODUCTION: "true",
+  AWS_SES_REGION: "us-east-1",
+  AWS_SES_FROM_EMAIL: "sales@example.com",
+  AWS_SES_ACCESS_KEY_ID: "test-access-key",
+  AWS_SES_SECRET_ACCESS_KEY: "test-secret-key",
+  AWS_SES_WEBHOOK_SECRET: "test-webhook-secret",
+  AWS_SES_USE_DEFAULT_CREDENTIAL_CHAIN: "false"
+};
+
+class TestEmailProvider implements EmailProvider {
+  public sendEmailMock = vi.fn((input: EmailSendInput): Promise<EmailSendResult> =>
+    Promise.resolve({
+      provider: "AWS_SES",
+      providerMessageId: `ses-human-${input.idempotencyKey}`
+    })
+  );
+  public verifyConnection: EmailProvider["verifyConnection"] = () =>
+    Promise.resolve({ provider: "AWS_SES", sendingEnabled: true });
+  public sendEmail(input: EmailSendInput): Promise<EmailSendResult> {
+    return this.sendEmailMock(input);
+  }
+}
 
 async function seedStages(): Promise<void> {
   await prisma.pipelineStage.upsert({
@@ -88,6 +115,12 @@ async function cleanup(): Promise<void> {
     where: { conversation: { lead: { company: { name: { startsWith: companyNamePrefix } } } } }
   });
   await prisma.humanTakeover.deleteMany({
+    where: { lead: { company: { name: { startsWith: companyNamePrefix } } } }
+  });
+  await prisma.emailProviderEvent.deleteMany({
+    where: { outboundEmail: { lead: { company: { name: { startsWith: companyNamePrefix } } } } }
+  });
+  await prisma.outboundEmail.deleteMany({
     where: { lead: { company: { name: { startsWith: companyNamePrefix } } } }
   });
   await prisma.conversation.deleteMany({
@@ -345,5 +378,77 @@ describe("M7/M8 conversations API", () => {
         body: "Duplicate copy"
       })
       .expect(409);
+  }, 45000);
+
+  it("sends a HUMAN conversation reply through EmailProvider idempotently", async () => {
+    const token = await login();
+    const lead = await createLead(token);
+    const actor = await prisma.user.findUniqueOrThrow({ where: { email: adminEmail } });
+    await prisma.lead.update({ where: { id: lead.id }, data: { ownerId: actor.id } });
+    const conversationResponse = await request(app)
+      .post("/api/conversations")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ leadId: lead.id, channel: "EMAIL", mode: "HUMAN" })
+      .expect(201);
+    const conversation = conversationResponse.body as unknown as ConversationDto;
+    const provider = new TestEmailProvider();
+
+    const input = {
+      body: "Thanks for discussing commercials. I can review the scope and share a revised option.",
+      subject: "Re: Commercial discussion",
+      idempotencyKey: "human-reply-regression-001"
+    };
+    const zohoTransport = () =>
+      Promise.resolve(Response.json({ data: [{ details: { id: "zoho-note-1" } }] }));
+    const first = await sendHumanReply(actor, conversation.id, input, {
+      env: configuredEmailEnv,
+      emailProvider: provider,
+      zohoTransport
+    });
+    const second = await sendHumanReply(actor, conversation.id, input, {
+      env: configuredEmailEnv,
+      emailProvider: provider,
+      zohoTransport
+    });
+
+    expect(first.outboundEmail.status).toBe("SENT");
+    expect(first.message?.direction).toBe("OUTBOUND");
+    expect(first.message?.senderType).toBe("USER");
+    expect(first.zohoTimeline?.status).toMatch(/SYNCED|SKIPPED|FAILED|NOT_CONFIGURED/);
+    expect(second.outboundEmail.id).toBe(first.outboundEmail.id);
+    expect(second.message?.id).toBe(first.message?.id);
+    expect(provider.sendEmailMock).toHaveBeenCalledTimes(1);
+    await expect(
+      prisma.activity.count({ where: { leadId: lead.id, type: "MESSAGE_SENT" } })
+    ).resolves.toBe(1);
+    await expect(
+      prisma.auditEvent.count({
+        where: { entityType: "Message", entityId: first.message?.id, action: "HUMAN_REPLY_SENT" }
+      })
+    ).resolves.toBe(1);
+  }, 45000);
+
+  it("rejects human reply while conversation is still automated", async () => {
+    const token = await login();
+    const lead = await createLead(token);
+    const actor = await prisma.user.findUniqueOrThrow({ where: { email: adminEmail } });
+    const conversationResponse = await request(app)
+      .post("/api/conversations")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ leadId: lead.id, channel: "EMAIL", mode: "AUTO" })
+      .expect(201);
+    const conversation = conversationResponse.body as unknown as ConversationDto;
+
+    await expect(
+      sendHumanReply(
+        actor,
+        conversation.id,
+        {
+          body: "Manual reply",
+          idempotencyKey: "human-reply-reject-auto"
+        },
+        { env: configuredEmailEnv, emailProvider: new TestEmailProvider() }
+      )
+    ).rejects.toMatchObject({ code: "CONFLICT" });
   }, 45000);
 });

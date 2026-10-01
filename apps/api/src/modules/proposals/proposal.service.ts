@@ -293,42 +293,45 @@ export async function submitProposalForApproval(
     throw new AppError(409, "CONFLICT", "Proposal must have a draft version before approval");
   }
 
-  const proposal = await prisma.$transaction(async (tx) => {
-    const updated = await tx.proposal.update({
-      where: { id: existing.id },
-      data: { status: "WAITING_APPROVAL" },
-      include: proposalInclude
-    });
-    await tx.proposalStatusChange.create({
-      data: {
-        proposalId: existing.id,
-        fromStatus: existing.status,
-        toStatus: "WAITING_APPROVAL",
-        actorUserId: actor.id,
-        reason: input.reason ?? null
-      }
-    });
-    await tx.activity.create({
-      data: {
-        leadId: existing.leadId,
-        actorUserId: actor.id,
-        type: "PROPOSAL_SUBMITTED",
-        description: `Proposal submitted for approval: ${existing.title}`
-      }
-    });
-    await tx.auditEvent.create({
-      data: {
-        actorType: "USER",
-        actorId: actor.id,
-        entityType: "Proposal",
-        entityId: existing.id,
-        action: "PROPOSAL_SUBMITTED_FOR_APPROVAL",
-        before: { status: existing.status },
-        after: { status: "WAITING_APPROVAL", currentVersionId: existing.currentVersionId }
-      }
-    });
-    return updated;
-  });
+  const proposal = await prisma.$transaction(
+    async (tx) => {
+      const updated = await tx.proposal.update({
+        where: { id: existing.id },
+        data: { status: "WAITING_APPROVAL" },
+        include: proposalInclude
+      });
+      await tx.proposalStatusChange.create({
+        data: {
+          proposalId: existing.id,
+          fromStatus: existing.status,
+          toStatus: "WAITING_APPROVAL",
+          actorUserId: actor.id,
+          reason: input.reason ?? null
+        }
+      });
+      await tx.activity.create({
+        data: {
+          leadId: existing.leadId,
+          actorUserId: actor.id,
+          type: "PROPOSAL_SUBMITTED",
+          description: `Proposal submitted for approval: ${existing.title}`
+        }
+      });
+      await tx.auditEvent.create({
+        data: {
+          actorType: "USER",
+          actorId: actor.id,
+          entityType: "Proposal",
+          entityId: existing.id,
+          action: "PROPOSAL_SUBMITTED_FOR_APPROVAL",
+          before: { status: existing.status },
+          after: { status: "WAITING_APPROVAL", currentVersionId: existing.currentVersionId }
+        }
+      });
+      return updated;
+    },
+    { maxWait: 10000, timeout: 30000 }
+  );
 
   return toProposalDto(await loadProposal(proposal.id));
 }
@@ -345,65 +348,68 @@ export async function approveProposal(
   }
   const approvedVersionId = existing.currentVersionId;
 
-  const proposal = await prisma.$transaction(async (tx) => {
-    const updated = await tx.proposal.update({
-      where: { id: existing.id },
-      data: {
-        status: "APPROVED",
-        approvedVersionId,
-        approvedByUserId: actor.id,
-        approvedAt: new Date()
-      },
-      include: proposalInclude
-    });
-    await tx.proposalStatusChange.create({
-      data: {
-        proposalId: existing.id,
-        fromStatus: existing.status,
-        toStatus: "APPROVED",
-        actorUserId: actor.id,
-        reason: input.reason ?? null
-      }
-    });
-    await tx.activity.create({
-      data: {
-        leadId: existing.leadId,
-        actorUserId: actor.id,
-        type: "PROPOSAL_APPROVED",
-        description: `Proposal approved: ${existing.title}`
-      }
-    });
-    await tx.auditEvent.create({
-      data: {
-        actorType: "USER",
-        actorId: actor.id,
-        entityType: "Proposal",
-        entityId: existing.id,
-        action: "PROPOSAL_APPROVED",
-        before: { status: existing.status },
-        after: {
+  const proposal = await prisma.$transaction(
+    async (tx) => {
+      const updated = await tx.proposal.update({
+        where: { id: existing.id },
+        data: {
           status: "APPROVED",
           approvedVersionId,
-          approvedByUserId: actor.id
+          approvedByUserId: actor.id,
+          approvedAt: new Date()
+        },
+        include: proposalInclude
+      });
+      await tx.proposalStatusChange.create({
+        data: {
+          proposalId: existing.id,
+          fromStatus: existing.status,
+          toStatus: "APPROVED",
+          actorUserId: actor.id,
+          reason: input.reason ?? null
         }
-      }
-    });
-    await publishDomainEvent({
-      client: tx,
-      eventType: "PROPOSAL_APPROVED",
-      aggregateType: "Proposal",
-      aggregateId: existing.id,
-      correlationId: existing.id,
-      idempotencyKey: `domain-event:proposal-approved:${existing.id}:${approvedVersionId}`,
-      payload: {
-        proposalId: existing.id,
-        leadId: existing.leadId,
-        dealId: existing.dealId,
-        approvedVersionId
-      }
-    });
-    return updated;
-  });
+      });
+      await tx.activity.create({
+        data: {
+          leadId: existing.leadId,
+          actorUserId: actor.id,
+          type: "PROPOSAL_APPROVED",
+          description: `Proposal approved: ${existing.title}`
+        }
+      });
+      await tx.auditEvent.create({
+        data: {
+          actorType: "USER",
+          actorId: actor.id,
+          entityType: "Proposal",
+          entityId: existing.id,
+          action: "PROPOSAL_APPROVED",
+          before: { status: existing.status },
+          after: {
+            status: "APPROVED",
+            approvedVersionId,
+            approvedByUserId: actor.id
+          }
+        }
+      });
+      await publishDomainEvent({
+        client: tx,
+        eventType: "PROPOSAL_APPROVED",
+        aggregateType: "Proposal",
+        aggregateId: existing.id,
+        correlationId: existing.id,
+        idempotencyKey: `domain-event:proposal-approved:${existing.id}:${approvedVersionId}`,
+        payload: {
+          proposalId: existing.id,
+          leadId: existing.leadId,
+          dealId: existing.dealId,
+          approvedVersionId
+        }
+      });
+      return updated;
+    },
+    { maxWait: 10000, timeout: 30000 }
+  );
 
   return toProposalDto(await loadProposal(proposal.id));
 }
@@ -432,64 +438,67 @@ export async function recordProposalSentAfterProviderConfirmation(
   }
 
   const sentAt = outboundEmail.sentAt ?? new Date();
-  const proposal = await prisma.$transaction(async (tx) => {
-    const updated = await tx.proposal.update({
-      where: { id: existing.id },
-      data: {
-        status: "SENT",
-        sentByUserId: actor.id,
-        sentAt,
-        sentOutboundEmailId: outboundEmail.id,
-        zohoTimelineSyncStatus: "PENDING",
-        zohoTimelineLastError: null
-      },
-      include: proposalInclude
-    });
-    await tx.proposalStatusChange.create({
-      data: {
-        proposalId: existing.id,
-        fromStatus: existing.status,
-        toStatus: "SENT",
-        actorUserId: actor.id,
-        reason: input.reason ?? "Provider-confirmed proposal email sent"
-      }
-    });
-    await tx.activity.create({
-      data: {
-        leadId: existing.leadId,
-        actorUserId: actor.id,
-        type: "PROPOSAL_SENT",
-        description: `Proposal sent: ${existing.title} (${existing.id})`
-      }
-    });
-    await tx.auditEvent.create({
-      data: {
-        actorType: "USER",
-        actorId: actor.id,
-        entityType: "Proposal",
-        entityId: existing.id,
-        action: "PROPOSAL_SENT",
-        before: { status: existing.status },
-        after: { status: "SENT", outboundEmailId: outboundEmail.id, sentAt: sentAt.toISOString() }
-      }
-    });
-    await publishDomainEvent({
-      client: tx,
-      eventType: "PROPOSAL_SENT",
-      aggregateType: "Proposal",
-      aggregateId: existing.id,
-      correlationId: existing.id,
-      idempotencyKey: `domain-event:proposal-sent:${existing.id}:${outboundEmail.id}`,
-      payload: {
-        proposalId: existing.id,
-        leadId: existing.leadId,
-        dealId: existing.dealId,
-        outboundEmailId: outboundEmail.id,
-        approvedVersionId: existing.approvedVersionId
-      }
-    });
-    return updated;
-  });
+  const proposal = await prisma.$transaction(
+    async (tx) => {
+      const updated = await tx.proposal.update({
+        where: { id: existing.id },
+        data: {
+          status: "SENT",
+          sentByUserId: actor.id,
+          sentAt,
+          sentOutboundEmailId: outboundEmail.id,
+          zohoTimelineSyncStatus: "PENDING",
+          zohoTimelineLastError: null
+        },
+        include: proposalInclude
+      });
+      await tx.proposalStatusChange.create({
+        data: {
+          proposalId: existing.id,
+          fromStatus: existing.status,
+          toStatus: "SENT",
+          actorUserId: actor.id,
+          reason: input.reason ?? "Provider-confirmed proposal email sent"
+        }
+      });
+      await tx.activity.create({
+        data: {
+          leadId: existing.leadId,
+          actorUserId: actor.id,
+          type: "PROPOSAL_SENT",
+          description: `Proposal sent: ${existing.title} (${existing.id})`
+        }
+      });
+      await tx.auditEvent.create({
+        data: {
+          actorType: "USER",
+          actorId: actor.id,
+          entityType: "Proposal",
+          entityId: existing.id,
+          action: "PROPOSAL_SENT",
+          before: { status: existing.status },
+          after: { status: "SENT", outboundEmailId: outboundEmail.id, sentAt: sentAt.toISOString() }
+        }
+      });
+      await publishDomainEvent({
+        client: tx,
+        eventType: "PROPOSAL_SENT",
+        aggregateType: "Proposal",
+        aggregateId: existing.id,
+        correlationId: existing.id,
+        idempotencyKey: `domain-event:proposal-sent:${existing.id}:${outboundEmail.id}`,
+        payload: {
+          proposalId: existing.id,
+          leadId: existing.leadId,
+          dealId: existing.dealId,
+          outboundEmailId: outboundEmail.id,
+          approvedVersionId: existing.approvedVersionId
+        }
+      });
+      return updated;
+    },
+    { maxWait: 10000, timeout: 30000 }
+  );
 
   return toProposalDto(await loadProposal(proposal.id));
 }

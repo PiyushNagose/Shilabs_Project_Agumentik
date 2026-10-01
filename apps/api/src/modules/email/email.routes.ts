@@ -1,11 +1,14 @@
 import { Router } from "express";
 import { UserRole } from "@prisma/client";
+import { getApiConfig } from "@shilabs/shared-config";
 import { asyncHandler } from "../../middleware/async-handler.js";
 import { requireAuth, requireRole } from "../../middleware/auth.middleware.js";
+import { createWebhookRateLimiter } from "../../middleware/security.middleware.js";
 import { validateBody } from "../../middleware/validate.middleware.js";
 import {
   createEmailSuppressionController,
   getAwsSesHealthController,
+  ingestE2ECustomerReplyController,
   ingestSesFeedbackEventController,
   ingestSesInboundEmailController,
   listEmailSuppressionsController,
@@ -15,11 +18,13 @@ import {
 } from "./email.controller.js";
 import {
   createEmailSuppressionSchema,
+  e2eCustomerReplySchema,
   sendEmailSchema,
   validatePreSendEmailSchema
 } from "./email.schemas.js";
 
 export const emailRoutes = Router();
+const webhookRateLimiter = createWebhookRateLimiter(getApiConfig());
 
 emailRoutes.get(
   "/health",
@@ -60,5 +65,12 @@ emailRoutes.post(
   validateBody(sendEmailSchema),
   asyncHandler(sendOutboundEmailController)
 );
-emailRoutes.post("/events", asyncHandler(ingestSesFeedbackEventController));
-emailRoutes.post("/inbound", asyncHandler(ingestSesInboundEmailController));
+emailRoutes.post(
+  "/e2e/customer-reply",
+  requireAuth,
+  requireRole([UserRole.ADMIN]),
+  validateBody(e2eCustomerReplySchema),
+  asyncHandler(ingestE2ECustomerReplyController)
+);
+emailRoutes.post("/events", webhookRateLimiter, asyncHandler(ingestSesFeedbackEventController));
+emailRoutes.post("/inbound", webhookRateLimiter, asyncHandler(ingestSesInboundEmailController));

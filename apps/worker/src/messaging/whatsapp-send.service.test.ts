@@ -1,7 +1,9 @@
 import crypto from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { PrismaClient } from "@prisma/client";
+import { getMessagingConfig } from "@shilabs/shared-config";
 import type { WorkerMessagingProvider } from "../integrations/meta-whatsapp.provider.js";
+import { WorkerTwilioWhatsAppProvider } from "../integrations/meta-whatsapp.provider.js";
 import type { TimelineSyncer } from "../followups/zoho-timeline.syncer.js";
 import { executeWhatsAppSend } from "./whatsapp-send.service.js";
 
@@ -182,5 +184,47 @@ describe("R24 WhatsApp send worker", () => {
         where: { leadId: fixture.lead.id, status: "NOT_CONFIGURED" }
       })
     ).resolves.toBe(1);
+  });
+
+  it("sends Twilio WhatsApp through the real Messages API adapter request shape", async () => {
+    const requests: { url: string; body: URLSearchParams; authorization: string | null }[] = [];
+    const provider = new WorkerTwilioWhatsAppProvider(
+      getMessagingConfig(
+        testEnv({
+          MESSAGING_PROVIDER: "twilio_whatsapp",
+          TWILIO_WHATSAPP_ACCOUNT_SID: "ACtwilio",
+          TWILIO_WHATSAPP_AUTH_TOKEN: "twilio-auth-token",
+          TWILIO_WHATSAPP_SANDBOX_FROM: "whatsapp:+14155238886",
+          TWILIO_WHATSAPP_DEFAULT_BODY: "R24 Twilio sandbox message"
+        })
+      ),
+      (url, init) => {
+        const headers = new Headers(init?.headers);
+        requests.push({
+          url: url instanceof Request ? url.url : String(url),
+          body: init?.body as URLSearchParams,
+          authorization: headers.get("authorization")
+        });
+        return Promise.resolve(Response.json({ sid: "SM-r24-worker-twilio-001", status: "queued" }));
+      }
+    );
+
+    const result = await provider.sendTemplateMessage({
+      to: "+919999000002",
+      templateName: "unused-for-twilio",
+      templateLanguage: "en",
+      idempotencyKey: "r24-worker-twilio-idempotency"
+    });
+
+    expect(result).toMatchObject({
+      status: "ACCEPTED",
+      providerMessageId: "SM-r24-worker-twilio-001",
+      providerStatus: "queued"
+    });
+    expect(requests[0]?.url).toBe("https://api.twilio.com/2010-04-01/Accounts/ACtwilio/Messages.json");
+    expect(requests[0]?.body.get("From")).toBe("whatsapp:+14155238886");
+    expect(requests[0]?.body.get("To")).toBe("whatsapp:+919999000002");
+    expect(requests[0]?.body.get("Body")).toBe("R24 Twilio sandbox message");
+    expect(requests[0]?.authorization).toBe(`Basic ${Buffer.from("ACtwilio:twilio-auth-token").toString("base64")}`);
   });
 });

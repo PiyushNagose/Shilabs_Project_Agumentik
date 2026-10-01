@@ -4,6 +4,7 @@ import { PermanentDomainEventError } from "../domain-events/domain-event.errors.
 import { workerPrisma } from "../domain-events/domain-event.repository.js";
 import {
   WorkerMetaWhatsAppProvider,
+  WorkerTwilioWhatsAppProvider,
   type WorkerMessagingProvider
 } from "../integrations/meta-whatsapp.provider.js";
 import { ZohoTimelineSyncer, type TimelineSyncer } from "../followups/zoho-timeline.syncer.js";
@@ -30,17 +31,41 @@ function normalizePhone(phone: string | null | undefined): string | null {
 
 function missingMessagingConfig(config: MessagingConfig): string[] {
   const missing: string[] = [];
-  if (config.provider !== "meta_whatsapp") missing.push("MESSAGING_PROVIDER");
-  if (!config.metaWhatsApp.accessToken) missing.push("WHATSAPP_ACCESS_TOKEN");
-  if (!config.metaWhatsApp.phoneNumberId) missing.push("WHATSAPP_PHONE_NUMBER_ID");
-  if (!config.metaWhatsApp.defaultTemplateName) missing.push("WHATSAPP_DEFAULT_TEMPLATE_NAME");
+  if (config.provider === "meta_whatsapp") {
+    if (!config.metaWhatsApp.accessToken) missing.push("WHATSAPP_ACCESS_TOKEN");
+    if (!config.metaWhatsApp.phoneNumberId) missing.push("WHATSAPP_PHONE_NUMBER_ID");
+    if (!config.metaWhatsApp.defaultTemplateName) missing.push("WHATSAPP_DEFAULT_TEMPLATE_NAME");
+    return missing;
+  }
+  if (config.provider === "twilio_whatsapp") {
+    if (!config.twilioWhatsApp.accountSid) missing.push("TWILIO_WHATSAPP_ACCOUNT_SID");
+    if (!config.twilioWhatsApp.authToken) missing.push("TWILIO_WHATSAPP_AUTH_TOKEN");
+    if (!config.twilioWhatsApp.sandboxFrom) missing.push("TWILIO_WHATSAPP_SANDBOX_FROM");
+    return missing;
+  }
+  missing.push("MESSAGING_PROVIDER");
   return missing;
+}
+
+function persistedMessagingProvider(config: MessagingConfig): "META_WHATSAPP" | "TWILIO" {
+  return config.provider === "twilio_whatsapp" ? "TWILIO" : "META_WHATSAPP";
+}
+
+function messagingProviderLabel(config: MessagingConfig): "Meta WhatsApp" | "Twilio WhatsApp" {
+  return config.provider === "twilio_whatsapp" ? "Twilio WhatsApp" : "Meta WhatsApp";
+}
+
+function createWorkerMessagingProvider(config: MessagingConfig): WorkerMessagingProvider {
+  return config.provider === "twilio_whatsapp"
+    ? new WorkerTwilioWhatsAppProvider(config)
+    : new WorkerMetaWhatsAppProvider(config);
 }
 
 async function markWhatsAppBlocked(input: {
   leadId: string;
   contactId: string;
   callingAttemptId: string | null;
+  provider: "META_WHATSAPP" | "TWILIO";
   idempotencyKey: string;
   code: string;
   message: string;
@@ -54,7 +79,7 @@ async function markWhatsAppBlocked(input: {
         leadId: input.leadId,
         contactId: input.contactId,
         callingAttemptId: input.callingAttemptId,
-        provider: "META_WHATSAPP",
+        provider: input.provider,
         toWhatsAppId: "not-configured",
         idempotencyKey: input.idempotencyKey,
         status: input.status,
@@ -154,6 +179,8 @@ export async function executeWhatsAppSend(input: {
   }
 
   const config = getMessagingConfig(input.env);
+  const persistedProvider = persistedMessagingProvider(config);
+  const providerLabel = messagingProviderLabel(config);
   const lead = attempt.lead;
   const conversation = lead.conversations[0];
   const activeTakeover = await workerPrisma.humanTakeover.findFirst({
@@ -203,6 +230,7 @@ export async function executeWhatsAppSend(input: {
       leadId,
       contactId,
       callingAttemptId,
+      provider: persistedProvider,
       idempotencyKey,
       code: block[0],
       message: block[1],
@@ -223,10 +251,13 @@ export async function executeWhatsAppSend(input: {
       contactId,
       callingAttemptId,
       conversationId: conversation?.id ?? null,
-      provider: "META_WHATSAPP",
       toWhatsAppId,
       normalizedToPhone: normalizePhone(lead.contact.phone),
-      fromPhoneNumberId: config.metaWhatsApp.phoneNumberId,
+      provider: persistedProvider,
+      fromPhoneNumberId:
+        config.provider === "twilio_whatsapp"
+          ? config.twilioWhatsApp.sandboxFrom
+          : config.metaWhatsApp.phoneNumberId,
       templateName: config.metaWhatsApp.defaultTemplateName,
       templateLanguage: config.metaWhatsApp.defaultTemplateLanguage,
       idempotencyKey,
@@ -235,7 +266,7 @@ export async function executeWhatsAppSend(input: {
     update: { status: "PROVIDER_PENDING", failureCode: null, failureMessage: null }
   });
 
-  const provider = input.provider ?? new WorkerMetaWhatsAppProvider(config);
+  const provider = input.provider ?? createWorkerMessagingProvider(config);
   const result = await provider.sendTemplateMessage({
     to: toWhatsAppId,
     templateName: config.metaWhatsApp.defaultTemplateName,
@@ -249,7 +280,7 @@ export async function executeWhatsAppSend(input: {
       data: {
         status: result.status === "NOT_CONFIGURED" ? "NOT_CONFIGURED" : "FAILED",
         failureCode: result.status === "NOT_CONFIGURED" ? "WHATSAPP_NOT_CONFIGURED" : "WHATSAPP_PROVIDER_ERROR",
-        failureMessage: result.lastError ?? "Meta WhatsApp did not accept the message",
+        failureMessage: result.lastError ?? `${providerLabel} did not accept the message`,
         failedAt: new Date()
       }
     });
@@ -257,12 +288,12 @@ export async function executeWhatsAppSend(input: {
       data: {
         leadId,
         type: "WHATSAPP_FAILED",
-        description: result.lastError ?? "Meta WhatsApp did not accept the message"
+        description: result.lastError ?? `${providerLabel} did not accept the message`
       }
     });
     throw new PermanentDomainEventError(
       result.status === "NOT_CONFIGURED" ? "WHATSAPP_NOT_CONFIGURED" : "WHATSAPP_PROVIDER_ERROR",
-      result.lastError ?? "Meta WhatsApp did not accept the message"
+      result.lastError ?? `${providerLabel} did not accept the message`
     );
   }
 
@@ -283,7 +314,7 @@ export async function executeWhatsAppSend(input: {
       data: {
         leadId,
         type: "WHATSAPP_SENT",
-        description: "WhatsApp template message accepted by Meta"
+        description: `WhatsApp message accepted by ${providerLabel}`
       }
     });
     await tx.auditEvent.create({
@@ -293,7 +324,7 @@ export async function executeWhatsAppSend(input: {
         entityId: updated.id,
         action: "WHATSAPP_MESSAGE_SENT",
         after: {
-          provider: "META_WHATSAPP",
+          provider: persistedProvider,
           providerMessageId,
           templateName: config.metaWhatsApp.defaultTemplateName,
           templatePolicy: "UNRESOLVED_OC_08"
@@ -303,20 +334,20 @@ export async function executeWhatsAppSend(input: {
     await tx.externalRecordMapping.upsert({
       where: {
         provider_entityType_localEntityId: {
-          provider: "META_WHATSAPP",
+          provider: persistedProvider,
           entityType: "WHATSAPP_MESSAGE",
           localEntityId: updated.id
         }
       },
       create: {
-        provider: "META_WHATSAPP",
+        provider: persistedProvider,
         entityType: "WHATSAPP_MESSAGE",
         localEntityId: updated.id,
         externalRecordId: providerMessageId,
         syncDirection: "OUTBOUND",
         syncStatus: "SYNCED",
         lastSyncedAt: now,
-        idempotencyKey: `meta-whatsapp:message:${updated.id}`
+        idempotencyKey: `${config.provider}:message:${updated.id}`
       },
       update: {
         externalRecordId: providerMessageId,

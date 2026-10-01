@@ -4,8 +4,14 @@ import type { SalesActionDashboardDto, SalesActionDashboardItemDto } from "@shil
 import { Icon } from "../../components/Icon.js";
 import { StateBlock } from "../../components/StateBlock.js";
 import { StatusBadge } from "../../components/StatusBadge.js";
-import { acknowledgeNotification, getSalesActionDashboard } from "../../services/api-client.js";
+import { useToast } from "../../components/ToastProvider.js";
+import {
+  acknowledgeNotification,
+  apiErrorMessage,
+  getSalesActionDashboard
+} from "../../services/api-client.js";
 import type { DetailTab } from "../leads/CrmWorkspace.js";
+import { useRealtime } from "../realtime/RealtimeProvider.js";
 
 interface SalesActionDashboardProps {
   accessToken: string;
@@ -47,7 +53,7 @@ function notificationIdFromItem(item: SalesActionDashboardItemDto): string | nul
 
 function leadLabel(item: SalesActionDashboardItemDto): string {
   if (!item.lead) return "Operational item";
-  return `${item.lead.company.name} · ${item.lead.contact.firstName} ${item.lead.contact.lastName}`;
+  return `${item.lead.company.name} - ${item.lead.contact.firstName} ${item.lead.contact.lastName}`;
 }
 
 function DashboardSection({
@@ -87,18 +93,20 @@ function DashboardSection({
               <p>{item.detail}</p>
               <footer>
                 <span>{formatDate(item.occurredAt)}</span>
-                {item.leadId ? (
-                  <button onClick={() => openDashboardItem(item, onOpenLead)} type="button">
-                    <Icon name="briefcase" size={15} />
-                    Open workspace
-                  </button>
-                ) : null}
-                {notificationIdFromItem(item) ? (
-                  <button onClick={() => void onAcknowledge(item)} type="button">
-                    <Icon name="check" size={15} />
-                    Acknowledge
-                  </button>
-                ) : null}
+                <div className="dashboard-card-actions">
+                  {item.leadId ? (
+                    <button onClick={() => openDashboardItem(item, onOpenLead)} type="button">
+                      <Icon name="briefcase" size={15} />
+                      Open workspace
+                    </button>
+                  ) : null}
+                  {notificationIdFromItem(item) ? (
+                    <button onClick={() => void onAcknowledge(item)} type="button">
+                      <Icon name="check" size={15} />
+                      Acknowledge
+                    </button>
+                  ) : null}
+                </div>
               </footer>
             </article>
           ))}
@@ -112,6 +120,8 @@ export function SalesActionDashboard({
   accessToken,
   onOpenLead
 }: SalesActionDashboardProps): React.JSX.Element {
+  const toast = useToast();
+  const realtime = useRealtime();
   const [dashboard, setDashboard] = useState<SalesActionDashboardDto | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -131,13 +141,34 @@ export function SalesActionDashboard({
   async function acknowledgeDashboardItem(item: SalesActionDashboardItemDto): Promise<void> {
     const notificationId = notificationIdFromItem(item);
     if (!notificationId) return;
-    await acknowledgeNotification(accessToken, notificationId);
-    await loadDashboard();
+    try {
+      await acknowledgeNotification(accessToken, notificationId);
+      await loadDashboard();
+      toast.success({ title: "Action acknowledged", detail: item.title });
+    } catch (error) {
+      toast.error({
+        title: "Acknowledgement failed",
+        detail: apiErrorMessage(error, "Action item could not be acknowledged")
+      });
+    }
   }
 
   useEffect(() => {
     void loadDashboard();
   }, [accessToken]);
+
+  useEffect(
+    () =>
+      realtime.subscribe((event) => {
+        if (
+          event.type === "realtime:reconnected" ||
+          ["dashboard", "lead", "workspace", "notifications", "domain-event"].includes(event.entityType)
+        ) {
+          void loadDashboard();
+        }
+      }),
+    [accessToken, realtime]
+  );
 
   const totalItems = dashboard?.summary.totalActionItems ?? 0;
   const topItems = useMemo(() => dashboard?.actionItems.slice(0, 5) ?? [], [dashboard]);
@@ -225,18 +256,20 @@ export function SalesActionDashboard({
                 </div>
                 <footer>
                   <span>{formatDate(item.occurredAt)}</span>
-                  {item.leadId ? (
-                    <button onClick={() => openDashboardItem(item, onOpenLead)} type="button">
-                      <Icon name="briefcase" size={15} />
-                      Open workspace
-                    </button>
-                  ) : null}
-                  {notificationIdFromItem(item) ? (
-                    <button onClick={() => void acknowledgeDashboardItem(item)} type="button">
-                      <Icon name="check" size={15} />
-                      Acknowledge
-                    </button>
-                  ) : null}
+                  <div className="dashboard-card-actions">
+                    {item.leadId ? (
+                      <button onClick={() => openDashboardItem(item, onOpenLead)} type="button">
+                        <Icon name="briefcase" size={15} />
+                        Open workspace
+                      </button>
+                    ) : null}
+                    {notificationIdFromItem(item) ? (
+                      <button onClick={() => void acknowledgeDashboardItem(item)} type="button">
+                        <Icon name="check" size={15} />
+                        Acknowledge
+                      </button>
+                    ) : null}
+                  </div>
                 </footer>
               </article>
             ))}
@@ -296,12 +329,14 @@ export function SalesActionDashboard({
                   <p>{item.detail}</p>
                   <footer>
                     <span>{formatDate(item.occurredAt)}</span>
-                    {item.leadId ? (
-                      <button onClick={() => openDashboardItem(item, onOpenLead)} type="button">
-                        <Icon name="briefcase" size={15} />
-                        Open meeting
-                      </button>
-                    ) : null}
+                    <div className="dashboard-card-actions">
+                      {item.leadId ? (
+                        <button onClick={() => openDashboardItem(item, onOpenLead)} type="button">
+                          <Icon name="briefcase" size={15} />
+                          Open meeting
+                        </button>
+                      ) : null}
+                    </div>
                   </footer>
                 </article>
               ))}

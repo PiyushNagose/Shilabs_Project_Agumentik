@@ -6,6 +6,7 @@ import type {
   CalendarProviderName
 } from "@shilabs/shared-types";
 import { z } from "zod";
+import { redactSecrets } from "../../shared/redaction.js";
 
 export interface CalendarAvailabilityInput {
   ownerUserId: string;
@@ -75,6 +76,17 @@ const googleApiErrorResponseSchema = z.object({
     .optional()
 });
 
+const googleEventResponseSchema = z.object({
+  id: z.string(),
+  status: z.string().optional(),
+  htmlLink: z.string(),
+  organizer: z
+    .object({
+      email: z.string().optional()
+    })
+    .optional()
+});
+
 const GOOGLE_FREEBUSY_SCOPE = "https://www.googleapis.com/auth/calendar.freebusy";
 const GOOGLE_EVENT_WRITE_SCOPE = "https://www.googleapis.com/auth/calendar.events";
 
@@ -93,6 +105,8 @@ export interface CalendarMeetingCreateResult {
   status: "SYNCED" | "FAILED" | "NOT_CONFIGURED";
   externalMeetingId: string | null;
   externalMeetingUrl: string | null;
+  externalCalendarId: string | null;
+  organizerEmail: string | null;
   lastError: string | null;
 }
 
@@ -114,7 +128,7 @@ function isRetryableStatus(status: number): boolean {
 
 function sanitizeError(error: unknown): string {
   if (error instanceof Error && error.message.trim()) {
-    return error.message;
+    return redactSecrets(error.message).slice(0, 500);
   }
 
   return "Google Calendar request failed";
@@ -286,6 +300,8 @@ export class NotConfiguredCalendarProvider implements CalendarProvider {
       status: "NOT_CONFIGURED",
       externalMeetingId: null,
       externalMeetingUrl: null,
+      externalCalendarId: null,
+      organizerEmail: null,
       lastError: "Calendar provider is not configured"
     });
   }
@@ -383,6 +399,8 @@ export class GoogleCalendarProvider implements CalendarProvider {
         status: "NOT_CONFIGURED",
         externalMeetingId: null,
         externalMeetingUrl: null,
+        externalCalendarId: null,
+        organizerEmail: null,
         lastError: `Google Calendar meeting creation is missing required configuration: ${missingConfig.join(
           ", "
         )}`
@@ -434,20 +452,29 @@ export class GoogleCalendarProvider implements CalendarProvider {
         error?: unknown;
       } | null;
       if (!response.ok) {
-        throw new Error(
-          googleApiFailureMessage("Google Calendar event insert", response.status, rawBody)
-        );
+        if (response.status !== 409) {
+          throw new Error(
+            googleApiFailureMessage("Google Calendar event insert", response.status, rawBody)
+          );
+        }
+      } else if (!rawBody || typeof rawBody.id !== "string") {
+        throw new Error("Google Calendar event insert response was malformed");
       }
 
-      if (!rawBody || typeof rawBody.id !== "string") {
-        throw new Error("Google Calendar event insert response was malformed");
+      const verified = await this.getEventById(token.accessToken, eventId);
+      if (verified.id !== eventId) {
+        throw new Error(
+          "Google Calendar event read-after-write verification returned a different event"
+        );
       }
 
       return {
         provider: "GOOGLE",
         status: "SYNCED",
-        externalMeetingId: rawBody.id,
-        externalMeetingUrl: typeof rawBody.htmlLink === "string" ? rawBody.htmlLink : null,
+        externalMeetingId: verified.id,
+        externalMeetingUrl: verified.htmlLink,
+        externalCalendarId: this.config.google.calendarId,
+        organizerEmail: verified.organizer?.email ?? null,
         lastError: null
       };
     } catch (error) {
@@ -456,9 +483,42 @@ export class GoogleCalendarProvider implements CalendarProvider {
         status: "FAILED",
         externalMeetingId: null,
         externalMeetingUrl: null,
+        externalCalendarId: null,
+        organizerEmail: null,
         lastError: sanitizeError(error)
       };
     }
+  }
+
+  private async getEventById(
+    accessToken: string,
+    eventId: string
+  ): Promise<z.infer<typeof googleEventResponseSchema>> {
+    const response = await this.requestWithRetry(
+      `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
+        this.config.google.calendarId
+      )}/events/${encodeURIComponent(eventId)}`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${accessToken}`
+        }
+      }
+    );
+    const rawBody: unknown = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(
+        googleApiFailureMessage("Google Calendar event get", response.status, rawBody)
+      );
+    }
+    const parsed = googleEventResponseSchema.safeParse(rawBody);
+    if (!parsed.success) {
+      throw new Error("Google Calendar event get response was malformed");
+    }
+    if (parsed.data.status === "cancelled") {
+      throw new Error("Google Calendar event read-after-write verification returned a cancelled event");
+    }
+    return parsed.data;
   }
 
   private async queryFreeBusy(
@@ -619,6 +679,8 @@ export class UnsupportedCalendarProvider implements CalendarProvider {
       status: "FAILED",
       externalMeetingId: null,
       externalMeetingUrl: null,
+      externalCalendarId: null,
+      organizerEmail: null,
       lastError: "Provider-specific calendar adapter is not implemented in R21"
     });
   }

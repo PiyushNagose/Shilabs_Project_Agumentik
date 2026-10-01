@@ -3,6 +3,7 @@ import type {
   ConversationDto,
   HumanTakeoverBriefingDto,
   HumanTakeoverDto,
+  HumanConversationReplyDto,
   MessageDto
 } from "@shilabs/shared-types";
 import { AppError } from "../../shared/errors.js";
@@ -13,6 +14,7 @@ import {
   getHumanTakeoverBriefing,
   listConversations,
   listMessages,
+  sendHumanReply,
   startHumanTakeover,
   updateConversationMode
 } from "./conversation.service.js";
@@ -20,6 +22,7 @@ import type {
   CreateConversationInput,
   CreateMessageInput,
   ListConversationsQuery,
+  SendHumanReplyInput,
   StartHumanTakeoverInput,
   UpdateConversationModeInput
 } from "./conversation.schemas.js";
@@ -89,6 +92,15 @@ export async function startHumanTakeoverController(
   response
     .status(201)
     .json(await startHumanTakeover(requireRequestUser(request), request.params.id, request.body));
+}
+
+export async function sendHumanReplyController(
+  request: Request<{ id: string }, HumanConversationReplyDto, SendHumanReplyInput>,
+  response: Response<HumanConversationReplyDto>
+): Promise<void> {
+  response
+    .status(200)
+    .json(await sendHumanReply(requireRequestUser(request), request.params.id, request.body));
 }
 
 export async function getHumanTakeoverBriefingController(

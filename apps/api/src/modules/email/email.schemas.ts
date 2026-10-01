@@ -35,3 +35,11 @@ export const createEmailSuppressionSchema = z.object({
 });
 
 export type CreateEmailSuppressionInput = z.infer<typeof createEmailSuppressionSchema>;
+
+export const e2eCustomerReplySchema = z.object({
+  leadId: z.string().trim().min(1),
+  subject: z.string().trim().min(1).max(500).optional(),
+  body: z.string().trim().min(1).max(20000)
+});
+
+export type E2ECustomerReplyInput = z.infer<typeof e2eCustomerReplySchema>;
