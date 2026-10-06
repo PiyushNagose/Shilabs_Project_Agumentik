@@ -6,6 +6,7 @@ import { prisma } from "../../../shared/prisma.js";
 import { redactSecrets } from "../../../shared/redaction.js";
 import type { AuthenticatedUser } from "../../auth/auth.types.js";
 import type { CRMContact } from "../../crm/crm.provider.js";
+import { autoStartLeadAiAutomation } from "../../followups/lead-ai-automation.service.js";
 import { upsertIntegrationAccount } from "../integration-mapping.repository.js";
 import { ZohoBiginAuthClient, type FetchTransport } from "./zoho-bigin.client.js";
 import { ZohoBiginProvider } from "./zoho-bigin.provider.js";
@@ -134,12 +135,14 @@ export async function syncZohoLeadContacts(input: {
       for (const contact of pageResult.records) {
         counters.totalRecords += 1;
         try {
-          await syncOneContact({
+          const outcome = await syncOneContact({
             contact,
             integrationAccountId: account.id,
-            requestedByUserId: input.actor.id
+            actor: input.actor,
+            env: input.env
           });
-          counters.succeededRecords += 1;
+          if (outcome === "SKIPPED") counters.skippedRecords += 1;
+          else counters.succeededRecords += 1;
         } catch (error) {
           counters.failedRecords += 1;
           counters.lastError = sanitizeError(error);
@@ -207,14 +210,15 @@ export async function syncZohoLeadContacts(input: {
 async function syncOneContact(input: {
   contact: CRMContact;
   integrationAccountId: string;
-  requestedByUserId: string;
-}): Promise<void> {
+  actor: AuthenticatedUser;
+  env?: NodeJS.ProcessEnv;
+}): Promise<"SYNCED" | "SKIPPED"> {
   const defaultStage = await prisma.pipelineStage.findUnique({ where: { key: "NEW" } });
   if (!defaultStage) {
     throw new AppError(404, "NOT_FOUND", "Default pipeline stage not found");
   }
 
-  await prisma.$transaction(
+  const syncedLead = await prisma.$transaction(
     async (transaction) => {
       const normalizedWebsite = normalizeWebsite(input.contact.company.website);
       const companyMapping = await transaction.externalRecordMapping.findUnique({
@@ -286,9 +290,52 @@ async function syncOneContact(input: {
       const normalizedEmail = normalizeEmail(input.contact.email);
       const normalizedPhone = normalizePhone(input.contact.phone);
 
-      const contact = existingContactMapping
+      let contactLocalId = existingContactMapping?.localEntityId;
+      const identityConditions = [
+        normalizedEmail ? { normalizedEmail } : null,
+        normalizedPhone ? { normalizedPhone } : null,
+        input.contact.whatsappId ? { whatsappId: input.contact.whatsappId } : null
+      ].filter((c): c is NonNullable<typeof c> => c !== null);
+
+      if (!contactLocalId && identityConditions.length > 0) {
+        const identityMatch = await transaction.contact.findFirst({
+          where: {
+            companyId: company.id,
+            OR: identityConditions
+          }
+        });
+        if (identityMatch) {
+          contactLocalId = identityMatch.id;
+        }
+      }
+
+      if (!existingContactMapping && contactLocalId) {
+        const existingLocalMapping = await transaction.externalRecordMapping.findUnique({
+          where: {
+            provider_entityType_localEntityId: {
+              provider: "ZOHO_BIGIN",
+              entityType: "CONTACT",
+              localEntityId: contactLocalId
+            }
+          }
+        });
+        if (existingLocalMapping) return { skipped: true as const };
+      }
+
+      if (existingContactMapping && contactLocalId && identityConditions.length > 0) {
+        const conflictingContact = await transaction.contact.findFirst({
+          where: {
+            companyId: company.id,
+            OR: identityConditions,
+            NOT: { id: contactLocalId }
+          }
+        });
+        if (conflictingContact) return { skipped: true as const };
+      }
+
+      const contact = contactLocalId
         ? await transaction.contact.update({
-            where: { id: existingContactMapping.localEntityId },
+            where: { id: contactLocalId },
             data: {
               companyId: company.id,
               firstName: input.contact.firstName,
@@ -415,7 +462,17 @@ async function syncOneContact(input: {
           lastErrorMessage: null
         }
       });
+
+      return { skipped: false as const, leadId: lead.id, created: !existingLeadMapping };
     },
     { maxWait: 10000, timeout: 30000 }
   );
+
+  if (syncedLead.skipped) return "SKIPPED";
+
+  if (syncedLead.created) {
+    await autoStartLeadAiAutomation(input.actor, syncedLead.leadId, { env: input.env });
+  }
+
+  return "SYNCED";
 }

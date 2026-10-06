@@ -249,6 +249,50 @@ describe("R26 briefing service", () => {
     await expect(listBriefings(actor, { leadId, limit: 10 })).resolves.toHaveLength(1);
   });
 
+  it("accepts briefing evidence when provider preserves exact words but normalizes whitespace", async () => {
+    const { actor, leadId } = await seedBase();
+    const conversation = await prisma.conversation.findFirstOrThrow({ where: { leadId } });
+    const message = await prisma.message.create({
+      data: {
+        conversationId: conversation.id,
+        direction: "INBOUND",
+        senderType: "PROSPECT",
+        body: "Hi,\nWe need AI automation for sales follow-ups."
+      }
+    });
+    const output: BriefingResult = {
+      summary: "Lead needs AI automation.",
+      requirements: "Need AI automation",
+      budget: null,
+      timeline: null,
+      decisionContext: null,
+      recentCommunication: "Prospect discussed AI automation.",
+      qualification: "AI automation need is captured.",
+      proposalDealContext: null,
+      meetingContext: null,
+      recommendedNextAction: "Prepare human-reviewed next steps.",
+      usedKnowledgeIds: [],
+      evidence: [
+        {
+          sourceId: `message:${message.id}`,
+          quote: "Hi, We need AI automation for sales follow-ups."
+        }
+      ],
+      requiresHumanReview: true,
+      unknowns: ["budget", "timeline"]
+    };
+
+    const run = await generateLeadBriefing(
+      actor,
+      leadId,
+      { idempotencyKey: "r26-lead-briefing-whitespace-grounded" },
+      { provider: new BriefingTestProvider(output) }
+    );
+
+    expect(run.status).toBe("COMPLETED");
+    expect(run.summary).toContain("AI automation");
+  });
+
   it("generates meeting briefings without mutating meeting state", async () => {
     const { actor, leadId } = await seedBase();
     const request = await seedMeeting(leadId, actor.id);

@@ -44,7 +44,12 @@ function isRealtimeUpdate(value: unknown): value is RealtimeUpdateEvent {
   return (
     typeof value === "object" &&
     value !== null &&
-    (value as { type?: unknown }).type === "realtime:update"
+    (value as { type?: unknown }).type === "realtime:update" &&
+    typeof (value as { action?: unknown }).action === "string" &&
+    typeof (value as { occurredAt?: unknown }).occurredAt === "string" &&
+    ["workspace", "lead", "dashboard", "operations", "notifications", "domain-event"].includes(
+      String((value as { entityType?: unknown }).entityType)
+    )
   );
 }
 
@@ -58,12 +63,17 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }): R
 
   const emit = useCallback((event: RealtimeUpdateEvent): void => {
     for (const listener of listeners.current) {
-      listener(event);
+      try {
+        listener(event);
+      } catch {
+        // One subscriber must not prevent the other screens from being invalidated.
+      }
     }
   }, []);
 
   useEffect(() => {
     if (authStatus !== "authenticated" || !accessToken) {
+      connectedOnce.current = false;
       socketRef.current?.close();
       socketRef.current = null;
       setStatus("disconnected");
@@ -87,6 +97,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }): R
       const socket = new WebSocket(realtimeUrl(accessToken));
       socketRef.current = socket;
       socket.onopen = () => {
+        if (disposed || socketRef.current !== socket) return;
         reconnectAttempt = 0;
         setStatus("connected");
         if (connectedOnce.current) {
@@ -100,6 +111,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }): R
         connectedOnce.current = true;
       };
       socket.onmessage = (message) => {
+        if (disposed || socketRef.current !== socket) return;
         try {
           const parsed: unknown = JSON.parse(String(message.data));
           if (isRealtimeUpdate(parsed)) {

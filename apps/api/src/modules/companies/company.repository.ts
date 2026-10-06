@@ -15,8 +15,11 @@ export type CompanyRecord = Pick<
   | "updatedAt"
 >;
 
-export async function listCompanies(): Promise<CompanyRecord[]> {
+export async function listCompanies(
+  where: Prisma.CompanyWhereInput = {}
+): Promise<CompanyRecord[]> {
   return prisma.company.findMany({
+    where,
     orderBy: [{ name: "asc" }, { createdAt: "asc" }]
   });
 }

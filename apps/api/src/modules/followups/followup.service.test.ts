@@ -9,6 +9,7 @@ import {
   listFollowUpSequencesForLead,
   startFollowUpSequence
 } from "./followup.service.js";
+import { autoStartLeadAiAutomation } from "./lead-ai-automation.service.js";
 
 const actorEmail = "r13-followup-admin@example.local";
 const productionTimingEnv = {
@@ -34,12 +35,19 @@ class FollowUpTestProvider implements AIProvider {
       evidence: []
     });
   public summarizeLead: AIProvider["summarizeLead"] = () =>
-    Promise.resolve({ summary: "test", buyingSignals: [], objections: [], risks: [], suggestedNextAction: null });
-  public generateFollowUp = (): Promise<FollowUpResult> => Promise.resolve({
-    body: `Personalized follow-up ${crypto.randomUUID()}`,
-    requiresHumanReview: false,
-    reason: null
-  });
+    Promise.resolve({
+      summary: "test",
+      buyingSignals: [],
+      objections: [],
+      risks: [],
+      suggestedNextAction: null
+    });
+  public generateFollowUp = (): Promise<FollowUpResult> =>
+    Promise.resolve({
+      body: `Personalized follow-up ${crypto.randomUUID()}`,
+      requiresHumanReview: false,
+      reason: null
+    });
   public generateProposalDraft: AIProvider["generateProposalDraft"] = () =>
     Promise.resolve({
       title: "Test proposal",
@@ -89,10 +97,12 @@ async function cleanup(): Promise<void> {
   await prisma.followUpSequence.deleteMany({ where: { lead: { source: "r13-followup-test" } } });
   await prisma.outboundEmail.deleteMany({ where: { lead: { source: "r13-followup-test" } } });
   await prisma.inboundEmail.deleteMany({ where: { lead: { source: "r13-followup-test" } } });
-  await prisma.message.deleteMany({ where: { conversation: { lead: { source: "r13-followup-test" } } } });
+  await prisma.message.deleteMany({
+    where: { conversation: { lead: { source: "r13-followup-test" } } }
+  });
   await prisma.conversation.deleteMany({ where: { lead: { source: "r13-followup-test" } } });
   await prisma.auditEvent.deleteMany({
-    where: { entityType: { in: ["FollowUpSequence", "FollowUpAttempt"] } }
+    where: { entityType: { in: ["FollowUpSequence", "FollowUpAttempt", "Lead"] } }
   });
   await prisma.lead.deleteMany({ where: { source: "r13-followup-test" } });
   await prisma.contact.deleteMany({ where: { source: "r13-followup-test" } });
@@ -116,7 +126,9 @@ async function seedActor() {
 
 async function seedLead(input?: { doNotContact?: boolean }) {
   const stage = await prisma.pipelineStage.findFirstOrThrow({ where: { key: "NEW" } });
-  const company = await prisma.company.create({ data: { name: `R13 Followup ${crypto.randomUUID()}` } });
+  const company = await prisma.company.create({
+    data: { name: `R13 Followup ${crypto.randomUUID()}` }
+  });
   const contact = await prisma.contact.create({
     data: {
       companyId: company.id,
@@ -187,6 +199,31 @@ describe("R13 follow-up sequence service", () => {
         where: { aggregateType: "FollowUpAttempt", correlationId: sequence.id }
       })
     ).resolves.toBe(4);
+    await expect(prisma.lead.findUniqueOrThrow({ where: { id: lead.id } })).resolves.toMatchObject({
+      nextAction: "Send first follow-up email",
+      nextActionAt: new Date("2026-09-17T00:00:00.000Z")
+    });
+  }, 45000);
+
+  it("auto-starts AI follow-up automation for a new lead and persists the next action", async () => {
+    const actor = await seedActor();
+    const lead = await seedLead();
+
+    const sequence = await autoStartLeadAiAutomation(actor, lead.id, {
+      provider: new FollowUpTestProvider(),
+      now: new Date("2026-09-17T00:00:00.000Z"),
+      env: productionTimingEnv
+    });
+
+    expect(sequence?.status).toBe("ACTIVE");
+    expect(sequence?.attempts).toHaveLength(4);
+    await expect(prisma.lead.findUniqueOrThrow({ where: { id: lead.id } })).resolves.toMatchObject({
+      nextAction: "Send first follow-up email",
+      nextActionAt: new Date("2026-09-17T00:00:00.000Z")
+    });
+    await expect(
+      prisma.domainEventOutbox.count({ where: { correlationId: sequence?.id } })
+    ).resolves.toBe(4);
   }, 45000);
 
   it("persists attention-required state when eligibility blocks automation", async () => {
@@ -216,7 +253,7 @@ describe("R13 follow-up sequence service", () => {
       }
     );
 
-    const sequences = await listFollowUpSequencesForLead(lead.id);
+    const sequences = await listFollowUpSequencesForLead(actor, lead.id);
 
     expect(sequences).toHaveLength(1);
     expect(sequences[0]).toMatchObject({
@@ -333,6 +370,10 @@ describe("R13 follow-up sequence service", () => {
       { status: "PENDING", nextAttemptAt: new Date("2026-09-17T01:03:00.000Z") },
       { status: "PENDING", nextAttemptAt: new Date("2026-09-17T01:05:00.000Z") }
     ]);
+    await expect(prisma.lead.findUniqueOrThrow({ where: { id: lead.id } })).resolves.toMatchObject({
+      nextAction: "Send follow-up email 2",
+      nextActionAt: new Date("2026-09-17T01:01:00.000Z")
+    });
   }, 45000);
 
   it("marks an existing sequence ineligible for E2E acceleration once a scheduled event is queued", async () => {
@@ -355,7 +396,7 @@ describe("R13 follow-up sequence service", () => {
       data: { status: "QUEUED", queuedAt: new Date("2026-09-17T00:00:30.000Z") }
     });
 
-    const [listed] = await listFollowUpSequencesForLead(lead.id);
+    const [listed] = await listFollowUpSequencesForLead(actor, lead.id);
 
     expect(listed?.e2eAccelerationEligible).toBe(false);
     await expect(

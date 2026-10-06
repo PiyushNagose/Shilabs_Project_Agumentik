@@ -3,8 +3,13 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { UserRole, UserStatus, type MessageSenderType } from "@prisma/client";
 import { prisma } from "../../shared/prisma.js";
 import { AppError } from "../../shared/errors.js";
-import type { AIProvider, QualificationResult, ReplyUnderstandingResult } from "../ai/ai.provider.js";
+import type {
+  AIProvider,
+  QualificationResult,
+  ReplyUnderstandingResult
+} from "../ai/ai.provider.js";
 import { hashPassword } from "../auth/auth.service.js";
+import type { EmailProvider, EmailSendInput } from "../email/email.provider.js";
 import { processInboundReply } from "./reply-processing.service.js";
 
 const actorEmail = "r10-reply-admin@example.local";
@@ -24,6 +29,15 @@ const defaultScoringConfig = {
 class ReplyTestProvider implements AIProvider {
   public constructor(
     private readonly output: ReplyUnderstandingResult,
+    private readonly salesReply: {
+      body: string;
+      requiresHumanReview: boolean;
+      reason: string | null;
+    } = {
+      body: "Thanks for your interest. Based on what you shared, Shilabs can help with the next steps.",
+      requiresHumanReview: false,
+      reason: null
+    },
     private readonly qualificationOutput: QualificationResult = {
       need: null,
       requirement: null,
@@ -37,25 +51,24 @@ class ReplyTestProvider implements AIProvider {
       evidence: []
     }
   ) {}
-  public generateSalesReply: AIProvider["generateSalesReply"] = () => Promise.resolve({
-    body: "test",
-    requiresHumanReview: true,
-    reason: null
-  });
+  public generateSalesReply: AIProvider["generateSalesReply"] = () =>
+    Promise.resolve(this.salesReply);
   public extractQualification: AIProvider["extractQualification"] = () =>
     Promise.resolve(this.qualificationOutput);
-  public summarizeLead: AIProvider["summarizeLead"] = () => Promise.resolve({
-    summary: "test",
-    buyingSignals: [],
-    objections: [],
-    risks: [],
-    suggestedNextAction: null
-  });
-  public generateFollowUp: AIProvider["generateFollowUp"] = () => Promise.resolve({
-    body: "test",
-    requiresHumanReview: true,
-    reason: null
-  });
+  public summarizeLead: AIProvider["summarizeLead"] = () =>
+    Promise.resolve({
+      summary: "test",
+      buyingSignals: [],
+      objections: [],
+      risks: [],
+      suggestedNextAction: null
+    });
+  public generateFollowUp: AIProvider["generateFollowUp"] = () =>
+    Promise.resolve({
+      body: "test",
+      requiresHumanReview: true,
+      reason: null
+    });
   public generateProposalDraft: AIProvider["generateProposalDraft"] = () =>
     Promise.resolve({
       title: "Test proposal",
@@ -85,6 +98,19 @@ class ReplyTestProvider implements AIProvider {
       unknowns: []
     });
   public createEmbedding: AIProvider["createEmbedding"] = () => Promise.resolve([0.1]);
+}
+
+class TestEmailProvider implements EmailProvider {
+  public calls: EmailSendInput[] = [];
+  public verifyConnection: EmailProvider["verifyConnection"] = () =>
+    Promise.resolve({ provider: "MAILPIT", sendingEnabled: true });
+  public sendEmail(input: EmailSendInput) {
+    this.calls.push(input);
+    return Promise.resolve({
+      provider: "MAILPIT" as const,
+      providerMessageId: `mailpit-${input.idempotencyKey}`
+    });
+  }
 }
 
 class FailingReplyTestProvider extends ReplyTestProvider {
@@ -131,7 +157,10 @@ async function cleanup(): Promise<void> {
       OR: [
         { idempotencyKey: { startsWith: "domain-event:negotiation-handoff:" } },
         { idempotencyKey: { startsWith: "domain-event:reply-processing:" } },
-        { idempotencyKey: { startsWith: "domain-event:meeting-requested:" } }
+        { idempotencyKey: { startsWith: "domain-event:meeting-requested:" } },
+        { idempotencyKey: { startsWith: "domain-event:proposal-generated:" } },
+        { idempotencyKey: { startsWith: "r10-follow-up-event-" } },
+        { idempotencyKey: { startsWith: "r10-calling-event-" } }
       ]
     }
   });
@@ -147,6 +176,33 @@ async function cleanup(): Promise<void> {
   await prisma.negotiationHandoff.deleteMany({
     where: { lead: { source: "r10-reply-test" } }
   });
+  await prisma.proposalGenerationRun.deleteMany({
+    where: { lead: { source: "r10-reply-test" } }
+  });
+  await prisma.proposalStatusChange.deleteMany({
+    where: { proposal: { lead: { source: "r10-reply-test" } } }
+  });
+  await prisma.proposalVersion.deleteMany({
+    where: { proposal: { lead: { source: "r10-reply-test" } } }
+  });
+  await prisma.proposal.deleteMany({
+    where: { lead: { source: "r10-reply-test" } }
+  });
+  await prisma.outboundWhatsAppMessage.deleteMany({
+    where: { lead: { source: "r10-reply-test" } }
+  });
+  await prisma.callingAttempt.deleteMany({
+    where: { lead: { source: "r10-reply-test" } }
+  });
+  await prisma.callingSequence.deleteMany({
+    where: { lead: { source: "r10-reply-test" } }
+  });
+  await prisma.followUpAttempt.deleteMany({
+    where: { lead: { source: "r10-reply-test" } }
+  });
+  await prisma.followUpSequence.deleteMany({
+    where: { lead: { source: "r10-reply-test" } }
+  });
   await prisma.replyProcessingRun.deleteMany({
     where: { inboundEmail: { providerMessageId: { startsWith: "ses-r10-" } } }
   });
@@ -156,6 +212,9 @@ async function cleanup(): Promise<void> {
   await prisma.inboundEmail.deleteMany({
     where: { providerMessageId: { startsWith: "ses-r10-" } }
   });
+  await prisma.outboundEmail.deleteMany({
+    where: { idempotencyKey: { startsWith: "phase1-ai-reply:" } }
+  });
   await prisma.leadQualificationEvidence.deleteMany({
     where: { qualification: { lead: { source: "r10-reply-test" } } }
   });
@@ -163,14 +222,23 @@ async function cleanup(): Promise<void> {
     where: { lead: { source: "r10-reply-test" } }
   });
   await prisma.message.deleteMany({
-    where: { providerMessageId: { startsWith: "ses-r10-" } }
+    where: { conversation: { lead: { source: "r10-reply-test" } } }
   });
   await prisma.conversation.deleteMany({ where: { lead: { source: "r10-reply-test" } } });
   await prisma.activity.deleteMany({ where: { lead: { source: "r10-reply-test" } } });
   await prisma.auditEvent.deleteMany({
     where: {
       entityType: {
-        in: ["ReplyProcessingRun", "KnowledgeBaseEntry", "LeadQualification", "Lead", "MeetingRequest"]
+        in: [
+          "ReplyProcessingRun",
+          "KnowledgeBaseEntry",
+          "LeadQualification",
+          "Lead",
+          "MeetingRequest",
+          "Message",
+          "Proposal",
+          "ProposalGenerationRun"
+        ]
       }
     }
   });
@@ -184,6 +252,9 @@ async function cleanup(): Promise<void> {
     where: { entry: { key: { startsWith: "r10-" } } }
   });
   await prisma.knowledgeBaseEntry.deleteMany({ where: { key: { startsWith: "r10-" } } });
+  await prisma.emailSuppression.deleteMany({
+    where: { normalizedEmail: "r10-prospect@example.com" }
+  });
   await prisma.authSession.deleteMany({ where: { user: { email: actorEmail } } });
   await prisma.user.deleteMany({ where: { email: actorEmail } });
 }
@@ -248,7 +319,9 @@ async function createInboundFixture(input?: {
     input?.assignOwner === false
       ? null
       : await prisma.user.findUniqueOrThrow({ where: { email: actorEmail } });
-  const company = await prisma.company.create({ data: { name: `R10 Company ${crypto.randomUUID()}` } });
+  const company = await prisma.company.create({
+    data: { name: `R10 Company ${crypto.randomUUID()}` }
+  });
   const contact = await prisma.contact.create({
     data: {
       companyId: company.id,
@@ -325,10 +398,12 @@ describe("R10 reply processing", () => {
     }
     await cleanup();
     await prisma.$disconnect();
-  }, 45000);
+  }, 90000);
 
-  it("persists grounded reply understanding and draft without sending", async () => {
-    const actorId = await prisma.user.findUniqueOrThrow({ where: { email: actorEmail } }).then((u) => u.id);
+  it("sends one grounded AI email reply for safe interested replies", async () => {
+    const actorId = await prisma.user
+      .findUniqueOrThrow({ where: { email: actorEmail } })
+      .then((u) => u.id);
     const knowledgeId = await createApprovedKnowledge(actorId);
     const fixture = await createInboundFixture();
     const provider = new ReplyTestProvider({
@@ -341,9 +416,18 @@ describe("R10 reply processing", () => {
       evidence: [{ messageId: fixture.message.id, quote: "share more details" }],
       usedKnowledgeIds: [knowledgeId]
     });
+    const emailProvider = new TestEmailProvider();
 
-    const first = await processInboundReply(fixture.inbound.id, { provider });
-    const second = await processInboundReply(fixture.inbound.id, { provider });
+    const first = await processInboundReply(fixture.inbound.id, {
+      provider,
+      emailProvider,
+      env: { EMAIL_PROVIDER: "MAILPIT", NODE_ENV: "development" }
+    });
+    const second = await processInboundReply(fixture.inbound.id, {
+      provider,
+      emailProvider,
+      env: { EMAIL_PROVIDER: "MAILPIT", NODE_ENV: "development" }
+    });
 
     expect(first.id).toBe(second.id);
     expect(first.status).toBe("COMPLETED");
@@ -351,6 +435,50 @@ describe("R10 reply processing", () => {
     expect(first.recommendedAction).toBe("DRAFT_RESPONSE");
     expect(first.draftResponse).toContain("next steps");
     expect(first.requiresHumanReview).toBe(true);
+    expect(emailProvider.calls).toHaveLength(1);
+    expect(emailProvider.calls[0]?.textBody).toBe("Thanks, happy to share the next steps.");
+    await expect(
+      prisma.message.count({
+        where: {
+          conversationId: fixture.conversation.id,
+          direction: "OUTBOUND",
+          senderType: "AI",
+          metadata: { path: ["replyProcessingRunId"], equals: first.id }
+        }
+      })
+    ).resolves.toBe(1);
+    await expect(
+      prisma.lead.findUniqueOrThrow({ where: { id: fixture.lead.id } })
+    ).resolves.toMatchObject({ nextAction: "Await customer response" });
+    await expect(
+      prisma.inboundEmail.findUniqueOrThrow({ where: { id: fixture.inbound.id } })
+    ).resolves.toMatchObject({ replyProcessingStatus: "PROCESSED" });
+  }, 90000);
+
+  it("accepts reply evidence when provider preserves exact words but normalizes whitespace", async () => {
+    const fixture = await createInboundFixture({
+      body: "Hi,\nThanks for reaching out. Could you tell me how it could help our sales team?"
+    });
+    const provider = new ReplyTestProvider({
+      intent: "QUESTION",
+      confidence: 0.82,
+      summary: "Prospect asked how the solution helps their sales team.",
+      draftResponse: "Happy to explain how it can help your sales team.",
+      requiresHumanReview: true,
+      recommendedAction: "DRAFT_RESPONSE",
+      evidence: [
+        {
+          messageId: fixture.message.id,
+          quote: "Hi, Thanks for reaching out. Could you tell me how it could help our sales team?"
+        }
+      ],
+      usedKnowledgeIds: []
+    });
+
+    const result = await processInboundReply(fixture.inbound.id, { provider });
+
+    expect(result.status).toBe("COMPLETED");
+    expect(result.intent).toBe("QUESTION");
     await expect(
       prisma.inboundEmail.findUniqueOrThrow({ where: { id: fixture.inbound.id } })
     ).resolves.toMatchObject({ replyProcessingStatus: "PROCESSED" });
@@ -370,6 +498,11 @@ describe("R10 reply processing", () => {
         recommendedAction: "NO_ACTION",
         evidence: [{ messageId: fixture.message.id, quote: "AI sales automation" }],
         usedKnowledgeIds: []
+      },
+      {
+        body: "Thanks for sharing those details. We can prepare the next step from here.",
+        requiresHumanReview: false,
+        reason: null
       },
       {
         need: "AI sales automation for website leads",
@@ -410,7 +543,9 @@ describe("R10 reply processing", () => {
         expect.objectContaining({ messageId: fixture.message.id, quote: "AI sales automation" })
       ])
     );
-    await expect(prisma.lead.findUniqueOrThrow({ where: { id: fixture.lead.id } })).resolves.toMatchObject({
+    await expect(
+      prisma.lead.findUniqueOrThrow({ where: { id: fixture.lead.id } })
+    ).resolves.toMatchObject({
       score: 100,
       temperature: "HOT"
     });
@@ -421,8 +556,70 @@ describe("R10 reply processing", () => {
     ).resolves.toMatchObject({ actorUserId: null, score: 100, temperature: "HOT" });
   }, 45000);
 
+  it("creates a proposal draft waiting for approval when the customer requests a proposal", async () => {
+    const fixture = await createInboundFixture({
+      body: "This sounds useful. Please prepare a proposal for the AI sales automation scope."
+    });
+    const provider = new ReplyTestProvider({
+      intent: "PROPOSAL_REQUEST",
+      confidence: 0.9,
+      summary: "Prospect requested a proposal for AI sales automation.",
+      draftResponse: "I will send the proposal now.",
+      requiresHumanReview: true,
+      recommendedAction: "DRAFT_RESPONSE",
+      evidence: [{ messageId: fixture.message.id, quote: "prepare a proposal" }],
+      usedKnowledgeIds: []
+    });
+
+    const proposalEnv = {
+      AI_PROVIDER: "openai",
+      OPENAI_API_KEY: "test-key",
+      OPENAI_MODEL: "test-model",
+      OPENAI_EMBEDDING_MODEL: "test-embedding-model"
+    };
+    const result = await processInboundReply(fixture.inbound.id, {
+      provider,
+      env: proposalEnv
+    });
+    expect(result).toMatchObject({
+      status: "COMPLETED",
+      intent: "PROPOSAL_REQUEST",
+      recommendedAction: "PROPOSAL_REVIEW",
+      draftResponse: null
+    });
+    await expect(
+      prisma.proposalGenerationRun.findFirstOrThrow({ where: { leadId: fixture.lead.id } })
+    ).resolves.toMatchObject({ status: "COMPLETED", failureCode: null, failureMessage: null });
+    await expect(
+      prisma.auditEvent.findFirst({
+        where: {
+          entityType: "ReplyProcessingRun",
+          entityId: result.id,
+          action: "PHASE1_ORCHESTRATION_FAILED"
+        }
+      })
+    ).resolves.toBeNull();
+    await expect(
+      prisma.proposal.findFirstOrThrow({ where: { leadId: fixture.lead.id } })
+    ).resolves.toMatchObject({ status: "WAITING_APPROVAL" });
+    const repeated = await processInboundReply(fixture.inbound.id, {
+      provider,
+      env: proposalEnv
+    });
+
+    expect(repeated.id).toBe(result.id);
+    await expect(prisma.outboundEmail.count({ where: { leadId: fixture.lead.id } })).resolves.toBe(
+      0
+    );
+    await expect(
+      prisma.lead.findUniqueOrThrow({ where: { id: fixture.lead.id } })
+    ).resolves.toMatchObject({ nextAction: "Review AI-generated proposal" });
+  }, 90000);
+
   it("routes negotiation to human handoff without drafting a negotiation reply", async () => {
-    const actorId = await prisma.user.findUniqueOrThrow({ where: { email: actorEmail } }).then((u) => u.id);
+    const actorId = await prisma.user
+      .findUniqueOrThrow({ where: { email: actorEmail } })
+      .then((u) => u.id);
     await createApprovedKnowledge(actorId);
     const fixture = await createInboundFixture({ body: "Your price is too high, negotiate it." });
     const provider = new ReplyTestProvider({
@@ -475,7 +672,9 @@ describe("R10 reply processing", () => {
       prisma.activity.findFirstOrThrow({
         where: { leadId: fixture.lead.id, type: "NEGOTIATION_HANDOFF" }
       })
-    ).resolves.toMatchObject({ description: "Negotiation detected and routed to the assigned owner" });
+    ).resolves.toMatchObject({
+      description: "Negotiation detected and routed to the assigned owner"
+    });
     await expect(
       prisma.auditEvent.findFirstOrThrow({
         where: { entityType: "NegotiationHandoff", action: "NEGOTIATION_HANDOFF_CREATED" }
@@ -488,8 +687,165 @@ describe("R10 reply processing", () => {
     ).resolves.toMatchObject({ priority: "HIGH" });
   }, 45000);
 
+  it("does not treat an advisory next-step question as a meeting request", async () => {
+    const body =
+      "Yes, we currently spend a lot of time manually following up with leads and keeping track of customer conversations. We want to automate this process while still keeping our sales team in control. What would you suggest as the next step?";
+    const fixture = await createInboundFixture({ body });
+    const provider = new ReplyTestProvider({
+      intent: "MEETING_REQUEST",
+      confidence: 0.9,
+      summary: "Prospect described their automation need and asked for the suggested next step.",
+      draftResponse: null,
+      requiresHumanReview: true,
+      recommendedAction: "MEETING_REVIEW",
+      evidence: [{ messageId: fixture.message.id, quote: body }],
+      usedKnowledgeIds: []
+    });
+    const emailProvider = new TestEmailProvider();
+
+    const result = await processInboundReply(fixture.inbound.id, {
+      provider,
+      emailProvider,
+      env: { EMAIL_PROVIDER: "MAILPIT", NODE_ENV: "development" }
+    });
+
+    expect(result).toMatchObject({
+      status: "COMPLETED",
+      intent: "QUESTION",
+      recommendedAction: "DRAFT_RESPONSE",
+      humanHandoffRequired: false
+    });
+    await expect(prisma.meetingRequest.count({ where: { leadId: fixture.lead.id } })).resolves.toBe(
+      0
+    );
+    expect(emailProvider.calls).toHaveLength(1);
+    await expect(
+      prisma.lead.findUniqueOrThrow({ where: { id: fixture.lead.id } })
+    ).resolves.toMatchObject({ nextAction: "Await customer response" });
+  }, 45000);
+
+  it("does not treat what-should-we-do-next wording as a meeting request", async () => {
+    const body = "Thanks, this sounds relevant. What should we do next?";
+    const fixture = await createInboundFixture({ body });
+    const provider = new ReplyTestProvider({
+      intent: "MEETING_REQUEST",
+      confidence: 0.86,
+      summary: "Prospect asked what they should do next.",
+      draftResponse: null,
+      requiresHumanReview: true,
+      recommendedAction: "MEETING_REVIEW",
+      evidence: [{ messageId: fixture.message.id, quote: "What should we do next?" }],
+      usedKnowledgeIds: []
+    });
+    const emailProvider = new TestEmailProvider();
+
+    const result = await processInboundReply(fixture.inbound.id, {
+      provider,
+      emailProvider,
+      env: { EMAIL_PROVIDER: "MAILPIT", NODE_ENV: "development" }
+    });
+
+    expect(result.intent).toBe("QUESTION");
+    expect(result.recommendedAction).toBe("DRAFT_RESPONSE");
+    await expect(prisma.meetingRequest.count({ where: { leadId: fixture.lead.id } })).resolves.toBe(
+      0
+    );
+    expect(emailProvider.calls).toHaveLength(1);
+  }, 45000);
+
+  it("sends the persisted R10 draft when a second sales-reply generation would request review", async () => {
+    const body =
+      "Thanks. Based on our requirement to automate lead follow-ups while keeping our sales team in control, what solution would you recommend for us?";
+    const draftResponse =
+      "To automate lead follow-ups while keeping your sales team in control, we recommend Shilabs AI sales automation integrated with Zoho Bigin.";
+    const fixture = await createInboundFixture({ body });
+    const provider = new ReplyTestProvider(
+      {
+        intent: "QUESTION",
+        confidence: 0.95,
+        summary: "Prospect asked what solution is recommended.",
+        draftResponse,
+        requiresHumanReview: true,
+        recommendedAction: "DRAFT_RESPONSE",
+        evidence: [{ messageId: fixture.message.id, quote: "what solution would you recommend" }],
+        usedKnowledgeIds: []
+      },
+      {
+        body: "This regenerated reply should not be used.",
+        requiresHumanReview: true,
+        reason: "Human review recommended for enterprise sales workflow discussions."
+      }
+    );
+    const emailProvider = new TestEmailProvider();
+
+    const result = await processInboundReply(fixture.inbound.id, {
+      provider,
+      emailProvider,
+      env: { EMAIL_PROVIDER: "MAILPIT", NODE_ENV: "development" }
+    });
+
+    expect(result).toMatchObject({
+      status: "COMPLETED",
+      intent: "QUESTION",
+      recommendedAction: "DRAFT_RESPONSE"
+    });
+    expect(emailProvider.calls).toHaveLength(1);
+    expect(emailProvider.calls[0]?.textBody).toBe(draftResponse);
+    await expect(
+      prisma.lead.findUniqueOrThrow({ where: { id: fixture.lead.id } })
+    ).resolves.toMatchObject({ nextAction: "Await customer response" });
+    await expect(
+      prisma.activity.count({
+        where: {
+          leadId: fixture.lead.id,
+          description: { contains: "AI sales conversation orchestration failed" }
+        }
+      })
+    ).resolves.toBe(0);
+  }, 45000);
+
+  it("does not send an AI reply while the conversation is in human mode", async () => {
+    const fixture = await createInboundFixture({
+      body: "Thanks, what solution would you recommend for our team?"
+    });
+    await prisma.conversation.update({
+      where: { id: fixture.conversation.id },
+      data: { mode: "HUMAN" }
+    });
+    const provider = new ReplyTestProvider({
+      intent: "QUESTION",
+      confidence: 0.9,
+      summary: "Prospect asked for a recommendation.",
+      draftResponse: "AI draft that should not be sent while human mode is active.",
+      requiresHumanReview: true,
+      recommendedAction: "DRAFT_RESPONSE",
+      evidence: [{ messageId: fixture.message.id, quote: "what solution would you recommend" }],
+      usedKnowledgeIds: []
+    });
+    const emailProvider = new TestEmailProvider();
+
+    const result = await processInboundReply(fixture.inbound.id, {
+      provider,
+      emailProvider,
+      env: { EMAIL_PROVIDER: "MAILPIT", NODE_ENV: "development" }
+    });
+
+    expect(result.intent).toBe("QUESTION");
+    expect(emailProvider.calls).toHaveLength(0);
+    await expect(
+      prisma.message.count({
+        where: { conversationId: fixture.conversation.id, direction: "OUTBOUND", senderType: "AI" }
+      })
+    ).resolves.toBe(0);
+    await expect(
+      prisma.lead.findUniqueOrThrow({ where: { id: fixture.lead.id } })
+    ).resolves.toMatchObject({ nextAction: "Human follow-up required" });
+  }, 45000);
+
   it("creates an idempotent meeting request for a meeting-request reply without booking", async () => {
-    const actorId = await prisma.user.findUniqueOrThrow({ where: { email: actorEmail } }).then((u) => u.id);
+    const actorId = await prisma.user
+      .findUniqueOrThrow({ where: { email: actorEmail } })
+      .then((u) => u.id);
     const fixture = await createInboundFixture({
       body: "Please schedule a meeting with your team so we can finalize the scope and pricing."
     });
@@ -516,6 +872,12 @@ describe("R10 reply processing", () => {
       draftResponse: null
     });
     await expect(
+      prisma.lead.findUniqueOrThrow({
+        where: { id: fixture.lead.id },
+        include: { stage: true }
+      })
+    ).resolves.toMatchObject({ stage: { key: "QUALIFIED" } });
+    await expect(
       prisma.conversation.findUniqueOrThrow({ where: { id: fixture.conversation.id } })
     ).resolves.toMatchObject({ mode: "HUMAN" });
     const meetings = await prisma.meetingRequest.findMany({
@@ -537,7 +899,11 @@ describe("R10 reply processing", () => {
     expect(meetings[0]?.slots).toHaveLength(0);
     await expect(
       prisma.internalNotification.count({
-        where: { leadId: fixture.lead.id, type: "MEETING_CONFIRMATION", meetingRequestId: meetings[0]?.id }
+        where: {
+          leadId: fixture.lead.id,
+          type: "MEETING_CONFIRMATION",
+          meetingRequestId: meetings[0]?.id
+        }
       })
     ).resolves.toBe(1);
     await expect(
@@ -550,8 +916,234 @@ describe("R10 reply processing", () => {
     ).resolves.toBe(1);
   }, 90000);
 
+  it("keeps explicit meeting scheduling requests on the meeting workflow", async () => {
+    const fixture = await createInboundFixture({
+      body: "Can we schedule a meeting next week to discuss implementation?"
+    });
+    const provider = new ReplyTestProvider({
+      intent: "MEETING_REQUEST",
+      confidence: 0.91,
+      summary: "Prospect asked to schedule a meeting.",
+      draftResponse: "Here is a meeting link.",
+      requiresHumanReview: true,
+      recommendedAction: "MEETING_REVIEW",
+      evidence: [{ messageId: fixture.message.id, quote: "schedule a meeting" }],
+      usedKnowledgeIds: []
+    });
+
+    const result = await processInboundReply(fixture.inbound.id, { provider });
+
+    expect(result).toMatchObject({
+      intent: "MEETING_REQUEST",
+      recommendedAction: "MEETING_REVIEW",
+      humanHandoffRequired: true,
+      draftResponse: null
+    });
+    await expect(prisma.meetingRequest.count({ where: { leadId: fixture.lead.id } })).resolves.toBe(
+      1
+    );
+  }, 90000);
+
+  it("routes explicit demo or call requests through the meeting workflow", async () => {
+    const fixture = await createInboundFixture({
+      body: "I'd like a demo/call with your team before we move ahead."
+    });
+    const provider = new ReplyTestProvider({
+      intent: "MEETING_REQUEST",
+      confidence: 0.93,
+      summary: "Prospect asked for a demo or call with the team.",
+      draftResponse: "Here is a meeting link.",
+      requiresHumanReview: true,
+      recommendedAction: "MEETING_REVIEW",
+      evidence: [{ messageId: fixture.message.id, quote: "demo/call with your team" }],
+      usedKnowledgeIds: []
+    });
+
+    const result = await processInboundReply(fixture.inbound.id, { provider });
+
+    expect(result.intent).toBe("MEETING_REQUEST");
+    expect(result.recommendedAction).toBe("MEETING_REVIEW");
+    await expect(prisma.meetingRequest.count({ where: { leadId: fixture.lead.id } })).resolves.toBe(
+      1
+    );
+  }, 90000);
+
+  it("routes ambiguous meeting-like wording to human review instead of inventing a meeting", async () => {
+    const body = "This looks useful. Maybe we can move forward sometime soon.";
+    const fixture = await createInboundFixture({ body });
+    const provider = new ReplyTestProvider({
+      intent: "MEETING_REQUEST",
+      confidence: 0.68,
+      summary: "Prospect used ambiguous move-forward wording.",
+      draftResponse: null,
+      requiresHumanReview: true,
+      recommendedAction: "MEETING_REVIEW",
+      evidence: [{ messageId: fixture.message.id, quote: body }],
+      usedKnowledgeIds: []
+    });
+
+    const result = await processInboundReply(fixture.inbound.id, { provider });
+
+    expect(result).toMatchObject({
+      status: "COMPLETED",
+      intent: "UNCLEAR",
+      recommendedAction: "NO_ACTION",
+      humanHandoffRequired: false,
+      draftResponse: null
+    });
+    await expect(prisma.meetingRequest.count({ where: { leadId: fixture.lead.id } })).resolves.toBe(
+      0
+    );
+    await expect(
+      prisma.lead.findUniqueOrThrow({ where: { id: fixture.lead.id } })
+    ).resolves.toMatchObject({ nextAction: "Review unclear customer reply" });
+  }, 45000);
+
+  it("applies explicit stop/DNC policy and cancels pending follow-up and calling automation", async () => {
+    const fixture = await createInboundFixture({
+      body: "Please unsubscribe me and stop emailing us. We are not interested."
+    });
+    const followUp = await prisma.followUpSequence.create({
+      data: {
+        leadId: fixture.lead.id,
+        contactId: fixture.lead.contactId,
+        conversationId: fixture.conversation.id,
+        cadenceDays: [0, 1, 5, 9],
+        cadenceMode: "PRODUCTION_DAYS",
+        cadenceOffsetsMinutes: [0, 1440, 7200, 12960],
+        idempotencyKey: `r10-follow-up-${crypto.randomUUID()}`
+      }
+    });
+    const followUpAttempt = await prisma.followUpAttempt.create({
+      data: {
+        sequenceId: followUp.id,
+        leadId: fixture.lead.id,
+        stepIndex: 0,
+        kind: "FOLLOW_UP",
+        scheduledAt: new Date(Date.now() + 60_000),
+        subject: "Quick follow-up",
+        textBody: "Following up",
+        idempotencyKey: `r10-follow-up-attempt-${crypto.randomUUID()}`
+      }
+    });
+    const followUpEvent = await prisma.domainEventOutbox.create({
+      data: {
+        eventType: "FOLLOWUP_EMAIL_SEND_REQUESTED",
+        aggregateType: "FollowUpAttempt",
+        aggregateId: followUpAttempt.id,
+        correlationId: followUp.id,
+        idempotencyKey: `r10-follow-up-event-${crypto.randomUUID()}`,
+        payload: { followUpAttemptId: followUpAttempt.id, leadId: fixture.lead.id }
+      }
+    });
+    await prisma.followUpAttempt.update({
+      where: { id: followUpAttempt.id },
+      data: { domainEventId: followUpEvent.id }
+    });
+    const calling = await prisma.callingSequence.create({
+      data: {
+        leadId: fixture.lead.id,
+        contactId: fixture.lead.contactId,
+        followUpSequenceId: followUp.id,
+        cadenceOffsets: [0],
+        maxAttempts: 1,
+        idempotencyKey: `r10-calling-${crypto.randomUUID()}`
+      }
+    });
+    const callingAttempt = await prisma.callingAttempt.create({
+      data: {
+        sequenceId: calling.id,
+        leadId: fixture.lead.id,
+        contactId: fixture.lead.contactId,
+        attemptIndex: 0,
+        scheduledAt: new Date(Date.now() + 60_000),
+        idempotencyKey: `r10-calling-attempt-${crypto.randomUUID()}`
+      }
+    });
+    const callingEvent = await prisma.domainEventOutbox.create({
+      data: {
+        eventType: "CALL_AUTOMATION_ATTEMPT_DUE",
+        aggregateType: "CallingAttempt",
+        aggregateId: callingAttempt.id,
+        correlationId: calling.id,
+        idempotencyKey: `r10-calling-event-${crypto.randomUUID()}`,
+        payload: { callingAttemptId: callingAttempt.id, leadId: fixture.lead.id }
+      }
+    });
+    await prisma.callingAttempt.update({
+      where: { id: callingAttempt.id },
+      data: { domainEventId: callingEvent.id }
+    });
+    const provider = new ReplyTestProvider({
+      intent: "NOT_INTERESTED",
+      confidence: 0.96,
+      summary: "Prospect explicitly asked to stop email and is not interested.",
+      draftResponse: "No problem, I will stop emailing you.",
+      requiresHumanReview: true,
+      recommendedAction: "STOP_AUTOMATION",
+      evidence: [{ messageId: fixture.message.id, quote: "stop emailing" }],
+      usedKnowledgeIds: []
+    });
+    const emailProvider = new TestEmailProvider();
+
+    const result = await processInboundReply(fixture.inbound.id, { provider, emailProvider });
+
+    expect(result).toMatchObject({
+      status: "COMPLETED",
+      intent: "NOT_INTERESTED",
+      recommendedAction: "STOP_AUTOMATION",
+      draftResponse: null
+    });
+    expect(emailProvider.calls).toHaveLength(0);
+    await expect(
+      prisma.contact.findUniqueOrThrow({ where: { id: fixture.lead.contactId } })
+    ).resolves.toMatchObject({
+      doNotContact: true
+    });
+    await expect(
+      prisma.emailSuppression.findUniqueOrThrow({
+        where: { normalizedEmail: "r10-prospect@example.com" }
+      })
+    ).resolves.toMatchObject({ reason: "UNSUBSCRIBE", source: "CUSTOMER_REPLY" });
+    await expect(
+      prisma.followUpSequence.findUniqueOrThrow({ where: { id: followUp.id } })
+    ).resolves.toMatchObject({
+      status: "STOPPED",
+      stopReason: "CUSTOMER_NOT_INTERESTED"
+    });
+    await expect(
+      prisma.followUpAttempt.findUniqueOrThrow({ where: { id: followUpAttempt.id } })
+    ).resolves.toMatchObject({
+      status: "CANCELLED",
+      failureCode: "CUSTOMER_NOT_INTERESTED"
+    });
+    await expect(
+      prisma.callingSequence.findUniqueOrThrow({ where: { id: calling.id } })
+    ).resolves.toMatchObject({
+      status: "STOPPED",
+      stopReason: "CUSTOMER_NOT_INTERESTED"
+    });
+    await expect(
+      prisma.callingAttempt.findUniqueOrThrow({ where: { id: callingAttempt.id } })
+    ).resolves.toMatchObject({
+      status: "SKIPPED",
+      failureCode: "CUSTOMER_NOT_INTERESTED"
+    });
+    await expect(
+      prisma.domainEventOutbox.count({
+        where: {
+          id: { in: [followUpEvent.id, callingEvent.id] },
+          status: "ATTENTION_REQUIRED",
+          lastErrorCode: "CUSTOMER_NOT_INTERESTED"
+        }
+      })
+    ).resolves.toBe(2);
+  }, 90000);
+
   it("retries a failed reply-processing run and then creates the idempotent negotiation handoff", async () => {
-    const actorId = await prisma.user.findUniqueOrThrow({ where: { email: actorEmail } }).then((u) => u.id);
+    const actorId = await prisma.user
+      .findUniqueOrThrow({ where: { email: actorEmail } })
+      .then((u) => u.id);
     const fixture = await createInboundFixture({
       body: "The pricing is higher than expected. Please reduce the price or offer a better commercial deal."
     });
@@ -620,7 +1212,9 @@ describe("R10 reply processing", () => {
   }, 90000);
 
   it("routes explicit negotiation to human handoff when the AI provider is temporarily unavailable", async () => {
-    const actorId = await prisma.user.findUniqueOrThrow({ where: { email: actorEmail } }).then((u) => u.id);
+    const actorId = await prisma.user
+      .findUniqueOrThrow({ where: { email: actorEmail } })
+      .then((u) => u.id);
     const fixture = await createInboundFixture({
       body: "The proposal looks good, but the price is too high. Can you reduce the price or offer a better commercial deal?"
     });
@@ -664,7 +1258,9 @@ describe("R10 reply processing", () => {
   }, 90000);
 
   it("creates visible attention state when negotiation has no assigned owner", async () => {
-    const actorId = await prisma.user.findUniqueOrThrow({ where: { email: actorEmail } }).then((u) => u.id);
+    const actorId = await prisma.user
+      .findUniqueOrThrow({ where: { email: actorEmail } })
+      .then((u) => u.id);
     await createApprovedKnowledge(actorId);
     const fixture = await createInboundFixture({
       body: "Can you negotiate the price with us?",

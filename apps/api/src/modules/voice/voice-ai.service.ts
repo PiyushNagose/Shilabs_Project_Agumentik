@@ -1,5 +1,10 @@
 import { Prisma } from "@prisma/client";
-import { getVoiceConfig, type VoiceConfig } from "@shilabs/shared-config";
+import {
+  createExpiringVoiceStreamToken,
+  getMessagingConfig,
+  getVoiceConfig,
+  type VoiceConfig
+} from "@shilabs/shared-config";
 import { getAIConfig } from "../../config/ai.js";
 import { AppError } from "../../shared/errors.js";
 import { prisma } from "../../shared/prisma.js";
@@ -16,6 +21,7 @@ import {
   intentRequiresHumanReviewGate,
   safeReplyUnderstandingOutput
 } from "../reply-processing/reply-policy.js";
+import { orchestrateSalesConversationForReply } from "../sales-conversation/sales-conversation-orchestrator.service.js";
 import { recalculateLeadScoreForSystem } from "../scoring/scoring.service.js";
 
 export interface VoiceTranscriptTurn {
@@ -43,6 +49,7 @@ function missingVoiceAiConfig(config: VoiceConfig): string[] {
     if (!config.voiceAi.localVoskModelPath) missing.push("VOICE_AI_LOCAL_VOSK_MODEL_PATH");
   }
   if (!config.voiceAi.streamToken) missing.push("VOICE_AI_STREAM_TOKEN");
+  if (!config.exotel.webhookSecret) missing.push("EXOTEL_WEBHOOK_SECRET");
   if (!config.webhookBaseUrl) missing.push("VOICE_WEBHOOK_BASE_URL");
   return missing;
 }
@@ -60,10 +67,14 @@ export function buildExotelVoicebotStreamUrl(input: {
 }): { url: string } {
   const config = getVoiceConfig(input.env);
   assertVoiceAiConfigured(config);
-  const base = configuredWebhookBase(config).replace(/^http:/u, "ws:").replace(/^https:/u, "wss:");
-  const streamPath = `${config.exotel.voicebotStreamPath.replace(/\/$/u, "")}/${encodeURIComponent(
-    config.voiceAi.streamToken
-  )}`;
+  const base = configuredWebhookBase(config)
+    .replace(/^http:/u, "ws:")
+    .replace(/^https:/u, "wss:");
+  const credential = createExpiringVoiceStreamToken({
+    secret: config.voiceAi.streamToken,
+    ttlSeconds: config.voiceAi.streamTokenTtlSeconds
+  });
+  const streamPath = `${config.exotel.voicebotStreamPath.replace(/\/$/u, "")}/${encodeURIComponent(credential)}`;
   const params = new URLSearchParams();
   params.set("sample-rate", String(config.voiceAi.sampleRate));
   for (const key of ["CallSid", "Sid", "From", "To", "CallFrom", "CallTo", "Direction"]) {
@@ -73,7 +84,10 @@ export function buildExotelVoicebotStreamUrl(input: {
   return { url: `${base}${streamPath}?${params.toString()}` };
 }
 
-function providerMetadata(env: NodeJS.ProcessEnv | undefined, provider?: AIProvider): {
+function providerMetadata(
+  env: NodeJS.ProcessEnv | undefined,
+  provider?: AIProvider
+): {
   providerName: string;
   model: string;
 } {
@@ -92,7 +106,9 @@ function normalizeTranscript(turns: VoiceTranscriptTurn[]): VoiceTranscriptTurn[
 }
 
 function renderFullTranscript(turns: VoiceTranscriptTurn[]): string {
-  return turns.map((turn) => `${turn.speaker === "customer" ? "Customer" : "AI"}: ${turn.text}`).join("\n");
+  return turns
+    .map((turn) => `${turn.speaker === "customer" ? "Customer" : "AI"}: ${turn.text}`)
+    .join("\n");
 }
 
 function renderCustomerTranscript(turns: VoiceTranscriptTurn[]): string {
@@ -110,7 +126,11 @@ function validateGrounding(input: {
   for (const evidence of input.output.evidence) {
     const message = input.messages.find((item) => item.id === evidence.messageId);
     if (!message?.body.includes(evidence.quote)) {
-      throw new AppError(502, "PROVIDER_ERROR", "AI voice evidence was not grounded in saved transcript");
+      throw new AppError(
+        502,
+        "PROVIDER_ERROR",
+        "AI voice evidence was not grounded in saved transcript"
+      );
     }
   }
   for (const id of input.output.usedKnowledgeIds) {
@@ -456,6 +476,40 @@ export async function finalizeVoiceConversationRun(input: {
           recommendedAction: output.recommendedAction
         }
       });
+      if (output.intent === "INTERESTED" || output.intent === "QUESTION") {
+        const callingAttempt = await tx.callingAttempt.findUnique({
+          where: { voiceCallAttemptId: call.id },
+          select: { id: true, sequenceId: true }
+        });
+        if (callingAttempt && getMessagingConfig(input.env).provider === "twilio_whatsapp") {
+          await tx.domainEventOutbox.upsert({
+            where: { idempotencyKey: `domain-event:voice-whatsapp:${call.id}` },
+            create: {
+              eventType: "WHATSAPP_SEND_REQUESTED",
+              aggregateType: "CallingAttempt",
+              aggregateId: callingAttempt.id,
+              payload: {
+                leadId: call.leadId,
+                contactId: call.contactId,
+                callingSequenceId: callingAttempt.sequenceId,
+                callingAttemptId: callingAttempt.id,
+                voiceCallAttemptId: call.id,
+                source: "VOICE_CONVERSATION_COMPLETED"
+              },
+              correlationId: call.id,
+              idempotencyKey: `domain-event:voice-whatsapp:${call.id}`,
+              nextAttemptAt: now,
+              maxAttempts: 5
+            },
+            update: {
+              nextAttemptAt: now,
+              status: "PENDING",
+              lastErrorCode: null,
+              lastErrorMessage: null
+            }
+          });
+        }
+      }
       return { activityId: activity.id, replyProcessingRunId: run.id, voiceRunId: voiceRun.id };
     }, voiceConversationTransactionOptions);
 
@@ -468,12 +522,16 @@ export async function finalizeVoiceConversationRun(input: {
         summary: output.summary
       });
     }
-    const zohoTimeline = await appendActivityToZohoTimeline({ activityId: result.activityId }).catch(
-      (error: unknown) => ({
-        status: "FAILED",
-        lastError: error instanceof Error ? error.message : "Zoho timeline sync failed"
-      })
-    );
+    await orchestrateSalesConversationForReply(result.replyProcessingRunId, {
+      aiProvider: provider,
+      env: input.env
+    });
+    const zohoTimeline = await appendActivityToZohoTimeline({
+      activityId: result.activityId
+    }).catch((error: unknown) => ({
+      status: "FAILED",
+      lastError: error instanceof Error ? error.message : "Zoho timeline sync failed"
+    }));
     if (zohoTimeline.status === "FAILED") {
       await prisma.auditEvent.create({
         data: {

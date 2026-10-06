@@ -31,6 +31,7 @@ import { voiceRoutes } from "./modules/voice/voice.routes.js";
 import { realtimeRoutes } from "./modules/realtime/realtime.routes.js";
 import { errorHandler, notFoundHandler } from "./middleware/error.middleware.js";
 import { createGlobalRateLimiter, securityHeaders } from "./middleware/security.middleware.js";
+import { checkReadiness, type ReadinessResult } from "./shared/readiness.js";
 
 const startedAt = new Date();
 
@@ -54,7 +55,9 @@ export function isCorsOriginAllowed(origin: string | undefined, config: ApiConfi
   return config.nodeEnv === "development" && isLocalDevelopmentOrigin(origin);
 }
 
-export function createApp(): Express {
+export function createApp(
+  options: { readinessCheck?: () => Promise<ReadinessResult> } = {}
+): Express {
   const app = express();
   const config = getApiConfig();
 
@@ -88,12 +91,14 @@ export function createApp(): Express {
     });
   });
 
-  app.get("/ready", (_request: Request, response: Response<HealthResponse>) => {
-    response.status(200).json({
-      status: "ok",
+  app.get("/ready", async (_request: Request, response: Response) => {
+    const readiness = await (options.readinessCheck ?? checkReadiness)();
+    response.status(readiness.ready ? 200 : 503).json({
+      status: readiness.ready ? "ok" : "not_ready",
       service: "api",
       uptimeSeconds: Math.floor((Date.now() - startedAt.getTime()) / 1000),
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      dependencies: readiness.dependencies
     });
   });
 

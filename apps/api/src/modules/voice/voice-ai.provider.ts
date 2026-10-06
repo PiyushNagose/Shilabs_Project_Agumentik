@@ -234,11 +234,15 @@ export class LocalVoskWindowsVoiceAIProvider implements VoiceAIProvider {
     const turns: VoiceTranscriptTurn[] = [];
     let stdout = "";
     let speaking = Promise.resolve();
+    let terminalHandoff = false;
+    let assistantSpeaking = false;
+    let responseInFlight = false;
 
     const speak = (text: string): void => {
       const responseTurn: VoiceTranscriptTurn = { speaker: "assistant", text, at: nowIso() };
       turns.push(responseTurn);
       input.onTranscript(responseTurn);
+      assistantSpeaking = true;
       speaking = speaking
         .then(async () => {
           const pcm = await synthesizeWithWindowsSapi({
@@ -248,15 +252,22 @@ export class LocalVoskWindowsVoiceAIProvider implements VoiceAIProvider {
           });
           sendPcmChunks({ pcm, onAudio: input.onAudio, sampleRate: this.config.voiceAi.sampleRate });
         })
-        .catch(() => undefined);
+        .catch(() => undefined)
+        .finally(() => {
+          assistantSpeaking = false;
+        });
     };
 
     const replyToCustomer = (text: string): void => {
+      if (terminalHandoff || assistantSpeaking || responseInFlight) return;
+      responseInFlight = true;
       const customerTurn: VoiceTranscriptTurn = { speaker: "customer", text, at: nowIso() };
       turns.push(customerTurn);
       input.onTranscript(customerTurn);
       if (hasNegotiationSignal(text)) {
+        terminalHandoff = true;
         speak("I understand. I will ask your Shilabs owner to follow up on the commercial terms.");
+        responseInFlight = false;
         return;
       }
       void (async () => {
@@ -273,9 +284,18 @@ export class LocalVoskWindowsVoiceAIProvider implements VoiceAIProvider {
             content: item.content
           }))
         });
-        speak(result.requiresHumanReview ? "I will have a Shilabs teammate follow up with you." : result.body);
+        if (result.requiresHumanReview) {
+          terminalHandoff = true;
+          speak("I will have a Shilabs teammate follow up with you.");
+          responseInFlight = false;
+          return;
+        }
+        speak(result.body);
+        responseInFlight = false;
       })().catch(() => {
+        terminalHandoff = true;
         speak("I am sorry, I could not process that clearly. A Shilabs teammate will follow up with you.");
+        responseInFlight = false;
       });
     };
 
@@ -296,6 +316,7 @@ export class LocalVoskWindowsVoiceAIProvider implements VoiceAIProvider {
 
     return Promise.resolve({
       acceptAudio: (payload) => {
+        if (assistantSpeaking || responseInFlight) return;
         writeSttChunk(stt, Buffer.from(payload, "base64"));
       },
       close: async () => {

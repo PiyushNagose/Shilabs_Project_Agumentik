@@ -1,12 +1,14 @@
 import crypto from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { UserRole, UserStatus } from "@prisma/client";
+import { verifyExpiringVoiceStreamToken } from "@shilabs/shared-config";
 import { prisma } from "../../shared/prisma.js";
-import type { AIProvider, QualificationResult, ReplyUnderstandingResult } from "../ai/ai.provider.js";
-import {
-  buildExotelVoicebotStreamUrl,
-  finalizeVoiceConversationRun
-} from "./voice-ai.service.js";
+import type {
+  AIProvider,
+  QualificationResult,
+  ReplyUnderstandingResult
+} from "../ai/ai.provider.js";
+import { buildExotelVoicebotStreamUrl, finalizeVoiceConversationRun } from "./voice-ai.service.js";
 
 const companyPrefix = "R22 Voice AI Company";
 
@@ -20,7 +22,13 @@ class VoiceAiTestProvider implements AIProvider {
   public extractQualification: AIProvider["extractQualification"] = () =>
     Promise.resolve(this.qualificationOutput);
   public summarizeLead: AIProvider["summarizeLead"] = () =>
-    Promise.resolve({ summary: "test", buyingSignals: [], objections: [], risks: [], suggestedNextAction: null });
+    Promise.resolve({
+      summary: "test",
+      buyingSignals: [],
+      objections: [],
+      risks: [],
+      suggestedNextAction: null
+    });
   public generateFollowUp: AIProvider["generateFollowUp"] = () =>
     Promise.resolve({ body: "test", requiresHumanReview: true, reason: null });
   public generateProposalDraft: AIProvider["generateProposalDraft"] = () =>
@@ -71,6 +79,7 @@ function env(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     EXOTEL_CALLER_ID: "08000000000",
     EXOTEL_APP_URL: "https://voice-e2e.example.test/api/voice/exotel/voicebot",
     EXOTEL_AGENT_NUMBER: "",
+    EXOTEL_WEBHOOK_SECRET: "test-exotel-webhook-secret",
     ...overrides
   };
 }
@@ -104,7 +113,9 @@ async function cleanup(): Promise<void> {
     where: { lead: { company: { name: { startsWith: companyPrefix } } } }
   });
   await prisma.domainEventOutbox.deleteMany({
-    where: { aggregateType: { in: ["VoiceConversationRun", "ReplyProcessingRun", "NegotiationHandoff"] } }
+    where: {
+      aggregateType: { in: ["VoiceConversationRun", "ReplyProcessingRun", "NegotiationHandoff"] }
+    }
   });
   await prisma.activity.deleteMany({
     where: { lead: { company: { name: { startsWith: companyPrefix } } } }
@@ -116,7 +127,9 @@ async function cleanup(): Promise<void> {
     where: { lead: { company: { name: { startsWith: companyPrefix } } } }
   });
   await prisma.auditEvent.deleteMany({
-    where: { entityType: { in: ["VoiceConversationRun", "ReplyProcessingRun", "NegotiationHandoff"] } }
+    where: {
+      entityType: { in: ["VoiceConversationRun", "ReplyProcessingRun", "NegotiationHandoff"] }
+    }
   });
   await prisma.lead.deleteMany({ where: { company: { name: { startsWith: companyPrefix } } } });
   await prisma.contact.deleteMany({ where: { company: { name: { startsWith: companyPrefix } } } });
@@ -150,7 +163,9 @@ async function seedCall(): Promise<{ leadId: string; callSid: string }> {
     }
   });
   const stage = await prisma.pipelineStage.findUniqueOrThrow({ where: { key: "NEW" } });
-  const company = await prisma.company.create({ data: { name: `${companyPrefix} ${crypto.randomUUID()}` } });
+  const company = await prisma.company.create({
+    data: { name: `${companyPrefix} ${crypto.randomUUID()}` }
+  });
   const contact = await prisma.contact.create({
     data: {
       companyId: company.id,
@@ -205,9 +220,16 @@ describe("Exotel voice AI callback", () => {
       env: env(),
       query: { CallSid: "call-123", From: "+919876543210" }
     });
-    expect(response.url).toBe(
-      "wss://voice-e2e.example.test/api/voice/exotel/voicebot/stream/voice-stream-token?sample-rate=16000&CallSid=call-123&From=%2B919876543210"
+    const url = new URL(response.url);
+    const token = url.pathname.split("/").at(-1) ?? "";
+    expect(`${url.protocol}//${url.host}${url.pathname.replace(`/${token}`, "")}`).toBe(
+      "wss://voice-e2e.example.test/api/voice/exotel/voicebot/stream"
     );
+    expect(url.searchParams.get("sample-rate")).toBe("16000");
+    expect(url.searchParams.get("CallSid")).toBe("call-123");
+    expect(url.searchParams.get("From")).toBe("+919876543210");
+    expect(token).not.toBe("voice-stream-token");
+    expect(verifyExpiringVoiceStreamToken({ token, secret: "voice-stream-token" })).toBe(true);
   });
 });
 
@@ -238,28 +260,30 @@ describe("voice conversation finalization", () => {
         evidence: [{ messageId: "placeholder", quote: "AI sales follow-up" }]
       }
     );
-    provider.understandReply = (input) => Promise.resolve({
-      intent: "NEGOTIATION",
-      confidence: 0.91,
-      summary: "Customer asked for a better commercial deal.",
-      draftResponse: "I can reduce the price.",
-      requiresHumanReview: false,
-      recommendedAction: "DRAFT_RESPONSE",
-      evidence: [{ messageId: input.messages[0]?.id ?? "", quote: "reduce the price" }],
-      usedKnowledgeIds: []
-    });
-    provider.extractQualification = (input) => Promise.resolve({
-      need: "AI sales follow-up",
-      requirement: "Sales automation",
-      budget: null,
-      budgetBand: null,
-      authority: null,
-      timeline: null,
-      businessFit: "Good fit",
-      decisionMakerIdentified: null,
-      urgency: null,
-      evidence: [{ messageId: input.messages.at(-1)?.id ?? "", quote: "AI sales follow-up" }]
-    });
+    provider.understandReply = (input) =>
+      Promise.resolve({
+        intent: "NEGOTIATION",
+        confidence: 0.91,
+        summary: "Customer asked for a better commercial deal.",
+        draftResponse: "I can reduce the price.",
+        requiresHumanReview: false,
+        recommendedAction: "DRAFT_RESPONSE",
+        evidence: [{ messageId: input.messages[0]?.id ?? "", quote: "reduce the price" }],
+        usedKnowledgeIds: []
+      });
+    provider.extractQualification = (input) =>
+      Promise.resolve({
+        need: "AI sales follow-up",
+        requirement: "Sales automation",
+        budget: null,
+        budgetBand: null,
+        authority: null,
+        timeline: null,
+        businessFit: "Good fit",
+        decisionMakerIdentified: null,
+        urgency: null,
+        evidence: [{ messageId: input.messages.at(-1)?.id ?? "", quote: "AI sales follow-up" }]
+      });
 
     await finalizeVoiceConversationRun({
       providerCallId: callSid,

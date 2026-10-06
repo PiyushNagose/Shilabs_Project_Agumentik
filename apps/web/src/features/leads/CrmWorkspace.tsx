@@ -60,6 +60,7 @@ import {
   processInboundReply,
   sendApprovedProposal,
   sendHumanConversationReply,
+  runCallingAttemptNowForE2E,
   startFollowUpSequence,
   startHumanTakeover,
   syncZohoLeadContacts,
@@ -69,7 +70,7 @@ import {
   updateProposalDraft,
   type LeadListParams
 } from "../../services/api-client.js";
-import { useRealtime } from "../realtime/RealtimeProvider.js";
+import { useRealtime, type RealtimeUpdateEvent } from "../realtime/RealtimeProvider.js";
 
 function isE2ELocalUi(): boolean {
   const viteEnv = import.meta.env as Readonly<Record<string, string | undefined>>;
@@ -349,6 +350,116 @@ const initialQualificationState: QualificationState = {
   error: null
 };
 
+export interface CrmRealtimeRefreshPlan {
+  fullWorkspace: boolean;
+  leadList: boolean;
+  lead: boolean;
+  conversations: boolean;
+  qualification: boolean;
+  proposals: boolean;
+  meetings: boolean;
+  briefings: boolean;
+  notifications: boolean;
+}
+
+const emptyRealtimeRefreshPlan: CrmRealtimeRefreshPlan = {
+  fullWorkspace: false,
+  leadList: false,
+  lead: false,
+  conversations: false,
+  qualification: false,
+  proposals: false,
+  meetings: false,
+  briefings: false,
+  notifications: false
+};
+
+export function mergeCrmRealtimeRefreshPlans(
+  current: CrmRealtimeRefreshPlan | null,
+  next: CrmRealtimeRefreshPlan
+): CrmRealtimeRefreshPlan {
+  return {
+    fullWorkspace: current?.fullWorkspace === true || next.fullWorkspace,
+    leadList: current?.leadList === true || next.leadList,
+    lead: current?.lead === true || next.lead,
+    conversations: current?.conversations === true || next.conversations,
+    qualification: current?.qualification === true || next.qualification,
+    proposals: current?.proposals === true || next.proposals,
+    meetings: current?.meetings === true || next.meetings,
+    briefings: current?.briefings === true || next.briefings,
+    notifications: current?.notifications === true || next.notifications
+  };
+}
+
+export function planCrmRealtimeRefresh(
+  event: RealtimeUpdateEvent,
+  selectedLeadId: string | null
+): CrmRealtimeRefreshPlan | null {
+  if (event.type === "realtime:reconnected") {
+    return {
+      ...emptyRealtimeRefreshPlan,
+      fullWorkspace: true,
+      conversations: Boolean(selectedLeadId),
+      qualification: Boolean(selectedLeadId),
+      proposals: Boolean(selectedLeadId),
+      meetings: Boolean(selectedLeadId),
+      briefings: Boolean(selectedLeadId),
+      notifications: Boolean(selectedLeadId)
+    };
+  }
+
+  if (!["workspace", "lead", "notifications", "domain-event"].includes(event.entityType)) {
+    return null;
+  }
+
+  const affectsSelectedLead = !event.leadId || event.leadId === selectedLeadId;
+  const plan: CrmRealtimeRefreshPlan = {
+    ...emptyRealtimeRefreshPlan,
+    leadList: true
+  };
+  if (!selectedLeadId || !affectsSelectedLead) {
+    return plan;
+  }
+
+  if (event.entityType === "notifications") {
+    return { ...plan, notifications: true };
+  }
+
+  const scope = [event.entityType, event.action, event.sourceEventType]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  const includesAny = (values: string[]): boolean => values.some((value) => scope.includes(value));
+
+  plan.lead = true;
+  plan.notifications = true;
+
+  if (includesAny(["conversation", "message", "reply", "email", "followup", "follow-up", "whatsapp"])) {
+    plan.conversations = true;
+    plan.qualification = true;
+  }
+  if (includesAny(["score", "qualification", "reply_understood"])) {
+    plan.qualification = true;
+  }
+  if (includesAny(["proposal"])) {
+    plan.proposals = true;
+  }
+  if (includesAny(["meeting"])) {
+    plan.meetings = true;
+  }
+  if (includesAny(["briefing", "insight"])) {
+    plan.briefings = true;
+  }
+  if (event.entityType === "domain-event" && !event.sourceEventType) {
+    plan.conversations = true;
+    plan.qualification = true;
+    plan.proposals = true;
+    plan.meetings = true;
+  }
+
+  return plan;
+}
+
 function formatDate(value: string | null): string {
   if (!value) {
     return "No activity";
@@ -455,7 +566,7 @@ export function CrmWorkspace({
   onRouteChange
 }: CrmWorkspaceProps): React.JSX.Element {
   const toast = useToast();
-  const realtime = useRealtime();
+  const { subscribe } = useRealtime();
   const [view, setView] = useState<WorkspaceView>("leads");
   const [activeTab, setActiveTab] = useState<DetailTab>(initialTab ?? "Overview");
   const [filters, setFilters] = useState<LeadListParams>(initialFilters);
@@ -481,12 +592,42 @@ export function CrmWorkspace({
     result: null,
     error: null
   });
+  const realtimeRefreshPlanRef = useRef<CrmRealtimeRefreshPlan | null>(null);
+  const realtimeRefreshTimerRef = useRef<number | null>(null);
+  const selectedLeadRef = useRef<string | null>(null);
+  selectedLeadRef.current = state.selectedLead?.id ?? null;
+  const selectionRequestRef = useRef(0);
+  const selectionTargetRef = useRef<string | null>(null);
+  const detailRequestsRef = useRef<Record<string, number>>({});
+  const listRequestRef = useRef(0);
+  const workspaceRequestRef = useRef(0);
+  const conversationStateRef = useRef(conversationState);
+  conversationStateRef.current = conversationState;
+  const proposalStateRef = useRef(proposalState);
+  proposalStateRef.current = proposalState;
+
+  function beginDetailRequest(scope: string, leadId: string): () => boolean {
+    const request = (detailRequestsRef.current[scope] ?? 0) + 1;
+    detailRequestsRef.current[scope] = request;
+    const selection = selectionRequestRef.current;
+    return () => selectedLeadRef.current === leadId &&
+      selectionRequestRef.current === selection && detailRequestsRef.current[scope] === request;
+  }
+
+  useEffect(() => () => {
+    selectionRequestRef.current += 1;
+    listRequestRef.current += 1;
+    workspaceRequestRef.current += 1;
+  }, [accessToken]);
 
   async function loadWorkspace(
     nextFilters = filters,
     leadId: string | null | undefined = state.selectedLead?.id
   ): Promise<void> {
-    setState((current) => ({ ...current, loading: true, error: null }));
+    const request = ++workspaceRequestRef.current;
+    const listRequest = ++listRequestRef.current;
+    const selection = selectionRequestRef.current;
+    setState((current) => ({ ...current, loading: !current.leadsPage, error: null }));
 
     try {
       const [leadsPage, stages, users] = await Promise.all([
@@ -495,7 +636,7 @@ export function CrmWorkspace({
         listUsers(accessToken).catch(() => [currentUser])
       ]);
       const selectedLead = leadId
-        ? await getLead(accessToken, leadId).catch(() => leadsPage.items[0] ?? null)
+        ? await getLead(accessToken, leadId)
         : (leadsPage.items[0] ?? null);
       const activities = selectedLead
         ? await listLeadActivities(accessToken, selectedLead.id).catch(() => [])
@@ -509,8 +650,9 @@ export function CrmWorkspace({
         ? await getLeadQualification(accessToken, selectedLead.id).catch(() => null)
         : null;
 
-      setState({
-        leadsPage,
+      if (request !== workspaceRequestRef.current || selection !== selectionRequestRef.current) return;
+      setState((current) => ({
+        leadsPage: listRequest === listRequestRef.current ? leadsPage : current.leadsPage ?? leadsPage,
         stages,
         users,
         selectedLead,
@@ -518,13 +660,14 @@ export function CrmWorkspace({
         notifications,
         loading: false,
         error: null
-      });
+      }));
       setQualificationState({
         qualification,
         loading: false,
         error: selectedLead && !qualification ? "Qualification could not be loaded" : null
       });
     } catch {
+      if (request !== workspaceRequestRef.current || selection !== selectionRequestRef.current) return;
       setState((current) => ({
         ...current,
         loading: false,
@@ -544,7 +687,8 @@ export function CrmWorkspace({
   }, [initialTab]);
 
   useEffect(() => {
-    if (!initialLeadId || state.loading || state.selectedLead?.id === initialLeadId) {
+    if (!initialLeadId || state.loading || state.selectedLead?.id === initialLeadId ||
+      selectionTargetRef.current === initialLeadId) {
       return;
     }
 
@@ -575,42 +719,77 @@ export function CrmWorkspace({
     }
   }, [accessToken, activeTab, state.selectedLead?.id]);
 
-  useEffect(
-    () =>
-      realtime.subscribe((event) => {
-        const selectedLeadId = state.selectedLead?.id ?? null;
-        const shouldRefreshWorkspace =
-          event.type === "realtime:reconnected" ||
-          ["workspace", "lead", "notifications", "domain-event"].includes(event.entityType);
-        if (!shouldRefreshWorkspace) return;
+  useEffect(() => {
+    const clearRefreshTimer = (): void => {
+      if (realtimeRefreshTimerRef.current !== null) {
+        window.clearTimeout(realtimeRefreshTimerRef.current);
+        realtimeRefreshTimerRef.current = null;
+      }
+    };
+    const flushRefresh = (): void => {
+      const plan = realtimeRefreshPlanRef.current;
+      realtimeRefreshPlanRef.current = null;
+      realtimeRefreshTimerRef.current = null;
+      if (!plan) return;
 
-        const affectsSelectedLead =
-          event.type === "realtime:reconnected" ||
-          !event.leadId ||
-          (selectedLeadId !== null && event.leadId === selectedLeadId);
-
+      const selectedLeadId = state.selectedLead?.id ?? null;
+      if (plan.fullWorkspace) {
         void loadWorkspace(filters, selectedLeadId);
-        if (selectedLeadId && affectsSelectedLead) {
-          void loadLeadConversations(selectedLeadId);
-          void loadLeadQualification(selectedLeadId);
-          void loadLeadProposals(selectedLeadId);
-          void loadLeadMeetings(selectedLeadId);
-          void loadLeadBriefings(selectedLeadId);
-          void loadLeadNotifications(selectedLeadId);
-        }
-      }),
-    [accessToken, filters, realtime, state.selectedLead?.id]
-  );
+      }
 
-  async function loadLeadConversations(leadId: string): Promise<void> {
-    setConversationState((current) => ({ ...current, loading: true, error: null }));
+      if (plan.leadList && !plan.fullWorkspace) {
+        void refreshLeadList(filters);
+      }
+      if (!selectedLeadId) return;
+      if (plan.lead) {
+        void refreshSelectedLead(selectedLeadId);
+      }
+      if (plan.conversations) {
+        void loadLeadConversations(selectedLeadId, true);
+      }
+      if (plan.qualification) {
+        void loadLeadQualification(selectedLeadId, true);
+      }
+      if (plan.proposals) {
+        void loadLeadProposals(selectedLeadId, true);
+      }
+      if (plan.meetings) {
+        void loadLeadMeetings(selectedLeadId, true);
+      }
+      if (plan.briefings) {
+        void loadLeadBriefings(selectedLeadId, true);
+      }
+      if (plan.notifications && !plan.lead) {
+        void loadLeadNotifications(selectedLeadId);
+      }
+    };
+
+    const unsubscribe = subscribe((event) => {
+      const plan = planCrmRealtimeRefresh(event, state.selectedLead?.id ?? null);
+      if (!plan) return;
+      realtimeRefreshPlanRef.current = mergeCrmRealtimeRefreshPlans(
+        realtimeRefreshPlanRef.current,
+        plan
+      );
+      realtimeRefreshTimerRef.current ??= window.setTimeout(flushRefresh, 200);
+    });
+    return () => {
+      unsubscribe();
+      clearRefreshTimer();
+      realtimeRefreshPlanRef.current = null;
+    };
+  }, [accessToken, filters, subscribe, state.selectedLead?.id]);
+
+  async function loadLeadConversations(leadId: string, background = false): Promise<void> {
+    const isCurrent = beginDetailRequest("conversations", leadId);
+    setConversationState((current) => ({ ...current, loading: !background, error: null }));
 
     try {
       const [conversations, followUpSequences] = await Promise.all([
         listConversations(accessToken, { leadId }),
         listFollowUpSequences(accessToken, leadId)
       ]);
-      const currentSelection = conversationState.selectedConversation?.id;
+      const currentSelection = conversationStateRef.current.selectedConversation?.id;
       const linkedConversationId = followUpSequences[0]?.conversationId;
       const selectedConversation =
         conversations.find((conversation) => conversation.id === currentSelection) ??
@@ -625,6 +804,7 @@ export function CrmWorkspace({
           ? await getHumanTakeoverBriefing(accessToken, selectedConversation.id).catch(() => null)
           : null;
 
+      if (!isCurrent()) return;
       setConversationState((current) => ({
         ...current,
         conversations,
@@ -636,6 +816,7 @@ export function CrmWorkspace({
         error: null
       }));
     } catch {
+      if (!isCurrent()) return;
       setConversationState((current) => ({
         ...current,
         loading: false,
@@ -644,13 +825,14 @@ export function CrmWorkspace({
     }
   }
 
-  async function loadLeadProposals(leadId: string): Promise<void> {
-    setProposalState((current) => ({ ...current, loading: true, error: null }));
+  async function loadLeadProposals(leadId: string, background = false): Promise<void> {
+    const isCurrent = beginDetailRequest("proposals", leadId);
+    setProposalState((current) => ({ ...current, loading: !background, error: null }));
 
     try {
       const proposals = await listProposals(accessToken, { leadId, limit: 50 });
       const selectedProposal =
-        proposals.find((proposal) => proposal.id === proposalState.selectedProposalId) ??
+        proposals.find((proposal) => proposal.id === proposalStateRef.current.selectedProposalId) ??
         proposals[0] ??
         null;
       let corrections: AgentCorrectionDto[] = [];
@@ -662,32 +844,33 @@ export function CrmWorkspace({
             limit: 10
           });
         } catch (error) {
+      if (!isCurrent()) return;
           correctionError = apiErrorMessage(error, "Correction history could not be loaded");
         }
       }
 
+      if (!isCurrent()) return;
       setProposalState((current) => ({
         ...current,
         proposals,
         selectedProposalId: selectedProposal?.id ?? null,
         corrections,
-        correctionSummary: "",
-        draftTitle: selectedProposal?.title ?? "",
-        draftContent: selectedProposal?.currentVersion?.content ?? "",
+        correctionSummary: current.correctionSummary,
+        draftTitle: current.selectedProposalId === selectedProposal?.id &&
+          current.draftTitle !== current.proposals.find((item) => item.id === selectedProposal.id)?.title
+            ? current.draftTitle : selectedProposal?.title ?? "",
+        draftContent: current.selectedProposalId === selectedProposal?.id &&
+          current.draftContent !== (current.proposals.find((item) => item.id === selectedProposal.id)?.currentVersion?.content ?? "")
+            ? current.draftContent : selectedProposal?.currentVersion?.content ?? "",
         loading: false,
-        saving: false,
-        generating: false,
-        correctionSaving: false,
         error: correctionError,
-        sendResult: null
+        sendResult: current.sendResult
       }));
     } catch (error) {
+      if (!isCurrent()) return;
       setProposalState((current) => ({
         ...current,
         loading: false,
-        saving: false,
-        generating: false,
-        correctionSaving: false,
         error: apiErrorMessage(error, "Proposals could not be loaded")
       }));
     }
@@ -697,66 +880,110 @@ export function CrmWorkspace({
     return listAgentCorrections(accessToken, { proposalId, limit: 10 });
   }
 
-  async function loadLeadMeetings(leadId: string): Promise<void> {
-    setMeetingState((current) => ({ ...current, loading: true, error: null }));
+  async function loadLeadMeetings(leadId: string, background = false): Promise<void> {
+    const isCurrent = beginDetailRequest("meetings", leadId);
+    setMeetingState((current) => ({ ...current, loading: !background, error: null }));
 
     try {
       const requests = await listMeetingRequests(accessToken, { leadId, limit: 50 });
+      if (!isCurrent()) return;
       setMeetingState((current) => ({
         ...current,
         requests,
         loading: false,
-        saving: false,
         error: null
       }));
     } catch {
+      if (!isCurrent()) return;
       setMeetingState((current) => ({
         ...current,
         loading: false,
-        saving: false,
         error: "Meeting requests could not be loaded"
       }));
     }
   }
 
-  async function loadLeadBriefings(leadId: string): Promise<void> {
-    setBriefingState((current) => ({ ...current, loading: true, error: null }));
+  async function loadLeadBriefings(leadId: string, background = false): Promise<void> {
+    const isCurrent = beginDetailRequest("briefings", leadId);
+    setBriefingState((current) => ({ ...current, loading: !background, error: null }));
 
     try {
       const [leadBriefings, meetingBriefings] = await Promise.all([
         listBriefings(accessToken, { leadId, kind: "LEAD", limit: 10 }),
         listBriefings(accessToken, { leadId, kind: "MEETING", limit: 20 })
       ]);
+      if (!isCurrent()) return;
       setBriefingState((current) => ({
         ...current,
         leadBriefings,
         meetingBriefings,
         loading: false,
-        saving: false,
         error: null
       }));
     } catch {
+      if (!isCurrent()) return;
       setBriefingState((current) => ({
         ...current,
         loading: false,
-        saving: false,
         error: "Briefings could not be loaded"
       }));
     }
   }
 
-  async function loadLeadQualification(leadId: string): Promise<void> {
-    setQualificationState((current) => ({ ...current, loading: true, error: null }));
+  async function loadLeadQualification(leadId: string, background = false): Promise<void> {
+    const isCurrent = beginDetailRequest("qualification", leadId);
+    setQualificationState((current) => ({ ...current, loading: !background, error: null }));
 
     try {
       const qualification = await getLeadQualification(accessToken, leadId);
+      if (!isCurrent()) return;
       setQualificationState({ qualification, loading: false, error: null });
     } catch {
+      if (!isCurrent()) return;
       setQualificationState((current) => ({
         ...current,
         loading: false,
         error: "Qualification could not be loaded"
       }));
+    }
+  }
+
+  async function refreshLeadList(nextFilters = filters): Promise<void> {
+    const request = ++listRequestRef.current;
+    try {
+      const leadsPage = await listLeads(accessToken, nextFilters);
+      if (request !== listRequestRef.current) return;
+      setState((current) => ({ ...current, leadsPage, error: null }));
+    } catch {
+      if (request === listRequestRef.current) {
+        setState((current) => ({ ...current, error: "Lead list could not be refreshed" }));
+      }
+    }
+  }
+
+  async function refreshSelectedLead(leadId: string): Promise<void> {
+    const isCurrent = beginDetailRequest("lead", leadId);
+    try {
+      const [lead, activities, notifications] = await Promise.all([
+        getLead(accessToken, leadId),
+        listLeadActivities(accessToken, leadId).catch(() => state.activities),
+        listNotifications(accessToken, { leadId, limit: 10 }).catch(() => state.notifications)
+      ]);
+      if (!isCurrent()) return;
+      setState((current) => {
+        if (current.selectedLead?.id !== leadId) {
+          return current;
+        }
+        const leadsPage = current.leadsPage
+          ? {
+              ...current.leadsPage,
+              items: current.leadsPage.items.map((item) => (item.id === lead.id ? lead : item))
+            }
+          : current.leadsPage;
+        return { ...current, leadsPage, selectedLead: lead, activities, notifications };
+      });
+    } catch {
+      // Keep the currently selected lead stable; the next explicit refresh will reconcile.
     }
   }
 
@@ -773,7 +1000,7 @@ export function CrmWorkspace({
   async function applyFilters(nextFilters: LeadListParams): Promise<void> {
     const merged = { ...filters, ...nextFilters, page: nextFilters.page ?? 1 };
     setFilters(merged);
-    await loadWorkspace(merged, null);
+    await refreshLeadList(merged);
   }
 
   async function syncZohoLeadsContacts(): Promise<void> {
@@ -799,32 +1026,45 @@ export function CrmWorkspace({
   }
 
   async function selectLead(leadId: string, updateRoute = true): Promise<void> {
+    const request = ++selectionRequestRef.current;
+    selectionTargetRef.current = leadId;
     if (updateRoute) {
       onRouteChange?.(leadId, activeTab);
     }
-    const lead = await getLead(accessToken, leadId);
-    const activities = await listLeadActivities(accessToken, leadId).catch(() => []);
-    const notifications = await listNotifications(accessToken, { leadId, limit: 10 }).catch(
-      () => []
-    );
-    const qualification = await getLeadQualification(accessToken, leadId).catch(() => null);
-    setState((current) => ({ ...current, selectedLead: lead, activities, notifications }));
-    setQualificationState({
-      qualification,
-      loading: false,
-      error: qualification ? null : "Qualification could not be loaded"
-    });
-    setConversationState(initialConversationState);
-    setProposalState(initialProposalState);
-    setMeetingState(createInitialMeetingState());
-    setBriefingState(initialBriefingState);
+    try {
+      const [lead, activities, notifications, qualification] = await Promise.all([
+        getLead(accessToken, leadId),
+        listLeadActivities(accessToken, leadId).catch(() => []),
+        listNotifications(accessToken, { leadId, limit: 10 }).catch(() => []),
+        getLeadQualification(accessToken, leadId).catch(() => null)
+      ]);
+      if (request !== selectionRequestRef.current) return;
+      selectedLeadRef.current = leadId;
+      setState((current) => ({ ...current, selectedLead: lead, activities, notifications }));
+      setQualificationState({
+        qualification,
+        loading: false,
+        error: qualification ? null : "Qualification could not be loaded"
+      });
+      setConversationState(initialConversationState);
+      setProposalState(initialProposalState);
+      setMeetingState(createInitialMeetingState());
+      setBriefingState(initialBriefingState);
+    } catch (error) {
+      if (request === selectionRequestRef.current) {
+        toast.error({ title: "Lead could not be loaded", detail: apiErrorMessage(error, "Please retry") });
+      }
+    } finally {
+      if (request === selectionRequestRef.current) selectionTargetRef.current = null;
+    }
   }
 
   async function loadLeadNotifications(leadId: string): Promise<void> {
+    const isCurrent = beginDetailRequest("notifications", leadId);
     const notifications = await listNotifications(accessToken, { leadId, limit: 10 }).catch(
       () => state.notifications
     );
-    setState((current) => ({ ...current, notifications }));
+    if (isCurrent()) setState((current) => ({ ...current, notifications }));
   }
 
   function changeDetailTab(tab: DetailTab): void {
@@ -841,7 +1081,7 @@ export function CrmWorkspace({
       const lead = await updateLeadStage(accessToken, state.selectedLead.id, stageId);
       setState((current) => ({
         ...current,
-        selectedLead: lead,
+        selectedLead: current.selectedLead?.id === lead.id ? lead : current.selectedLead,
         leadsPage: current.leadsPage
           ? {
               ...current.leadsPage,
@@ -849,7 +1089,7 @@ export function CrmWorkspace({
             }
           : current.leadsPage
       }));
-      await loadWorkspace(filters, lead.id);
+      await Promise.all([refreshLeadList(filters), refreshSelectedLead(lead.id)]);
       toast.success({ title: "Stage updated", detail: lead.stage.label });
     } catch (error) {
       toast.error({
@@ -868,7 +1108,7 @@ export function CrmWorkspace({
       const lead = await assignLead(accessToken, state.selectedLead.id, ownerId || null);
       setState((current) => ({
         ...current,
-        selectedLead: lead,
+        selectedLead: current.selectedLead?.id === lead.id ? lead : current.selectedLead,
         leadsPage: current.leadsPage
           ? {
               ...current.leadsPage,
@@ -953,8 +1193,19 @@ export function CrmWorkspace({
         saving: false,
         error: null
       }));
-      await loadWorkspace(filters, state.selectedLead.id);
-      toast.success({ title: "Follow-up automation started", detail: sequence.status.replaceAll("_", " ") });
+      const leadId = state.selectedLead.id;
+      await Promise.all([
+        refreshLeadList(filters),
+        refreshSelectedLead(leadId),
+        loadLeadNotifications(leadId),
+        listLeadActivities(accessToken, leadId)
+          .catch(() => state.activities)
+          .then((activities) => setState((current) => ({ ...current, activities })))
+      ]);
+      toast.success({
+        title: "Follow-up automation started",
+        detail: sequence.status.replaceAll("_", " ")
+      });
     } catch (error) {
       const message = apiErrorMessage(error, "Follow-up automation could not be started");
       setConversationState((current) => ({
@@ -975,9 +1226,10 @@ export function CrmWorkspace({
 
     try {
       const accelerated = await accelerateFollowUpSequenceForE2E(accessToken, sequenceId);
-      const followUpSequences = await listFollowUpSequences(accessToken, state.selectedLead.id).catch(
-        () => [accelerated]
-      );
+      const followUpSequences = await listFollowUpSequences(
+        accessToken,
+        state.selectedLead.id
+      ).catch(() => [accelerated]);
       setConversationState((current) => ({
         ...current,
         followUpSequences:
@@ -1001,7 +1253,32 @@ export function CrmWorkspace({
     }
   }
 
+  async function runAiCallNowForE2E(): Promise<void> {
+    if (!state.selectedLead) return;
+    setConversationState((current) => ({ ...current, saving: true, error: null }));
+    try {
+      const result = await runCallingAttemptNowForE2E(accessToken, state.selectedLead.id);
+      setConversationState((current) => ({ ...current, saving: false }));
+      const leadId = state.selectedLead.id;
+      await Promise.all([
+        refreshLeadList(filters),
+        refreshSelectedLead(leadId),
+        loadLeadConversations(leadId),
+        loadLeadNotifications(leadId),
+        listLeadActivities(accessToken, leadId)
+          .catch(() => state.activities)
+          .then((activities) => setState((current) => ({ ...current, activities })))
+      ]);
+      toast.success({ title: "AI call queued", detail: result.status.replaceAll("_", " ") });
+    } catch (error) {
+      const message = apiErrorMessage(error, "AI call could not be queued");
+      setConversationState((current) => ({ ...current, saving: false, error: message }));
+      toast.error({ title: "AI call failed", detail: message });
+    }
+  }
+
   async function selectConversation(conversationId: string): Promise<void> {
+    const isCurrent = beginDetailRequest("conversations", state.selectedLead?.id ?? "");
     const selectedConversation =
       conversationState.conversations.find((conversation) => conversation.id === conversationId) ??
       null;
@@ -1023,6 +1300,7 @@ export function CrmWorkspace({
         selectedConversation.mode === "HUMAN"
           ? await getHumanTakeoverBriefing(accessToken, selectedConversation.id).catch(() => null)
           : null;
+      if (!isCurrent()) return;
       setConversationState((current) => ({
         ...current,
         messages,
@@ -1031,6 +1309,7 @@ export function CrmWorkspace({
         error: null
       }));
     } catch {
+      if (!isCurrent()) return;
       setConversationState((current) => ({
         ...current,
         loading: false,
@@ -1181,13 +1460,16 @@ export function CrmWorkspace({
           idempotencyKey
         }
       );
-      await loadWorkspace(filters, state.selectedLead.id);
-      await loadLeadConversations(state.selectedLead.id);
-      await loadLeadNotifications(state.selectedLead.id);
-      const activities = await listLeadActivities(accessToken, state.selectedLead.id).catch(
-        () => state.activities
-      );
-      setState((current) => ({ ...current, activities }));
+      const leadId = state.selectedLead.id;
+      await Promise.all([
+        refreshLeadList(filters),
+        refreshSelectedLead(leadId),
+        loadLeadConversations(leadId),
+        loadLeadNotifications(leadId),
+        listLeadActivities(accessToken, leadId)
+          .catch(() => state.activities)
+          .then((activities) => setState((current) => ({ ...current, activities })))
+      ]);
       setConversationState((current) => ({
         ...current,
         humanReplyInput: "",
@@ -1233,21 +1515,25 @@ export function CrmWorkspace({
     try {
       const inbound = await submitE2ECustomerReply(accessToken, {
         leadId: state.selectedLead.id,
-        subject: `E2E Customer Reply - ${state.selectedLead.contact.firstName} ${state.selectedLead.contact.lastName}`.trim(),
+        subject:
+          `E2E Customer Reply - ${state.selectedLead.contact.firstName} ${state.selectedLead.contact.lastName}`.trim(),
         body
       });
       if (inbound.inboundEmail.status === "PROCESSED") {
         await processInboundReply(accessToken, inbound.inboundEmail.id);
       }
-      await loadWorkspace(filters, state.selectedLead.id);
-      await loadLeadConversations(state.selectedLead.id);
-      await loadLeadQualification(state.selectedLead.id);
-      await loadLeadMeetings(state.selectedLead.id);
-      await loadLeadNotifications(state.selectedLead.id);
-      const activities = await listLeadActivities(accessToken, state.selectedLead.id).catch(
-        () => state.activities
-      );
-      setState((current) => ({ ...current, activities }));
+      const leadId = state.selectedLead.id;
+      await Promise.all([
+        refreshLeadList(filters),
+        refreshSelectedLead(leadId),
+        loadLeadConversations(leadId),
+        loadLeadQualification(leadId),
+        loadLeadMeetings(leadId),
+        loadLeadNotifications(leadId),
+        listLeadActivities(accessToken, leadId)
+          .catch(() => state.activities)
+          .then((activities) => setState((current) => ({ ...current, activities })))
+      ]);
       setConversationState((current) => ({
         ...current,
         e2eReplyInput: "",
@@ -1267,6 +1553,7 @@ export function CrmWorkspace({
   }
 
   function selectProposal(proposalId: string): void {
+    detailRequestsRef.current.proposals = (detailRequestsRef.current.proposals ?? 0) + 1;
     const proposal = proposalState.proposals.find((item) => item.id === proposalId);
     if (!proposal) {
       return;
@@ -1323,7 +1610,10 @@ export function CrmWorkspace({
       });
       setProposalState((current) => ({
         ...current,
-        corrections: [correction, ...current.corrections.filter((item) => item.id !== correction.id)],
+        corrections: [
+          correction,
+          ...current.corrections.filter((item) => item.id !== correction.id)
+        ],
         correctionSummary: "",
         correctionSaving: false,
         error: null
@@ -1465,7 +1755,10 @@ export function CrmWorkspace({
         error: null,
         sendResult: null
       }));
-      toast.success({ title: "Grounded proposal generated", detail: selectedProposal.status.replaceAll("_", " ") });
+      toast.success({
+        title: "Grounded proposal generated",
+        detail: selectedProposal.status.replaceAll("_", " ")
+      });
     } catch (error) {
       const message = apiErrorMessage(error, "Grounded proposal could not be generated");
       setProposalState((current) => ({
@@ -1758,11 +2051,14 @@ export function CrmWorkspace({
         ) : null}
       </div>
 
+      {state.error && state.leadsPage ? (
+        <p className="refresh-error" role="alert">{state.error}. Showing the last loaded data.</p>
+      ) : null}
       <div className="workspace-grid">
         <div className="workspace-panel">
           {state.loading ? (
             <StateBlock title="Loading CRM" detail="Fetching real sales records from the API." />
-          ) : state.error ? (
+          ) : state.error && !state.leadsPage ? (
             <StateBlock
               title="CRM unavailable"
               detail={state.error}
@@ -1834,6 +2130,7 @@ export function CrmWorkspace({
           onSendHumanReply={sendHumanReply}
           onSubmitE2ECustomerReply={submitE2ECustomerReplyFromConversation}
           onAccelerateFollowUpForE2E={accelerateProductionFollowUpForE2E}
+          onRunCallingAttemptNowForE2E={runAiCallNowForE2E}
           onStartFollowUp={startProductionFollowUp}
           onStartConversation={startSimulatorConversation}
           onStartHumanTakeover={startSelectedHumanTakeover}
@@ -2031,6 +2328,7 @@ function LeadDetail({
   onSendHumanReply,
   onSubmitE2ECustomerReply,
   onAccelerateFollowUpForE2E,
+  onRunCallingAttemptNowForE2E,
   onStartFollowUp,
   onStartConversation,
   onStartHumanTakeover,
@@ -2077,6 +2375,7 @@ function LeadDetail({
   onSendHumanReply: () => Promise<void>;
   onSubmitE2ECustomerReply: () => Promise<void>;
   onAccelerateFollowUpForE2E: (sequenceId: string) => Promise<void>;
+  onRunCallingAttemptNowForE2E: () => Promise<void>;
   onStartFollowUp: () => Promise<void>;
   onStartConversation: () => Promise<void>;
   onStartHumanTakeover: () => Promise<void>;
@@ -2098,6 +2397,9 @@ function LeadDetail({
     { label: "Unassigned", value: "" },
     ...users.map((user) => ({ label: `${user.firstName} ${user.lastName}`, value: user.id }))
   ];
+  const followUpAction = activeFollowUpLeadAction(conversationState.followUpSequences);
+  const nextAction = lead.nextAction ?? followUpAction?.nextAction ?? "No next action";
+  const nextActionAt = lead.nextActionAt ?? followUpAction?.nextActionAt ?? null;
 
   return (
     <aside className="lead-detail" aria-label="Lead detail">
@@ -2140,7 +2442,7 @@ function LeadDetail({
       <div className="detail-metrics">
         <span>{formatMoney(lead.estimatedValue, lead.currency)}</span>
         <span>{formatDate(lead.lastActivityAt)}</span>
-        <span>{lead.nextAction ?? "No next action"}</span>
+        <span>{nextAction}</span>
       </div>
 
       <NotificationAlerts
@@ -2171,6 +2473,8 @@ function LeadDetail({
         lead={lead}
         briefingState={briefingState}
         meetingState={meetingState}
+        nextAction={nextAction}
+        nextActionAt={nextActionAt}
         proposalState={proposalState}
         qualificationState={qualificationState}
         tab={activeTab}
@@ -2197,6 +2501,7 @@ function LeadDetail({
         onSendHumanReply={onSendHumanReply}
         onSubmitE2ECustomerReply={onSubmitE2ECustomerReply}
         onAccelerateFollowUpForE2E={onAccelerateFollowUpForE2E}
+        onRunCallingAttemptNowForE2E={onRunCallingAttemptNowForE2E}
         onStartFollowUp={onStartFollowUp}
         onStartConversation={onStartConversation}
         onStartHumanTakeover={onStartHumanTakeover}
@@ -2263,6 +2568,8 @@ function DetailTabPanel({
   lead,
   briefingState,
   meetingState,
+  nextAction,
+  nextActionAt,
   proposalState,
   qualificationState,
   tab,
@@ -2289,6 +2596,7 @@ function DetailTabPanel({
   onSendHumanReply,
   onSubmitE2ECustomerReply,
   onAccelerateFollowUpForE2E,
+  onRunCallingAttemptNowForE2E,
   onStartFollowUp,
   onStartConversation,
   onStartHumanTakeover
@@ -2299,6 +2607,8 @@ function DetailTabPanel({
   lead: LeadDto;
   briefingState: BriefingState;
   meetingState: MeetingState;
+  nextAction: string;
+  nextActionAt: string | null;
   proposalState: ProposalState;
   qualificationState: QualificationState;
   tab: DetailTab;
@@ -2327,6 +2637,7 @@ function DetailTabPanel({
   onSendHumanReply: () => Promise<void>;
   onSubmitE2ECustomerReply: () => Promise<void>;
   onAccelerateFollowUpForE2E: (sequenceId: string) => Promise<void>;
+  onRunCallingAttemptNowForE2E: () => Promise<void>;
   onStartFollowUp: () => Promise<void>;
   onStartConversation: () => Promise<void>;
   onStartHumanTakeover: () => Promise<void>;
@@ -2348,6 +2659,7 @@ function DetailTabPanel({
         onSendHumanReply={onSendHumanReply}
         onSubmitE2ECustomerReply={onSubmitE2ECustomerReply}
         onAccelerateFollowUpForE2E={onAccelerateFollowUpForE2E}
+        onRunCallingAttemptNowForE2E={onRunCallingAttemptNowForE2E}
         onStartFollowUp={onStartFollowUp}
         onStartConversation={onStartConversation}
         onStartHumanTakeover={onStartHumanTakeover}
@@ -2430,12 +2742,15 @@ function DetailTabPanel({
       <div className="tab-panel tab-panel-structured">
         <TabSection eyebrow="Deal" title="Pipeline context" meta={lead.stage.label}>
           <div className="tab-data-grid">
-            <TabData label="Estimated value" value={formatMoney(lead.estimatedValue, lead.currency)} />
+            <TabData
+              label="Estimated value"
+              value={formatMoney(lead.estimatedValue, lead.currency)}
+            />
             <TabData label="Stage" value={lead.stage.label} />
             <TabData label="Probability" value={`${String(lead.stage.probability)}%`} />
             <TabData label="Status" value={lead.status.replaceAll("_", " ")} />
-            <TabData label="Next action" value={lead.nextAction ?? "No next action"} />
-            <TabData label="Next action at" value={formatDate(lead.nextActionAt)} />
+            <TabData label="Next action" value={nextAction} />
+            <TabData label="Next action at" value={formatDate(nextActionAt)} />
           </div>
         </TabSection>
       </div>
@@ -2445,13 +2760,17 @@ function DetailTabPanel({
   if (tab === "Overview") {
     return (
       <div className="tab-panel tab-panel-structured">
-        <TabSection eyebrow="Overview" title="Lead snapshot" meta={lead.status.replaceAll("_", " ")}>
+        <TabSection
+          eyebrow="Overview"
+          title="Lead snapshot"
+          meta={lead.status.replaceAll("_", " ")}
+        >
           <div className="tab-data-grid">
+            <TabData label="Contact" value={`${lead.contact.firstName} ${lead.contact.lastName}`} />
             <TabData
-              label="Contact"
-              value={`${lead.contact.firstName} ${lead.contact.lastName}`}
+              label="Requirement"
+              value={lead.requirement ?? "Requirement not captured yet"}
             />
-            <TabData label="Requirement" value={lead.requirement ?? "Requirement not captured yet"} />
             <TabData
               label="Service interest"
               value={lead.serviceInterest ?? "Service interest not captured yet"}
@@ -2470,11 +2789,7 @@ function DetailTabPanel({
 
   return (
     <div className="tab-panel tab-panel-structured">
-      <TabSection
-        eyebrow="Qualification"
-        title="Qualification signals"
-        meta={lead.temperature}
-      >
+      <TabSection eyebrow="Qualification" title="Qualification signals" meta={lead.temperature}>
         {qualificationState.error ? <p className="form-error">{qualificationState.error}</p> : null}
         <div className="tab-data-grid">
           <TabData
@@ -2495,10 +2810,7 @@ function DetailTabPanel({
               "Requirement unknown"
             )}
           />
-          <TabData
-            label="Budget"
-            value={budgetValue(qualificationState.qualification)}
-          />
+          <TabData label="Budget" value={budgetValue(qualificationState.qualification)} />
           <TabData
             label="Authority"
             value={qualificationValue(
@@ -2517,7 +2829,10 @@ function DetailTabPanel({
               "Timeline unknown"
             )}
           />
-          <TabData label="Decision maker" value={decisionMakerValue(qualificationState.qualification)} />
+          <TabData
+            label="Decision maker"
+            value={decisionMakerValue(qualificationState.qualification)}
+          />
           <TabData
             label="Business fit"
             value={qualificationValue(
@@ -2703,8 +3018,8 @@ function LeadBriefingPanel({
         <StateBlock title="Loading briefings" />
       ) : latest ? (
         <>
-          <div className="ai-insights-actions">{generateAction}</div>
           <BriefingCard run={latest} />
+          <div className="ai-insights-actions">{generateAction}</div>
         </>
       ) : (
         <>
@@ -2776,7 +3091,9 @@ function isGeneratedMeetingTitle(value: string): boolean {
   return /^Meeting with .+/i.test(value.trim());
 }
 
-function confirmedMeetingSlot(request: MeetingRequestDto): MeetingRequestDto["slots"][number] | null {
+function confirmedMeetingSlot(
+  request: MeetingRequestDto
+): MeetingRequestDto["slots"][number] | null {
   return (
     request.slots.find((slot) => slot.id === request.selectedSlotId) ??
     request.slots.find((slot) => slot.status === "SELECTED") ??
@@ -2813,10 +3130,7 @@ function MeetingPanel({
     meetingState.windowEnd.trim().length > 0 &&
     !currentHasSlots;
 
-  const renderRequestCard = (
-    request: MeetingRequestDto,
-    options?: { historical?: boolean }
-  ) => {
+  const renderRequestCard = (request: MeetingRequestDto, options?: { historical?: boolean }) => {
     const briefing = briefingState.meetingBriefings.find(
       (item) => item.meetingRequestId === request.id
     );
@@ -2839,7 +3153,10 @@ function MeetingPanel({
           {request.partyNotificationNote ? <small>{request.partyNotificationNote}</small> : null}
         </div>
         {request.status === "CONFIRMED" ? (
-          <div className="meeting-provider-evidence" aria-label="Confirmed meeting provider evidence">
+          <div
+            className="meeting-provider-evidence"
+            aria-label="Confirmed meeting provider evidence"
+          >
             <span>
               <strong>Confirmed time</strong>
               {confirmedSlot ? formatSlotRange(confirmedSlot) : formatDate(request.confirmedAt)}
@@ -3081,6 +3398,7 @@ function ProposalReviewPanel({
     selectedProposal?.status === "DRAFT" || selectedProposal?.status === "WAITING_APPROVAL";
   const canSend = canApprove && selectedProposal?.status === "APPROVED";
   const latestVersion = selectedProposal?.currentVersion;
+  const hasMultipleProposals = proposalState.proposals.length > 1;
 
   if (proposalState.loading) {
     return (
@@ -3126,28 +3444,24 @@ function ProposalReviewPanel({
 
   return (
     <div className="tab-panel proposal-review">
-      <div className="proposal-actions proposal-toolbar">
-        <button disabled={proposalState.saving} onClick={() => void onRefresh()} type="button">
-          <Icon name="refresh" size={16} />
-          Refresh
-        </button>
-      </div>
-      <div className="proposal-list" aria-label="Proposal list">
-        {proposalState.proposals.map((proposal) => (
-          <button
-            className={`proposal-list-item ${
-              proposal.id === selectedProposal?.id ? "selected" : ""
-            }`}
-            key={proposal.id}
-            onClick={() => onSelect(proposal.id)}
-            type="button"
-          >
-            <strong>{proposal.title}</strong>
-            <span>{proposal.status.replaceAll("_", " ")}</span>
-            <small>v{proposal.currentVersion?.version ?? 0}</small>
-          </button>
-        ))}
-      </div>
+      {hasMultipleProposals ? (
+        <div className="proposal-list" aria-label="Proposal list">
+          {proposalState.proposals.map((proposal) => (
+            <button
+              className={`proposal-list-item ${
+                proposal.id === selectedProposal?.id ? "selected" : ""
+              }`}
+              key={proposal.id}
+              onClick={() => onSelect(proposal.id)}
+              type="button"
+            >
+              <strong>{proposal.title}</strong>
+              <span>{proposal.status.replaceAll("_", " ")}</span>
+              <small>v{proposal.currentVersion?.version ?? 0}</small>
+            </button>
+          ))}
+        </div>
+      ) : null}
 
       {selectedProposal ? (
         <section className="proposal-editor" aria-label="Proposal review">
@@ -3245,7 +3559,25 @@ function ProposalReviewPanel({
             )}
           </section>
 
-          <div className="proposal-actions">
+          {selectedProposal.zohoTimelineLastError ? (
+            <p className="form-error">Zoho timeline: {selectedProposal.zohoTimelineLastError}</p>
+          ) : null}
+          {proposalState.error ? <p className="form-error">{proposalState.error}</p> : null}
+          {proposalState.sendResult ? (
+            <div className="proposal-send-result" role="status">
+              <span>
+                Email {proposalState.sendResult.outboundEmail.status.replaceAll("_", " ")}
+              </span>
+              <span>
+                Zoho{" "}
+                {proposalState.sendResult.zohoTimeline
+                  ? proposalState.sendResult.zohoTimeline.status.replaceAll("_", " ")
+                  : selectedProposal.zohoTimelineSyncStatus.replaceAll("_", " ")}
+              </span>
+            </div>
+          ) : null}
+
+          <div className="proposal-actions proposal-primary-actions">
             <button
               disabled={
                 !canEdit ||
@@ -3285,24 +3617,6 @@ function ProposalReviewPanel({
               Refresh
             </button>
           </div>
-
-          {selectedProposal.zohoTimelineLastError ? (
-            <p className="form-error">Zoho timeline: {selectedProposal.zohoTimelineLastError}</p>
-          ) : null}
-          {proposalState.error ? <p className="form-error">{proposalState.error}</p> : null}
-          {proposalState.sendResult ? (
-            <div className="proposal-send-result" role="status">
-              <span>
-                Email {proposalState.sendResult.outboundEmail.status.replaceAll("_", " ")}
-              </span>
-              <span>
-                Zoho{" "}
-                {proposalState.sendResult.zohoTimeline
-                  ? proposalState.sendResult.zohoTimeline.status.replaceAll("_", " ")
-                  : selectedProposal.zohoTimelineSyncStatus.replaceAll("_", " ")}
-              </span>
-            </div>
-          ) : null}
         </section>
       ) : (
         <StateBlock title="Select a proposal" />
@@ -3315,7 +3629,28 @@ function nextFollowUpAttempt(sequence: FollowUpSequenceDto | null) {
   if (!sequence) {
     return null;
   }
-  return sequence.attempts.find((attempt) => ["SCHEDULED", "SENDING"].includes(attempt.status)) ?? null;
+  return (
+    sequence.attempts.find((attempt) => ["SCHEDULED", "SENDING"].includes(attempt.status)) ?? null
+  );
+}
+
+function activeFollowUpLeadAction(sequences: FollowUpSequenceDto[]): {
+  nextAction: string;
+  nextActionAt: string;
+} | null {
+  const sequence = sequences.find((item) => item.status === "ACTIVE") ?? null;
+  const attempt = nextFollowUpAttempt(sequence);
+  if (!attempt) {
+    return null;
+  }
+
+  return {
+    nextAction:
+      attempt.stepIndex === 0
+        ? "Send first follow-up email"
+        : `Send follow-up email ${String(attempt.stepIndex + 1)}`,
+    nextActionAt: attempt.scheduledAt
+  };
 }
 
 function formatFollowUpNextAction(sequence: FollowUpSequenceDto | null): string {
@@ -3324,7 +3659,9 @@ function formatFollowUpNextAction(sequence: FollowUpSequenceDto | null): string 
   }
 
   if (sequence.status === "ATTENTION_REQUIRED") {
-    return sequence.lastErrorMessage ?? "Attention required before follow-up automation can continue.";
+    return (
+      sequence.lastErrorMessage ?? "Attention required before follow-up automation can continue."
+    );
   }
 
   if (sequence.status === "STOPPED") {
@@ -3360,6 +3697,7 @@ function ConversationSimulator({
   onSendHumanReply,
   onSubmitE2ECustomerReply,
   onAccelerateFollowUpForE2E,
+  onRunCallingAttemptNowForE2E,
   onStartFollowUp,
   onStartConversation,
   onStartHumanTakeover
@@ -3378,6 +3716,7 @@ function ConversationSimulator({
   onSendHumanReply: () => Promise<void>;
   onSubmitE2ECustomerReply: () => Promise<void>;
   onAccelerateFollowUpForE2E: (sequenceId: string) => Promise<void>;
+  onRunCallingAttemptNowForE2E: () => Promise<void>;
   onStartFollowUp: () => Promise<void>;
   onStartConversation: () => Promise<void>;
   onStartHumanTakeover: () => Promise<void>;
@@ -3540,11 +3879,19 @@ function ConversationSimulator({
           </div>
         ) : null}
         <div className="proposal-actions">
+          {canSubmitE2ECustomerReply ? (
+            <button
+              disabled={conversationState.saving || isHumanConversation}
+              onClick={() => void onRunCallingAttemptNowForE2E()}
+              type="button"
+            >
+              <Icon name="send" size={16} />
+              Run AI call now (E2E)
+            </button>
+          ) : null}
           <button
             disabled={
-              conversationState.saving ||
-              latestFollowUp?.status === "ACTIVE" ||
-              isHumanConversation
+              conversationState.saving || latestFollowUp?.status === "ACTIVE" || isHumanConversation
             }
             onClick={() => void onStartFollowUp()}
             type="button"

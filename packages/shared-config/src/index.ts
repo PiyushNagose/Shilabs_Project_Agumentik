@@ -1,3 +1,5 @@
+import crypto from "node:crypto";
+
 export interface ApiConfig {
   host: string;
   port: number;
@@ -23,6 +25,7 @@ export interface WorkerConfig {
   domainEventDispatchLimit: number;
   domainEventDispatchIntervalMs: number;
   domainEventStaleAfterMs: number;
+  domainEventQueuedStaleAfterMs: number;
 }
 
 export interface AuthConfig {
@@ -90,6 +93,7 @@ export interface VoiceConfig {
     statusCallbackPath: string;
     voicebotAppPath: string;
     voicebotStreamPath: string;
+    webhookSecret: string;
   };
   voiceAi: {
     enabled: boolean;
@@ -99,6 +103,7 @@ export interface VoiceConfig {
     voice: string;
     sampleRate: 16000 | 24000;
     streamToken: string;
+    streamTokenTtlSeconds: number;
     localVoskModelPath: string;
     localPythonCommand: string;
     localTtsVoiceName: string;
@@ -145,6 +150,7 @@ export interface MessagingConfig {
     accountSid: string;
     authToken: string;
     sandboxFrom: string;
+    contentSid: string;
     defaultBody: string;
   };
 }
@@ -167,16 +173,28 @@ export function getApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
 }
 
 export function getWorkerConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
+  const domainEventDispatchIntervalMs = Number(env.DOMAIN_EVENT_DISPATCH_INTERVAL_MS ?? 60000);
+  const domainEventStaleAfterMs = Number(env.DOMAIN_EVENT_STALE_AFTER_MS ?? 900000);
+  const defaultQueuedStaleAfterMs = Math.min(
+    domainEventStaleAfterMs,
+    Math.max(domainEventDispatchIntervalMs * 2, 30000)
+  );
   return {
     redisUrl: env.REDIS_URL ?? "",
     nodeEnv: env.NODE_ENV ?? "development",
-    apiBaseUrl: env.WORKER_API_BASE_URL ?? env.API_BASE_URL ?? `http://localhost:${String(Number(env.API_PORT ?? 4000))}`,
+    apiBaseUrl:
+      env.WORKER_API_BASE_URL ??
+      env.API_BASE_URL ??
+      `http://localhost:${String(Number(env.API_PORT ?? 4000))}`,
     realtimeInternalSecret: env.REALTIME_INTERNAL_SECRET ?? "",
     domainEventQueueName: env.DOMAIN_EVENT_QUEUE_NAME ?? "domain-events",
     domainEventWorkerConcurrency: Number(env.DOMAIN_EVENT_WORKER_CONCURRENCY ?? 5),
     domainEventDispatchLimit: Number(env.DOMAIN_EVENT_DISPATCH_LIMIT ?? 25),
-    domainEventDispatchIntervalMs: Number(env.DOMAIN_EVENT_DISPATCH_INTERVAL_MS ?? 60000),
-    domainEventStaleAfterMs: Number(env.DOMAIN_EVENT_STALE_AFTER_MS ?? 900000)
+    domainEventDispatchIntervalMs,
+    domainEventStaleAfterMs,
+    domainEventQueuedStaleAfterMs: Number(
+      env.DOMAIN_EVENT_QUEUED_STALE_AFTER_MS ?? defaultQueuedStaleAfterMs
+    )
   };
 }
 
@@ -261,7 +279,8 @@ function parseTrustProxy(value: string | undefined): false | string | number {
 
 function parseNumberCsv(name: string, value: string | undefined, defaultValue: number[]): number[] {
   const raw = value?.trim();
-  const values = raw && raw.length > 0 ? raw.split(",").map((item) => Number(item.trim())) : defaultValue;
+  const values =
+    raw && raw.length > 0 ? raw.split(",").map((item) => Number(item.trim())) : defaultValue;
   if (
     values.length === 0 ||
     values.some((item) => !Number.isInteger(item) || item < 0 || item > 1440)
@@ -361,11 +380,19 @@ export function getCalendarConfig(env: NodeJS.ProcessEnv = process.env): Calenda
 export function getVoiceConfig(env: NodeJS.ProcessEnv = process.env): VoiceConfig {
   const timeoutMs = Number(env.VOICE_TIMEOUT_MS ?? 30000);
   const maxRetries = Number(env.VOICE_MAX_RETRIES ?? 1);
+  const streamTokenTtlSeconds = Number(env.VOICE_AI_STREAM_TOKEN_TTL_SECONDS ?? 300);
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 120000) {
     throw new Error("VOICE_TIMEOUT_MS must be an integer between 1000 and 120000");
   }
   if (!Number.isInteger(maxRetries) || maxRetries < 0 || maxRetries > 5) {
     throw new Error("VOICE_MAX_RETRIES must be an integer between 0 and 5");
+  }
+  if (
+    !Number.isInteger(streamTokenTtlSeconds) ||
+    streamTokenTtlSeconds < 30 ||
+    streamTokenTtlSeconds > 3600
+  ) {
+    throw new Error("VOICE_AI_STREAM_TOKEN_TTL_SECONDS must be an integer between 30 and 3600");
   }
 
   return {
@@ -398,8 +425,7 @@ export function getVoiceConfig(env: NodeJS.ProcessEnv = process.env): VoiceConfi
       authToken: env.TWILIO_AUTH_TOKEN ?? "",
       fromNumber: env.TWILIO_FROM_NUMBER ?? "",
       statusCallbackPath: env.TWILIO_STATUS_CALLBACK_PATH ?? "/api/voice/twilio/status",
-      recordingCallbackPath:
-        env.TWILIO_RECORDING_CALLBACK_PATH ?? "/api/voice/twilio/recording"
+      recordingCallbackPath: env.TWILIO_RECORDING_CALLBACK_PATH ?? "/api/voice/twilio/recording"
     },
     exotel: {
       accountSid: env.EXOTEL_ACCOUNT_SID ?? "",
@@ -411,8 +437,8 @@ export function getVoiceConfig(env: NodeJS.ProcessEnv = process.env): VoiceConfi
       agentNumber: env.EXOTEL_AGENT_NUMBER ?? "",
       statusCallbackPath: env.EXOTEL_STATUS_CALLBACK_PATH ?? "/api/voice/exotel/status",
       voicebotAppPath: env.EXOTEL_VOICEBOT_APP_PATH ?? "/api/voice/exotel/voicebot",
-      voicebotStreamPath:
-        env.EXOTEL_VOICEBOT_STREAM_PATH ?? "/api/voice/exotel/voicebot/stream"
+      voicebotStreamPath: env.EXOTEL_VOICEBOT_STREAM_PATH ?? "/api/voice/exotel/voicebot/stream",
+      webhookSecret: env.EXOTEL_WEBHOOK_SECRET ?? ""
     },
     voiceAi: {
       enabled: parseBooleanEnv("VOICE_AI_ENABLED", env.VOICE_AI_ENABLED, false),
@@ -421,13 +447,70 @@ export function getVoiceConfig(env: NodeJS.ProcessEnv = process.env): VoiceConfi
       openaiApiKey: env.VOICE_AI_OPENAI_API_KEY ?? env.OPENAI_API_KEY ?? "",
       model: env.VOICE_AI_OPENAI_MODEL ?? "gpt-realtime",
       voice: env.VOICE_AI_OPENAI_VOICE ?? "alloy",
-      sampleRate: (Number(env.VOICE_AI_AUDIO_SAMPLE_RATE ?? 16000) === 24000 ? 24000 : 16000),
+      sampleRate: Number(env.VOICE_AI_AUDIO_SAMPLE_RATE ?? 16000) === 24000 ? 24000 : 16000,
       streamToken: env.VOICE_AI_STREAM_TOKEN ?? "",
+      streamTokenTtlSeconds,
       localVoskModelPath: env.VOICE_AI_LOCAL_VOSK_MODEL_PATH ?? "",
       localPythonCommand: env.VOICE_AI_LOCAL_PYTHON_COMMAND ?? "python",
       localTtsVoiceName: env.VOICE_AI_LOCAL_TTS_VOICE_NAME ?? ""
     }
   };
+}
+
+function timingSafeTextEqual(expected: string, actual: string): boolean {
+  const expectedBuffer = Buffer.from(expected);
+  const actualBuffer = Buffer.from(actual);
+  return (
+    expectedBuffer.length === actualBuffer.length &&
+    crypto.timingSafeEqual(expectedBuffer, actualBuffer)
+  );
+}
+
+export function verifySharedSecret(expected: string, actual: string | undefined): boolean {
+  return Boolean(expected && actual && timingSafeTextEqual(expected, actual));
+}
+
+export function createExpiringVoiceStreamToken(input: {
+  secret: string;
+  ttlSeconds: number;
+  now?: Date;
+  nonce?: string;
+}): string {
+  if (!input.secret) throw new Error("Voice stream signing secret is not configured");
+  const expiresAt = Math.floor((input.now ?? new Date()).getTime() / 1000) + input.ttlSeconds;
+  const nonce = input.nonce ?? crypto.randomBytes(18).toString("base64url");
+  const payload = `${String(expiresAt)}.${nonce}`;
+  const signature = crypto.createHmac("sha256", input.secret).update(payload).digest("base64url");
+  return `v1.${payload}.${signature}`;
+}
+
+export function verifyExpiringVoiceStreamToken(input: {
+  token: string | null | undefined;
+  secret: string;
+  now?: Date;
+}): boolean {
+  if (!input.token || !input.secret) return false;
+  const [version, expiresAtText, nonce, signature, ...extra] = input.token.split(".");
+  if (version !== "v1" || !expiresAtText || !nonce || !signature || extra.length > 0) return false;
+  const expiresAt = Number(expiresAtText);
+  if (
+    !Number.isSafeInteger(expiresAt) ||
+    expiresAt < Math.floor((input.now ?? new Date()).getTime() / 1000)
+  ) {
+    return false;
+  }
+  const expected = crypto
+    .createHmac("sha256", input.secret)
+    .update(`${expiresAtText}.${nonce}`)
+    .digest("base64url");
+  return timingSafeTextEqual(expected, signature);
+}
+
+export function addExotelWebhookCredential(url: string, secret: string): string {
+  if (!secret) return url;
+  const parsed = new URL(url);
+  parsed.searchParams.set("exotel_auth", secret);
+  return parsed.toString();
 }
 
 export function getCallingAutomationConfig(
@@ -455,7 +538,9 @@ export function getCallingAutomationConfig(
     waitDaysAfterSameDay < 1 ||
     waitDaysAfterSameDay > 30
   ) {
-    throw new Error("CALLING_AUTOMATION_WAIT_DAYS_AFTER_SAME_DAY must be an integer between 1 and 30");
+    throw new Error(
+      "CALLING_AUTOMATION_WAIT_DAYS_AFTER_SAME_DAY must be an integer between 1 and 30"
+    );
   }
   if (!Number.isInteger(maxAttempts) || maxAttempts < attemptsSameDay || maxAttempts > 10) {
     throw new Error(
@@ -481,9 +566,11 @@ export function getFollowUpTimingConfig(
   const productionCadenceDays = [0, 1, 5, 9];
   const offsetsMinutes =
     mode === "e2e_accelerated_minutes"
-      ? parseNumberCsv("FOLLOW_UP_E2E_CADENCE_MINUTES", env.FOLLOW_UP_E2E_CADENCE_MINUTES, [
-          0, 1, 3, 5
-        ])
+      ? parseNumberCsv(
+          "FOLLOW_UP_E2E_CADENCE_MINUTES",
+          env.FOLLOW_UP_E2E_CADENCE_MINUTES,
+          [0, 1, 3, 5]
+        )
       : productionCadenceDays.map((day) => day * 24 * 60);
 
   if (offsetsMinutes.length !== productionCadenceDays.length) {
@@ -545,6 +632,7 @@ export function getMessagingConfig(env: NodeJS.ProcessEnv = process.env): Messag
       accountSid: env.TWILIO_WHATSAPP_ACCOUNT_SID ?? env.TWILIO_ACCOUNT_SID ?? "",
       authToken: env.TWILIO_WHATSAPP_AUTH_TOKEN ?? env.TWILIO_AUTH_TOKEN ?? "",
       sandboxFrom: env.TWILIO_WHATSAPP_SANDBOX_FROM ?? "",
+      contentSid: env.TWILIO_WHATSAPP_CONTENT_SID ?? "",
       defaultBody:
         env.TWILIO_WHATSAPP_DEFAULT_BODY ??
         "Hello from Shilabs AI Sales Engine. Reply here and our team will follow up."

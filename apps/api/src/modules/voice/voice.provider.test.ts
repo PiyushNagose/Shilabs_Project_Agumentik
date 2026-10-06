@@ -34,7 +34,8 @@ function buildConfig(overrides: Partial<VoiceConfig> = {}): VoiceConfig {
       agentNumber: "",
       statusCallbackPath: "/api/voice/exotel/status",
       voicebotAppPath: "/api/voice/exotel/voicebot",
-      voicebotStreamPath: "/api/voice/exotel/voicebot/stream"
+      voicebotStreamPath: "/api/voice/exotel/voicebot/stream",
+      webhookSecret: "test-exotel-webhook-secret"
     },
     voiceAi: {
       enabled: false,
@@ -44,6 +45,7 @@ function buildConfig(overrides: Partial<VoiceConfig> = {}): VoiceConfig {
       voice: "alloy",
       sampleRate: 16000,
       streamToken: "",
+      streamTokenTtlSeconds: 300,
       localVoskModelPath: "",
       localPythonCommand: "python",
       localTtsVoiceName: ""
@@ -134,8 +136,12 @@ describe("Exotel voice provider", () => {
       status: "CONFIGURED",
       configured: true
     });
-    expect(requests[0]?.url).toBe("https://api.exotel.test/v1/Accounts/exotel-account/Calls.json?PageSize=1");
-    expect(requests[0]?.authorization).toBe(`Basic ${Buffer.from("exotel-key:exotel-token").toString("base64")}`);
+    expect(requests[0]?.url).toBe(
+      "https://api.exotel.test/v1/Accounts/exotel-account/Calls.json?PageSize=1"
+    );
+    expect(requests[0]?.authorization).toBe(
+      `Basic ${Buffer.from("exotel-key:exotel-token").toString("base64")}`
+    );
   });
 
   it("creates real Exotel outbound call requests and only accepts provider call IDs", async () => {
@@ -168,12 +174,18 @@ describe("Exotel voice provider", () => {
       providerCallId: "exotel-call-1",
       providerStatus: "queued"
     });
-    expect(requests[0]?.url).toBe("https://api.exotel.test/v1/Accounts/exotel-account/Calls/connect.json");
-    expect(requests[0]?.authorization).toBe(`Basic ${Buffer.from("exotel-key:exotel-token").toString("base64")}`);
+    expect(requests[0]?.url).toBe(
+      "https://api.exotel.test/v1/Accounts/exotel-account/Calls/connect.json"
+    );
+    expect(requests[0]?.authorization).toBe(
+      `Basic ${Buffer.from("exotel-key:exotel-token").toString("base64")}`
+    );
     expect(requests[0]?.body.get("From")).toBe("+919876543210");
     expect(requests[0]?.body.get("CallerId")).toBe("08000000000");
     expect(requests[0]?.body.get("Url")).toBe("https://voice-e2e.example.test/exotel-flow");
-    expect(requests[0]?.body.get("StatusCallback")).toBe("https://voice-e2e.example.test/api/voice/exotel/status");
+    expect(requests[0]?.body.get("StatusCallback")).toBe(
+      "https://voice-e2e.example.test/api/voice/exotel/status?exotel_auth=test-exotel-webhook-secret"
+    );
     expect(requests[0]?.body.get("CustomField")).toBe("r22-exotel-provider-call");
   });
 
@@ -181,7 +193,9 @@ describe("Exotel voice provider", () => {
     const requests: { body: URLSearchParams }[] = [];
     const transport: VoiceTransport = (_url, init) => {
       requests.push({ body: init?.body as URLSearchParams });
-      return Promise.resolve(Response.json({ Call: { Sid: "exotel-ai-call-1", Status: "queued" } }));
+      return Promise.resolve(
+        Response.json({ Call: { Sid: "exotel-ai-call-1", Status: "queued" } })
+      );
     };
     const baseConfig = buildConfig();
     const provider = new ExotelVoiceProvider(
@@ -209,9 +223,12 @@ describe("Exotel voice provider", () => {
       status: "ACCEPTED",
       providerCallId: "exotel-ai-call-1"
     });
-    expect(requests[0]?.body.get("StreamUrl")).toBe(
-      "wss://voice-e2e.example.test/api/voice/exotel/voicebot/stream/stream-token?sample-rate=16000"
+    const streamUrl = new URL(requests[0]?.body.get("StreamUrl") ?? "");
+    expect(streamUrl.origin + streamUrl.pathname.replace(/\/[^/]+$/u, "")).toBe(
+      "wss://voice-e2e.example.test/api/voice/exotel/voicebot/stream"
     );
+    expect(streamUrl.pathname).not.toContain("/stream-token");
+    expect(streamUrl.searchParams.get("sample-rate")).toBe("16000");
     expect(requests[0]?.body.get("StreamType")).toBe("bidirectional");
     expect(requests[0]?.body.has("Url")).toBe(false);
     expect(requests[0]?.body.has("CallType")).toBe(false);
@@ -224,7 +241,10 @@ describe("Exotel voice provider", () => {
       return Promise.resolve(Response.json({ Call: { Sid: "must-not-call" } }));
     };
     const provider = new ExotelVoiceProvider(
-      buildConfig({ provider: "exotel", exotel: { ...buildConfig().exotel, agentNumber: "7724960195" } }),
+      buildConfig({
+        provider: "exotel",
+        exotel: { ...buildConfig().exotel, agentNumber: "7724960195" }
+      }),
       transport
     );
 

@@ -8,7 +8,8 @@ import {
   markDomainEventFailed,
   markDomainEventProcessed,
   publishDomainEvent,
-  retryDomainEvent
+  retryDomainEvent,
+  canPublishDomainEventRealtimeImmediately
 } from "./domain-events.service.js";
 
 const actorEmail = "r11-domain-events-admin@example.local";
@@ -144,6 +145,61 @@ describe("R11 domain event outbox", () => {
     expect(processed.lockedBy).toBeNull();
   });
 
+  it.each(["PENDING", "QUEUED", "PROCESSING", "PROCESSED"] as const)(
+    "rejects an operator retry while an event is %s",
+    async (status) => {
+      const actor = await seedActor();
+      const event = await publishDomainEvent({
+        eventType: "REPLY_UNDERSTOOD",
+        aggregateType: "ReplyProcessingRun",
+        aggregateId: `run-r11-invalid-retry-${status}`,
+        idempotencyKey: `r11-domain-event:invalid-retry:${status}`,
+        payload: { leadId: "lead-r11" }
+      });
+      await prisma.domainEventOutbox.update({
+        where: { id: event.id },
+        data: { status }
+      });
+
+      await expect(retryDomainEvent(actor, event.id)).rejects.toMatchObject({
+        statusCode: 409,
+        code: "CONFLICT"
+      });
+    }
+  );
+
+  it("resets exhausted attempt and queue state only for an attention event", async () => {
+    const actor = await seedActor();
+    const event = await publishDomainEvent({
+      eventType: "REPLY_UNDERSTOOD",
+      aggregateType: "ReplyProcessingRun",
+      aggregateId: "run-r11-attention-retry",
+      idempotencyKey: "r11-domain-event:attention-retry",
+      payload: { leadId: "lead-r11" }
+    });
+    await prisma.domainEventOutbox.update({
+      where: { id: event.id },
+      data: {
+        status: "ATTENTION_REQUIRED",
+        attempts: 5,
+        queueName: "domain-events",
+        queueJobId: "old-job",
+        queuedAt: new Date(),
+        deadLetteredAt: new Date(),
+        lastErrorCode: "FAILED"
+      }
+    });
+
+    await expect(retryDomainEvent(actor, event.id)).resolves.toMatchObject({
+      status: "PENDING",
+      attempts: 0,
+      queueName: null,
+      queueJobId: null,
+      deadLetteredAt: null,
+      lastErrorCode: null
+    });
+  });
+
   it("rolls back events when the surrounding transaction rolls back", async () => {
     await expect(
       prisma.$transaction(async (tx) => {
@@ -165,5 +221,13 @@ describe("R11 domain event outbox", () => {
         where: { idempotencyKey: "r11-domain-event:rollback" }
       })
     ).resolves.toBe(0);
+  });
+
+  it("defers realtime publication for events created inside a transaction", async () => {
+    expect(canPublishDomainEventRealtimeImmediately(undefined)).toBe(true);
+    await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT 1`;
+      expect(canPublishDomainEventRealtimeImmediately(tx)).toBe(false);
+    });
   });
 });

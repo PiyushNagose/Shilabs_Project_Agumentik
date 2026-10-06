@@ -1,15 +1,17 @@
-import type { DomainEventOutbox } from "@prisma/client";
+import { Prisma, type DomainEventOutbox } from "@prisma/client";
 import {
   completeDomainEvent,
   getExecutionContext,
   recordDomainEventFailure,
-  startDomainEventProcessing
+  startDomainEventProcessing,
+  workerPrisma
 } from "./domain-event.repository.js";
 import { followUpDomainEventHandlers } from "../followups/followup-email.handler.js";
 import { callingDomainEventHandlers } from "../calling/calling-automation.handler.js";
 import { whatsAppDomainEventHandlers } from "../messaging/whatsapp-send.handler.js";
 import { PermanentDomainEventError } from "./domain-event.errors.js";
 import { publishWorkerRealtimeEvent } from "../realtime/realtime.publisher.js";
+import { meetingDomainEventHandlers } from "../meetings/meeting-confirmed.handler.js";
 
 const INTERNAL_EVENT_TYPES = new Set([
   "REPLY_UNDERSTOOD",
@@ -24,11 +26,17 @@ const INTERNAL_EVENT_TYPES = new Set([
   "CALL_REQUESTED",
   "CALL_STATUS_UPDATED",
   "CALL_FAILED",
-  "VOICE_CONVERSATION_COMPLETED"
+  "VOICE_CONVERSATION_COMPLETED",
+  "MEETING_REQUESTED",
+  "NOTIFICATION_ACKNOWLEDGED",
+  "PROPOSAL_GENERATED",
+  "PROPOSAL_APPROVED",
+  "PROPOSAL_SENT"
 ]);
 
 const COMMUNICATION_SIDE_EFFECT_EVENTS = new Set([
   "EMAIL_SEND_REQUESTED",
+  "FOLLOWUP_EMAIL_SEND_REQUESTED",
   "FOLLOWUP_DUE",
   "CALL_REQUESTED",
   "WHATSAPP_SEND_REQUESTED",
@@ -90,11 +98,82 @@ async function assertExecutionEligible(event: DomainEventOutbox): Promise<void> 
   }
 }
 
+async function hydrateCommunicationContext(event: DomainEventOutbox): Promise<DomainEventOutbox> {
+  const payload = event.payload as Prisma.JsonObject;
+  if (typeof payload.leadId === "string") return event;
+
+  if (event.aggregateType === "CallingAttempt") {
+    const attempt = await workerPrisma.callingAttempt.findUnique({
+      where: { id: event.aggregateId },
+      select: { id: true, leadId: true, contactId: true, sequenceId: true }
+    });
+    if (!attempt) return event;
+    return {
+      ...event,
+      payload: {
+        ...payload,
+        leadId: attempt.leadId,
+        contactId: attempt.contactId,
+        callingAttemptId: typeof payload.callingAttemptId === "string" ? payload.callingAttemptId : attempt.id,
+        callingSequenceId:
+          typeof payload.callingSequenceId === "string" ? payload.callingSequenceId : attempt.sequenceId
+      }
+    };
+  }
+
+  if (event.aggregateType === "FollowUpAttempt") {
+    const attempt = await workerPrisma.followUpAttempt.findUnique({
+      where: { id: event.aggregateId },
+      select: {
+        id: true,
+        leadId: true,
+        sequenceId: true,
+        sequence: { select: { conversationId: true } }
+      }
+    });
+    if (!attempt) return event;
+    return {
+      ...event,
+      payload: {
+        ...payload,
+        leadId: attempt.leadId,
+        followUpAttemptId:
+          typeof payload.followUpAttemptId === "string" ? payload.followUpAttemptId : attempt.id,
+        followUpSequenceId:
+          typeof payload.followUpSequenceId === "string" ? payload.followUpSequenceId : attempt.sequenceId,
+        conversationId:
+          typeof payload.conversationId === "string" ? payload.conversationId : attempt.sequence.conversationId
+      }
+    };
+  }
+
+  if (event.aggregateType === "OutboundWhatsAppMessage") {
+    const message = await workerPrisma.outboundWhatsAppMessage.findUnique({
+      where: { id: event.aggregateId },
+      select: { leadId: true, contactId: true, conversationId: true, callingAttemptId: true }
+    });
+    if (!message) return event;
+    return {
+      ...event,
+      payload: {
+        ...payload,
+        leadId: message.leadId,
+        contactId: message.contactId,
+        ...(message.conversationId ? { conversationId: message.conversationId } : {}),
+        ...(message.callingAttemptId ? { callingAttemptId: message.callingAttemptId } : {})
+      }
+    };
+  }
+
+  return event;
+}
+
 async function processEvent(event: DomainEventOutbox, handlers: DomainEventHandlerMap): Promise<void> {
-  await assertExecutionEligible(event);
-  const handler = handlers[event.eventType];
+  const hydratedEvent = await hydrateCommunicationContext(event);
+  await assertExecutionEligible(hydratedEvent);
+  const handler = handlers[hydratedEvent.eventType];
   if (handler) {
-    await handler.handle(event);
+    await handler.handle(hydratedEvent);
     return;
   }
   if (INTERNAL_EVENT_TYPES.has(event.eventType)) {
@@ -126,7 +205,8 @@ export async function processDomainEventJob(input: {
     await processEvent(event, input.handlers ?? {
       ...followUpDomainEventHandlers,
       ...callingDomainEventHandlers,
-      ...whatsAppDomainEventHandlers
+      ...whatsAppDomainEventHandlers,
+      ...meetingDomainEventHandlers
     });
     await completeDomainEvent({ eventId: event.id, workerId: input.workerId, now: new Date() });
     await publishWorkerRealtimeEvent({

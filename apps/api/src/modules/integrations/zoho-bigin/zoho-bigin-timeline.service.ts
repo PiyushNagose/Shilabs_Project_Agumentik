@@ -148,13 +148,18 @@ export async function appendActivityToZohoTimeline(input: {
       lastError: null
     };
   } catch (error) {
+    const lastError = sanitizeError(error);
+    await prisma.integrationAccount.update({
+      where: { id: account.id },
+      data: { status: "ERROR", lastCheckedAt: new Date(), lastError }
+    });
     return {
       provider: "ZOHO_BIGIN",
       status: "FAILED",
       activityId: activity.id,
       mappingId: null,
       externalRecordId: null,
-      lastError: sanitizeError(error)
+      lastError
     };
   }
 }

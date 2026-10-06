@@ -1,20 +1,24 @@
 # Shilabs AI Sales Automation
 
-Connector-first AI sales automation layer for Zoho Bigin. Zoho Bigin is the CRM system of
-record; this application owns local automation/orchestration state, integration mappings,
-qualification evidence, approvals, retries, audit/history and operator workflows.
+AI sales automation platform evolving into the Shilabs AI-native CRM. PostgreSQL is the
+canonical store for local CRM and automation state; Zoho Bigin remains an import/sync
+integration rather than the internal source of truth.
 
-## M0 Scope
+## Current Scope
 
-This repository currently contains only the monorepo scaffold:
+The current Phase 1 implementation includes:
 
-- React + TypeScript web app in `apps/web`
-- Node.js + TypeScript API in `apps/api`
-- Node.js + TypeScript worker in `apps/worker`
-- Shared packages in `packages/*`
-- PostgreSQL and Redis local services in `docker-compose.yml`
+- lead/contact/company/deal persistence and pipeline stages
+- email, WhatsApp, voice and conversation histories
+- AI reply understanding, qualification, scoring, proposals and briefings
+- follow-up/calling automation with a PostgreSQL outbox and BullMQ/Redis worker
+- meeting requests, Google Calendar integration, DNC and human takeover
+- targeted WebSocket invalidation with persisted HTTP state as source of truth
+- operational and sales-action dashboards
 
-Business modules such as CRM, AI, WhatsApp, automation, meetings and analytics are intentionally not implemented in M0.
+The target architecture and constraints are documented in
+`docs/Shilabs_CRM_Master_Architecture_Spec.md`. The current checkpoint and dirty-tree
+inventory are documented in `docs/phase-0-baseline.md`.
 
 ## Commands
 
@@ -30,6 +34,7 @@ npm run dev:worker
 npm run type-check
 npm run lint
 npm run format
+# Tests require an explicit isolated TEST_DATABASE_URL; see .env.test.example.
 npm test
 ```
 

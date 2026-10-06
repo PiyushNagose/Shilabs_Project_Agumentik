@@ -417,7 +417,7 @@ export class GoogleCalendarProvider implements CalendarProvider {
       const response = await this.requestWithRetry(
         `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
           this.config.google.calendarId
-        )}/events?sendUpdates=none`,
+        )}/events?sendUpdates=all`,
         {
           method: "POST",
           headers: {

@@ -12,6 +12,7 @@ import { publishDomainEvent } from "../domain-events/domain-events.service.js";
 import { toDealDto } from "../deals/deal.service.js";
 import { findLeadById } from "../leads/lead.repository.js";
 import { toLeadDto } from "../leads/lead.service.js";
+import { publishRealtimeEvent } from "../realtime/realtime.service.js";
 import {
   findProposalById,
   findProposalByIdempotencyKey,
@@ -469,6 +470,51 @@ export async function recordProposalSentAfterProviderConfirmation(
           description: `Proposal sent: ${existing.title} (${existing.id})`
         }
       });
+      await tx.lead.update({
+        where: { id: existing.leadId },
+        data: {
+          nextAction: "Await customer response",
+          nextActionAt: null,
+          lastActivityAt: sentAt
+        }
+      });
+      const conversationsToResume = await tx.conversation.findMany({
+        where: {
+          leadId: existing.leadId,
+          mode: "HUMAN",
+          humanTakeovers: { none: { status: "ACTIVE" } },
+          negotiationHandoffs: { none: { status: "ACTIVE" } }
+        },
+        select: { id: true, mode: true, status: true }
+      });
+      if (conversationsToResume.length > 0) {
+        await tx.conversation.updateMany({
+          where: { id: { in: conversationsToResume.map((conversation) => conversation.id) } },
+          data: { mode: "AUTO" }
+        });
+        for (const conversation of conversationsToResume) {
+          await tx.auditEvent.create({
+            data: {
+              actorType: "USER",
+              actorId: actor.id,
+              entityType: "Conversation",
+              entityId: conversation.id,
+              action: "AI_AUTOMATION_RESUMED_AFTER_PROPOSAL_SENT",
+              before: {
+                id: conversation.id,
+                mode: conversation.mode,
+                status: conversation.status
+              },
+              after: {
+                id: conversation.id,
+                mode: "AUTO",
+                status: conversation.status,
+                reason: "Proposal sent to customer"
+              }
+            }
+          });
+        }
+      }
       await tx.auditEvent.create({
         data: {
           actorType: "USER",
@@ -499,6 +545,11 @@ export async function recordProposalSentAfterProviderConfirmation(
     },
     { maxWait: 10000, timeout: 30000 }
   );
+  await publishRealtimeEvent({
+    entityType: "lead",
+    action: "proposal-sent",
+    leadId: existing.leadId
+  });
 
   return toProposalDto(await loadProposal(proposal.id));
 }

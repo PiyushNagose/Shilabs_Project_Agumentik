@@ -1,5 +1,9 @@
 import crypto from "node:crypto";
-import type { VoiceConfig } from "@shilabs/shared-config";
+import {
+  addExotelWebhookCredential,
+  createExpiringVoiceStreamToken,
+  type VoiceConfig
+} from "@shilabs/shared-config";
 import type { VoiceHealthDto } from "@shilabs/shared-types";
 import { redactSecrets } from "../../shared/redaction.js";
 
@@ -58,13 +62,15 @@ function missingExotelConfig(config: VoiceConfig): string[] {
   if (config.voiceAi.enabled && !config.voiceAi.streamToken) {
     missing.push("VOICE_AI_STREAM_TOKEN");
   }
+  if (!config.exotel.webhookSecret) missing.push("EXOTEL_WEBHOOK_SECRET");
   if (!config.webhookBaseUrl) missing.push("VOICE_WEBHOOK_BASE_URL");
   return missing;
 }
 
 function baseHealth(config: VoiceConfig, status: VoiceHealthDto["status"]): VoiceHealthDto {
   return {
-    provider: config.provider === "twilio" ? "TWILIO" : config.provider === "exotel" ? "EXOTEL" : "NONE",
+    provider:
+      config.provider === "twilio" ? "TWILIO" : config.provider === "exotel" ? "EXOTEL" : "NONE",
     status,
     configured: status === "CONFIGURED",
     checkedAt: new Date().toISOString(),
@@ -121,14 +127,34 @@ function exotelApiBaseUrl(config: VoiceConfig): string {
 }
 
 function exotelVoiceAiStreamUrl(config: VoiceConfig): string {
-  const base = config.webhookBaseUrl.replace(/\/$/u, "").replace(/^http:/u, "ws:").replace(/^https:/u, "wss:");
-  const streamPath = `${config.exotel.voicebotStreamPath.replace(/\/$/u, "")}/${encodeURIComponent(
-    config.voiceAi.streamToken
-  )}`;
+  const base = config.webhookBaseUrl
+    .replace(/\/$/u, "")
+    .replace(/^http:/u, "ws:")
+    .replace(/^https:/u, "wss:");
+  const credential = createExpiringVoiceStreamToken({
+    secret: config.voiceAi.streamToken,
+    ttlSeconds: config.voiceAi.streamTokenTtlSeconds
+  });
+  const streamPath = `${config.exotel.voicebotStreamPath.replace(/\/$/u, "")}/${encodeURIComponent(credential)}`;
   const params = new URLSearchParams({
     "sample-rate": String(config.voiceAi.sampleRate)
   });
   return `${base}${streamPath}?${params.toString()}`;
+}
+
+function exotelAppUrl(config: VoiceConfig): string {
+  const appUrl = config.exotel.appUrl;
+  const internalVoicebotUrl = `${config.webhookBaseUrl.replace(/\/$/u, "")}${config.exotel.voicebotAppPath}`;
+  try {
+    const app = new URL(appUrl);
+    const internal = new URL(internalVoicebotUrl);
+    if (app.origin === internal.origin && app.pathname === internal.pathname) {
+      return addExotelWebhookCredential(appUrl, config.exotel.webhookSecret);
+    }
+  } catch {
+    return appUrl;
+  }
+  return appUrl;
 }
 
 function exotelCallPayload(body: Record<string, unknown> | null): Record<string, unknown> | null {
@@ -265,9 +291,7 @@ export class TwilioVoiceProvider implements VoiceProvider {
     }
   }
 
-  public async createOutboundCall(
-    input: VoiceOutboundCallInput
-  ): Promise<VoiceOutboundCallResult> {
+  public async createOutboundCall(input: VoiceOutboundCallInput): Promise<VoiceOutboundCallResult> {
     const missingConfig = missingTwilioConfig(this.config);
     if (missingConfig.length > 0) {
       return {
@@ -401,9 +425,7 @@ export class ExotelVoiceProvider implements VoiceProvider {
     }
   }
 
-  public async createOutboundCall(
-    input: VoiceOutboundCallInput
-  ): Promise<VoiceOutboundCallResult> {
+  public async createOutboundCall(input: VoiceOutboundCallInput): Promise<VoiceOutboundCallResult> {
     const missingConfig = missingExotelConfig(this.config);
     if (missingConfig.length > 0) {
       return {
@@ -419,7 +441,10 @@ export class ExotelVoiceProvider implements VoiceProvider {
       const body = new URLSearchParams({
         From: input.to,
         CallerId: input.from,
-        StatusCallback: input.statusCallbackUrl,
+        StatusCallback: addExotelWebhookCredential(
+          input.statusCallbackUrl,
+          this.config.exotel.webhookSecret
+        ),
         CustomField: input.idempotencyKey
       });
       if (this.config.exotel.agentNumber) {
@@ -433,7 +458,7 @@ export class ExotelVoiceProvider implements VoiceProvider {
         body.set("StreamType", "bidirectional");
       } else {
         body.set("CallType", "trans");
-        body.set("Url", this.config.exotel.appUrl);
+        body.set("Url", exotelAppUrl(this.config));
       }
 
       const response = await requestWithRetry(

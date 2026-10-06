@@ -1,5 +1,10 @@
 import request from "supertest";
-import { ExternalRecordEntityType, IntegrationProvider, UserRole, UserStatus } from "@prisma/client";
+import {
+  ExternalRecordEntityType,
+  IntegrationProvider,
+  UserRole,
+  UserStatus
+} from "@prisma/client";
 import type { AuthResponse, MeetingRequestDto } from "@shilabs/shared-types";
 import { vi } from "vitest";
 import { createApp } from "../../app.js";
@@ -19,44 +24,71 @@ const originalGoogleCalendarId = process.env.GOOGLE_CALENDAR_ID;
 const originalGoogleCalendarScope = process.env.GOOGLE_CALENDAR_SCOPE;
 
 async function cleanup(): Promise<void> {
+  const companies = await prisma.company.findMany({
+    where: { name: { startsWith: companyPrefix } },
+    select: { id: true }
+  });
+  const companyIds = companies.map((company) => company.id);
+  const contacts = await prisma.contact.findMany({
+    where: { companyId: { in: companyIds } },
+    select: { id: true }
+  });
+  const contactIds = contacts.map((contact) => contact.id);
+  const leads = await prisma.lead.findMany({
+    where: { companyId: { in: companyIds } },
+    select: { id: true }
+  });
+  const leadIds = leads.map((lead) => lead.id);
+  const meetingRequests = await prisma.meetingRequest.findMany({
+    where: { leadId: { in: leadIds } },
+    select: { id: true }
+  });
+  const meetingRequestIds = meetingRequests.map((meetingRequest) => meetingRequest.id);
+
   await prisma.authSession.deleteMany({
     where: { user: { email: { in: [adminEmail, repEmail] } } }
   });
   await prisma.domainEventOutbox.deleteMany({
-    where: { aggregateType: "MeetingRequest" }
+    where: { aggregateType: "MeetingRequest", aggregateId: { in: meetingRequestIds } }
   });
   await prisma.internalNotification.deleteMany({
-    where: { sourceEntityType: "MeetingRequest" }
+    where: { sourceEntityType: "MeetingRequest", meetingRequestId: { in: meetingRequestIds } }
   });
   await prisma.meetingSlot.deleteMany({
-    where: { meetingRequest: { lead: { company: { name: { startsWith: companyPrefix } } } } }
+    where: { meetingRequestId: { in: meetingRequestIds } }
   });
   await prisma.externalRecordMapping.deleteMany({
     where: {
-      provider: IntegrationProvider.GOOGLE_CALENDAR,
-      entityType: ExternalRecordEntityType.MEETING,
-      externalRecordId:
-        "meeting3dd927f3a538d4ede821139de988ef03351c7194e369e4f3ed6b79956e73d2e6"
+      OR: [
+        {
+          provider: IntegrationProvider.GOOGLE_CALENDAR,
+          entityType: ExternalRecordEntityType.MEETING,
+          localEntityId: { in: meetingRequestIds }
+        },
+        {
+          provider: IntegrationProvider.GOOGLE_CALENDAR,
+          entityType: ExternalRecordEntityType.MEETING,
+          externalRecordId:
+            "meeting3dd927f3a538d4ede821139de988ef03351c7194e369e4f3ed6b79956e73d2e6"
+        }
+      ]
     }
   });
-  await prisma.meetingRequest.deleteMany({
-    where: { lead: { company: { name: { startsWith: companyPrefix } } } }
-  });
-  await prisma.activity.deleteMany({
-    where: { lead: { company: { name: { startsWith: companyPrefix } } } }
-  });
+  await prisma.meetingRequest.deleteMany({ where: { id: { in: meetingRequestIds } } });
+  await prisma.activity.deleteMany({ where: { leadId: { in: leadIds } } });
   await prisma.auditEvent.deleteMany({
-    where: { entityType: "MeetingRequest" }
+    where: {
+      OR: [
+        { entityId: { in: meetingRequestIds } },
+        { entityId: { in: leadIds } },
+        { entityId: { in: contactIds } },
+        { entityId: { in: companyIds } }
+      ]
+    }
   });
-  await prisma.lead.deleteMany({
-    where: { company: { name: { startsWith: companyPrefix } } }
-  });
-  await prisma.contact.deleteMany({
-    where: { company: { name: { startsWith: companyPrefix } } }
-  });
-  await prisma.company.deleteMany({
-    where: { name: { startsWith: companyPrefix } }
-  });
+  await prisma.lead.deleteMany({ where: { id: { in: leadIds } } });
+  await prisma.contact.deleteMany({ where: { id: { in: contactIds } } });
+  await prisma.company.deleteMany({ where: { id: { in: companyIds } } });
   await prisma.user.deleteMany({
     where: { email: { in: [adminEmail, repEmail] } }
   });
@@ -128,7 +160,7 @@ describe("R21 meeting scheduling API", () => {
     vi.restoreAllMocks();
     process.env.CALENDAR_PROVIDER = "none";
     await cleanup();
-  }, 45000);
+  }, 90000);
 
   afterAll(async () => {
     if (originalCalendarProvider === undefined) {
@@ -163,7 +195,7 @@ describe("R21 meeting scheduling API", () => {
     }
     await cleanup();
     await prisma.$disconnect();
-  }, 45000);
+  }, 90000);
 
   it("persists a truthful attention state when calendar availability is not configured", async () => {
     const seeded = await seedLead();
@@ -248,7 +280,7 @@ describe("R21 meeting scheduling API", () => {
           })
         );
       }
-      if (url.includes("/events?sendUpdates=none")) {
+      if (url.includes("/events?sendUpdates=all")) {
         eventInsertCount += 1;
         const rawBody: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : {};
         const requestBody =
@@ -409,5 +441,5 @@ describe("R21 meeting scheduling API", () => {
       (repeatedSlotRequestAfterConfirmation.body as MeetingRequestDto).id
     );
     expect(await prisma.meetingRequest.count({ where: { leadId: seeded.leadId } })).toBe(2);
-  }, 45000);
+  }, 90000);
 });

@@ -30,14 +30,16 @@ export async function listLeadsController(
   request: Request,
   response: Response<PaginatedResponse<LeadDto>>
 ): Promise<void> {
-  response.status(200).json(await listLeads(request.validatedQuery as ListLeadsQuery));
+  response
+    .status(200)
+    .json(await listLeads(getRequiredUser(request), request.validatedQuery as ListLeadsQuery));
 }
 
 export async function getLeadController(
   request: Request<{ id: string }>,
   response: Response<LeadDto>
 ): Promise<void> {
-  response.status(200).json(await getLead(request.params.id));
+  response.status(200).json(await getLead(getRequiredUser(request), request.params.id));
 }
 
 export async function updateLeadController(

@@ -361,27 +361,33 @@ function parseZohoContactRecord(record: Record<string, unknown>): CRMContact {
   const firstName = readString(record, ["First_Name"]) ?? fullName?.split(" ")[0];
   const lastName =
     readString(record, ["Last_Name"]) ??
-    (fullName ? fullName.split(" ").slice(1).join(" ").trim() : undefined);
+    (fullName ? fullName.split(" ").slice(1).join(" ").trim() || "(unknown)" : undefined);
   const companyRef = readZohoRef(record, ["Account_Name", "Company", "Account"]);
 
-  if (!externalRecordId || !firstName || !lastName || !companyRef) {
-    throw buildProviderError("Zoho Bigin contact is missing required identity fields");
+  if (!externalRecordId || !firstName) {
+    throw buildProviderError("Zoho Bigin contact is missing required identity fields (id or first name)");
   }
+
+  const resolvedLastName = lastName ?? "(unknown)";
+  const resolvedCompany = companyRef ?? {
+    id: externalRecordId,
+    name: `${firstName} ${resolvedLastName}`.trim()
+  };
 
   return {
     externalRecordId,
     externalVersion: readString(record, ["Modified_Time"]),
     externalUpdatedAt: readDate(record, ["Modified_Time"]),
     firstName,
-    lastName,
+    lastName: resolvedLastName,
     title: readString(record, ["Title", "Designation"]),
     email: readString(record, ["Email"]),
     phone: readString(record, ["Phone", "Mobile"]),
     whatsappId: readString(record, ["WhatsApp", "Whatsapp", "WhatsApp_ID"]),
     source: readString(record, ["Lead_Source", "Source"]),
     company: {
-      externalRecordId: companyRef.id,
-      name: companyRef.name,
+      externalRecordId: resolvedCompany.id,
+      name: resolvedCompany.name,
       website: readString(record, ["Website"])
     }
   };

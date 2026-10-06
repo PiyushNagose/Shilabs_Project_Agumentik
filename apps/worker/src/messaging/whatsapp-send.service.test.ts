@@ -186,6 +186,37 @@ describe("R24 WhatsApp send worker", () => {
     ).resolves.toBe(1);
   });
 
+  it("continues WhatsApp independently when the call side of the handoff needs attention", async () => {
+    const fixture = await createFixture();
+    await prisma.callingSequence.update({
+      where: { id: fixture.attempt.sequenceId },
+      data: { status: "ATTENTION_REQUIRED", stopReason: "CONTACT_PHONE_MISSING" }
+    });
+    const provider = new FakeMessagingProvider();
+    provider.sendTemplateMessageMock.mockResolvedValue({
+      status: "ACCEPTED",
+      providerMessageId: "wamid.r24-independent-whatsapp",
+      providerStatus: "accepted",
+      lastError: null
+    });
+    const timeline = new FakeTimelineSyncer();
+    timeline.syncActivityMock.mockResolvedValue({
+      status: "SYNCED",
+      externalRecordId: "timeline-independent-whatsapp",
+      lastError: null
+    });
+
+    await executeWhatsAppSend({ event: fixture.event, env: testEnv(), provider, timelineSyncer: timeline });
+
+    expect(provider.sendTemplateMessageMock).toHaveBeenCalledTimes(1);
+    await expect(
+      prisma.outboundWhatsAppMessage.findFirst({
+        where: { leadId: fixture.lead.id },
+        select: { status: true }
+      })
+    ).resolves.toMatchObject({ status: "SENT" });
+  });
+
   it("sends Twilio WhatsApp through the real Messages API adapter request shape", async () => {
     const requests: { url: string; body: URLSearchParams; authorization: string | null }[] = [];
     const provider = new WorkerTwilioWhatsAppProvider(
@@ -226,5 +257,31 @@ describe("R24 WhatsApp send worker", () => {
     expect(requests[0]?.body.get("To")).toBe("whatsapp:+919999000002");
     expect(requests[0]?.body.get("Body")).toBe("R24 Twilio sandbox message");
     expect(requests[0]?.authorization).toBe(`Basic ${Buffer.from("ACtwilio:twilio-auth-token").toString("base64")}`);
+  });
+
+  it("preserves the provider reason when Twilio rejects a WhatsApp request", async () => {
+    const provider = new WorkerTwilioWhatsAppProvider(
+      getMessagingConfig(
+        testEnv({
+          MESSAGING_PROVIDER: "twilio_whatsapp",
+          TWILIO_WHATSAPP_ACCOUNT_SID: "ACtwilio",
+          TWILIO_WHATSAPP_AUTH_TOKEN: "twilio-auth-token",
+          TWILIO_WHATSAPP_SANDBOX_FROM: "whatsapp:+14155238886"
+        })
+      ),
+      () => Promise.resolve(Response.json({ code: 63016, message: "The user has not joined the sandbox" }, { status: 400 }))
+    );
+
+    await expect(
+      provider.sendTemplateMessage({
+        to: "+919999000002",
+        templateName: "unused-for-twilio",
+        templateLanguage: "en",
+        idempotencyKey: "r24-worker-twilio-rejected"
+      })
+    ).resolves.toMatchObject({
+      status: "FAILED",
+      lastError: "WhatsApp provider request failed with status 400: code 63016: The user has not joined the sandbox"
+    });
   });
 });

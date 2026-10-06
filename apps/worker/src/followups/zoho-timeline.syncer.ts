@@ -99,7 +99,11 @@ async function appendTimeline(input: {
   };
   const result = json.data?.[0];
   const externalRecordId = result?.details?.id;
-  if (!response.ok || result?.status?.toLowerCase() === "error" || typeof externalRecordId !== "string") {
+  if (
+    !response.ok ||
+    result?.status?.toLowerCase() === "error" ||
+    typeof externalRecordId !== "string"
+  ) {
     throw new Error(`Zoho Bigin timeline write failed: ${result?.code ?? "UNKNOWN"}`);
   }
   return externalRecordId;
@@ -117,7 +121,8 @@ export class ZohoTimelineSyncer implements TimelineSyncer {
       where: { id: input.activityId },
       include: { lead: true }
     });
-    if (!activity) return { status: "FAILED", externalRecordId: null, lastError: "Activity not found" };
+    if (!activity)
+      return { status: "FAILED", externalRecordId: null, lastError: "Activity not found" };
 
     const existingMapping = await this.prisma.externalRecordMapping.findUnique({
       where: {
@@ -129,7 +134,11 @@ export class ZohoTimelineSyncer implements TimelineSyncer {
       }
     });
     if (existingMapping?.syncStatus === "SYNCED") {
-      return { status: "SKIPPED", externalRecordId: existingMapping.externalRecordId, lastError: null };
+      return {
+        status: "SKIPPED",
+        externalRecordId: existingMapping.externalRecordId,
+        lastError: null
+      };
     }
 
     const zohoConfig = config(input.env);
@@ -166,7 +175,11 @@ export class ZohoTimelineSyncer implements TimelineSyncer {
       }
     });
     if (!leadMapping) {
-      return { status: "FAILED", externalRecordId: null, lastError: "Lead is not mapped to Zoho Bigin" };
+      return {
+        status: "FAILED",
+        externalRecordId: null,
+        lastError: "Lead is not mapped to Zoho Bigin"
+      };
     }
 
     const account = await this.prisma.integrationAccount.upsert({
@@ -229,7 +242,12 @@ export class ZohoTimelineSyncer implements TimelineSyncer {
       });
       return { status: "SYNCED", externalRecordId: mapping.externalRecordId, lastError: null };
     } catch (error) {
-      const lastError = error instanceof Error ? error.message : "Zoho Bigin timeline append failed";
+      const lastError =
+        error instanceof Error ? error.message : "Zoho Bigin timeline append failed";
+      await this.prisma.integrationAccount.update({
+        where: { id: account.id },
+        data: { status: "ERROR", lastCheckedAt: new Date(), lastError }
+      });
       return { status: "FAILED", externalRecordId: null, lastError };
     }
   }

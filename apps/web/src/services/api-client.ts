@@ -349,6 +349,13 @@ export function acknowledgeNotification(
   );
 }
 
+export function retryDomainEvent(accessToken: string, eventId: string): Promise<unknown> {
+  return apiRequest<unknown>(`/api/domain-events/${eventId}/retry`, accessToken, {
+    method: "POST",
+    body: JSON.stringify({})
+  });
+}
+
 export function listMeetingRequests(
   accessToken: string,
   params: MeetingListParams
@@ -471,6 +478,16 @@ export function accelerateFollowUpSequenceForE2E(
       body: JSON.stringify({})
     }
   );
+}
+
+export function runCallingAttemptNowForE2E(
+  accessToken: string,
+  leadId: string
+): Promise<{ status: "ACCELERATED" | "ALREADY_QUEUED"; attemptId: string; scheduledAt: string }> {
+  return apiRequest(`/api/followups/leads/${leadId}/calling/e2e/run-now`, accessToken, {
+    method: "POST",
+    body: JSON.stringify({})
+  });
 }
 
 export function submitE2ECustomerReply(

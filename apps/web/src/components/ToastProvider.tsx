@@ -1,5 +1,5 @@
 import type React from "react";
-import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "./Icon.js";
 
 type ToastTone = "success" | "error";
@@ -33,6 +33,24 @@ export function ToastProvider({ children }: { children: React.ReactNode }): Reac
   const [toasts, setToasts] = useState<Toast[]>([]);
   const counter = useRef(0);
   const timers = useRef(new Map<string, number>());
+
+  useEffect(() => {
+    const activeTimers = timers.current;
+    return () => {
+      for (const timer of activeTimers.values()) window.clearTimeout(timer);
+      activeTimers.clear();
+    };
+  }, []);
+
+  useEffect(() => {
+    const visibleIds = new Set(toasts.map((toast) => toast.id));
+    for (const [id, timer] of timers.current) {
+      if (!visibleIds.has(id)) {
+        window.clearTimeout(timer);
+        timers.current.delete(id);
+      }
+    }
+  }, [toasts]);
 
   const dismiss = useCallback((id: string): void => {
     const timer = timers.current.get(id);
@@ -97,7 +115,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }): Reac
               onClick={() => dismiss(toast.id)}
               type="button"
             >
-              x
+              ×
             </button>
           </article>
         ))}

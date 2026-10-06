@@ -1,4 +1,8 @@
-import type { VoiceConfig } from "@shilabs/shared-config";
+import {
+  addExotelWebhookCredential,
+  createExpiringVoiceStreamToken,
+  type VoiceConfig
+} from "@shilabs/shared-config";
 import { redactSecrets } from "../shared/redaction.js";
 
 export interface WorkerVoiceProvider {
@@ -39,9 +43,11 @@ function missingExotelConfig(config: VoiceConfig): string[] {
   if (!config.exotel.apiToken) missing.push("EXOTEL_API_TOKEN");
   if (!config.exotel.apiSubdomain) missing.push("EXOTEL_API_SUBDOMAIN");
   if (!config.exotel.callerId) missing.push("EXOTEL_CALLER_ID");
-  if (!config.exotel.appUrl && !config.exotel.agentNumber) {
-    missing.push("EXOTEL_APP_URL_OR_AGENT_NUMBER");
+  if (!config.exotel.appUrl && !config.exotel.agentNumber && !config.voiceAi.enabled) {
+    missing.push("EXOTEL_APP_URL_OR_AGENT_NUMBER_OR_VOICE_AI_ENABLED");
   }
+  if (config.voiceAi.enabled && !config.voiceAi.streamToken) missing.push("VOICE_AI_STREAM_TOKEN");
+  if (!config.exotel.webhookSecret) missing.push("EXOTEL_WEBHOOK_SECRET");
   if (!config.webhookBaseUrl) missing.push("VOICE_WEBHOOK_BASE_URL");
   return missing;
 }
@@ -83,6 +89,34 @@ function sanitizeError(error: unknown): string {
 function exotelApiBaseUrl(config: VoiceConfig): string {
   const subdomain = config.exotel.apiSubdomain.replace(/^https?:\/\//iu, "").replace(/\/$/u, "");
   return `https://${subdomain}`;
+}
+
+function exotelVoiceAiStreamUrl(config: VoiceConfig): string {
+  const base = config.webhookBaseUrl
+    .replace(/\/$/u, "")
+    .replace(/^http:/u, "ws:")
+    .replace(/^https:/u, "wss:");
+  const credential = createExpiringVoiceStreamToken({
+    secret: config.voiceAi.streamToken,
+    ttlSeconds: config.voiceAi.streamTokenTtlSeconds
+  });
+  const streamPath = `${config.exotel.voicebotStreamPath.replace(/\/$/u, "")}/${encodeURIComponent(credential)}`;
+  return `${base}${streamPath}?sample-rate=${String(config.voiceAi.sampleRate)}`;
+}
+
+function exotelAppUrl(config: VoiceConfig): string {
+  const appUrl = config.exotel.appUrl;
+  const internalVoicebotUrl = `${config.webhookBaseUrl.replace(/\/$/u, "")}${config.exotel.voicebotAppPath}`;
+  try {
+    const app = new URL(appUrl);
+    const internal = new URL(internalVoicebotUrl);
+    if (app.origin === internal.origin && app.pathname === internal.pathname) {
+      return addExotelWebhookCredential(appUrl, config.exotel.webhookSecret);
+    }
+  } catch {
+    return appUrl;
+  }
+  return appUrl;
 }
 
 function exotelCallPayload(body: Record<string, unknown> | null): Record<string, unknown> | null {
@@ -170,7 +204,10 @@ export class WorkerTwilioVoiceProvider implements WorkerVoiceProvider {
         To: input.to,
         From: input.from,
         Url: input.twimlUrl,
-        StatusCallback: input.statusCallbackUrl,
+        StatusCallback: addExotelWebhookCredential(
+          input.statusCallbackUrl,
+          this.config.exotel.webhookSecret
+        ),
         StatusCallbackMethod: "POST",
         StatusCallbackEvent: "initiated ringing answered completed"
       });
@@ -245,7 +282,10 @@ export class WorkerExotelVoiceProvider implements WorkerVoiceProvider {
         From: input.to,
         CallerId: input.from,
         CallType: "trans",
-        StatusCallback: input.statusCallbackUrl,
+        StatusCallback: addExotelWebhookCredential(
+          input.statusCallbackUrl,
+          this.config.exotel.webhookSecret
+        ),
         CustomField: input.idempotencyKey
       });
       if (this.config.exotel.agentNumber) {
@@ -253,8 +293,11 @@ export class WorkerExotelVoiceProvider implements WorkerVoiceProvider {
           throw new Error("EXOTEL_AGENT_NUMBER must be different from the customer destination");
         }
         body.set("To", this.config.exotel.agentNumber);
+      } else if (this.config.voiceAi.enabled) {
+        body.set("StreamUrl", exotelVoiceAiStreamUrl(this.config));
+        body.set("StreamType", "bidirectional");
       } else {
-        body.set("Url", this.config.exotel.appUrl);
+        body.set("Url", exotelAppUrl(this.config));
       }
 
       const response = await requestWithRetry(

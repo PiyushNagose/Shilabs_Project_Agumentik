@@ -1,4 +1,5 @@
 import request from "supertest";
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { UserRole, UserStatus } from "@prisma/client";
 import type { AuthResponse, SalesActionDashboardDto } from "@shilabs/shared-types";
 import { createApp } from "../../app.js";
@@ -18,6 +19,15 @@ async function cleanup(): Promise<void> {
   });
   await prisma.domainEventOutbox.deleteMany({
     where: { idempotencyKey: { startsWith: "r19-dashboard:" } }
+  });
+  await prisma.outboundWhatsAppMessage.deleteMany({
+    where: { lead: { company: { name: { startsWith: companyPrefix } } } }
+  });
+  await prisma.callingAttempt.deleteMany({
+    where: { lead: { company: { name: { startsWith: companyPrefix } } } }
+  });
+  await prisma.callingSequence.deleteMany({
+    where: { lead: { company: { name: { startsWith: companyPrefix } } } }
   });
   await prisma.internalNotification.deleteMany({
     where: { idempotencyKey: { startsWith: "r19-dashboard:" } }
@@ -266,5 +276,69 @@ describe("R19 action dashboard API", () => {
 
     expect(repDashboard.actionItems.every((item) => item.leadId !== otherLead.leadId)).toBe(true);
     expect(repDashboard.summary.totalActionItems).toBeGreaterThan(0);
+  }, 45000);
+
+  it("deduplicates a failed WhatsApp job when its outbound attempt already failed", async () => {
+    const users = await seedUsers();
+    const lead = await seedLead({ ownerId: users.repId, suffix: "whatsapp-dedupe" });
+    const callingSequence = await prisma.callingSequence.create({
+      data: {
+        leadId: lead.leadId,
+        contactId: lead.contactId,
+        maxAttempts: 1,
+        cadenceOffsets: [0],
+        idempotencyKey: "r19-dashboard:calling-sequence"
+      }
+    });
+    const callingAttempt = await prisma.callingAttempt.create({
+      data: {
+        sequenceId: callingSequence.id,
+        leadId: lead.leadId,
+        contactId: lead.contactId,
+        attemptIndex: 0,
+        scheduledAt: new Date(),
+        idempotencyKey: "r19-dashboard:calling-attempt",
+        status: "FAILED"
+      }
+    });
+    await prisma.outboundWhatsAppMessage.create({
+      data: {
+        leadId: lead.leadId,
+        contactId: lead.contactId,
+        callingAttemptId: callingAttempt.id,
+        provider: "TWILIO",
+        toWhatsAppId: "+15555550100",
+        idempotencyKey: "r19-dashboard:whatsapp-message",
+        status: "FAILED",
+        failureCode: "WHATSAPP_PROVIDER_ERROR",
+        failureMessage: "Provider rejected the message"
+      }
+    });
+    await prisma.domainEventOutbox.create({
+      data: {
+        eventType: "WHATSAPP_SEND_REQUESTED",
+        aggregateType: "CallingAttempt",
+        aggregateId: callingAttempt.id,
+        payload: { leadId: lead.leadId, callingAttemptId: callingAttempt.id },
+        correlationId: callingSequence.id,
+        idempotencyKey: "r19-dashboard:whatsapp-event",
+        status: "FAILED",
+        lastErrorCode: "WHATSAPP_PROVIDER_ERROR",
+        lastErrorMessage: "Provider rejected the message"
+      }
+    });
+
+    const token = await login(adminEmail);
+    const response = await request(app)
+      .get("/api/action-dashboard")
+      .set("Authorization", `Bearer ${token}`)
+      .expect(200);
+    const dashboard = response.body as SalesActionDashboardDto;
+    const whatsappFailures = dashboard.failuresRequiringAttention.filter(
+      (item) => item.leadId === lead.leadId && item.title.toLowerCase().includes("whatsapp")
+    );
+
+    expect(whatsappFailures).toHaveLength(1);
+    expect(whatsappFailures[0]?.sourceEntityType).toBe("OutboundWhatsAppMessage");
   }, 45000);
 });

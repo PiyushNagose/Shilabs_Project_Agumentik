@@ -6,6 +6,7 @@ import { validateBody } from "../../middleware/validate.middleware.js";
 import {
   accelerateFollowUpSequenceForE2EController,
   listFollowUpSequencesForLeadController,
+  runCallingAttemptNowForE2EController,
   startFollowUpSequenceController
 } from "./followup.controller.js";
 import { startFollowUpSequenceSchema } from "./followup.schemas.js";
@@ -23,6 +24,11 @@ followUpRoutes.post(
   requireRole([UserRole.ADMIN, UserRole.SALES_MANAGER, UserRole.SALES_REP]),
   validateBody(startFollowUpSequenceSchema),
   asyncHandler(startFollowUpSequenceController)
+);
+followUpRoutes.post(
+  "/leads/:leadId/calling/e2e/run-now",
+  requireRole([UserRole.ADMIN]),
+  asyncHandler(runCallingAttemptNowForE2EController)
 );
 followUpRoutes.post(
   "/sequences/:sequenceId/e2e/accelerate",

@@ -7,6 +7,7 @@ import { getAwsSesHealth } from "../email/email.service.js";
 import { getZohoBiginHealth } from "../integrations/zoho-bigin/zoho-bigin.service.js";
 import { getMessagingHealth } from "../messaging/messaging.service.js";
 import { getVoiceHealth } from "../voice/voice.service.js";
+import { getMessagingConfig, getVoiceConfig } from "@shilabs/shared-config";
 import type {
   CalendarHealthDto,
   IntegrationHealthDto,
@@ -18,6 +19,35 @@ import type {
 } from "@shilabs/shared-types";
 
 type HealthStatus = OperationsProviderHealthDto["status"];
+
+const NON_ACTIONABLE_DOMAIN_EVENT_TYPES = [
+  "REPLY_UNDERSTOOD",
+  "NEGOTIATION_DETECTED",
+  "NEGOTIATION_HANDOFF_CREATED",
+  "REPLY_PROCESSING_FAILED",
+  "MESSAGE_RECEIVED",
+  "WHATSAPP_SENT",
+  "WHATSAPP_STATUS_UPDATED",
+  "WHATSAPP_DELIVERY_FAILED",
+  "AGENT_CORRECTION_RECORDED",
+  "CALL_REQUESTED",
+  "CALL_STATUS_UPDATED",
+  "CALL_FAILED",
+  "VOICE_CONVERSATION_COMPLETED",
+  "MEETING_REQUESTED",
+  "NOTIFICATION_ACKNOWLEDGED",
+  "PROPOSAL_GENERATED",
+  "PROPOSAL_APPROVED",
+  "PROPOSAL_SENT"
+] as const;
+
+function isDuplicateWhatsAppJob(event: { eventType: string; payload: unknown }, attemptIds: Set<string>): boolean {
+  if (event.eventType !== "WHATSAPP_SEND_REQUESTED" || !event.payload || typeof event.payload !== "object") {
+    return false;
+  }
+  const attemptId = (event.payload as Record<string, unknown>).callingAttemptId;
+  return typeof attemptId === "string" && attemptIds.has(attemptId);
+}
 
 function providerStatus(status: string): HealthStatus {
   if (
@@ -222,10 +252,14 @@ async function getWorkSummary(): Promise<OperationsDashboardDto["work"]> {
   const [groups, recent] = await Promise.all([
     prisma.domainEventOutbox.groupBy({
       by: ["status"],
+      where: { eventType: { notIn: [...NON_ACTIONABLE_DOMAIN_EVENT_TYPES] } },
       _count: { _all: true }
     }),
     prisma.domainEventOutbox.findMany({
-      where: { status: { in: ["FAILED", "ATTENTION_REQUIRED", "QUEUED", "PROCESSING"] } },
+      where: {
+        status: { in: ["FAILED", "ATTENTION_REQUIRED", "QUEUED", "PROCESSING"] },
+        eventType: { notIn: [...NON_ACTIONABLE_DOMAIN_EVENT_TYPES] }
+      },
       orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
       take: 12
     })
@@ -314,7 +348,10 @@ async function getProviderErrors(): Promise<OperationsProviderErrorDto[]> {
       take: 10
     }),
     prisma.domainEventOutbox.findMany({
-      where: { status: { in: ["FAILED", "ATTENTION_REQUIRED"] } },
+      where: {
+        status: { in: ["FAILED", "ATTENTION_REQUIRED"] },
+        eventType: { notIn: [...NON_ACTIONABLE_DOMAIN_EVENT_TYPES] }
+      },
       orderBy: { updatedAt: "desc" },
       take: 10
     }),
@@ -351,6 +388,15 @@ async function getProviderErrors(): Promise<OperationsProviderErrorDto[]> {
     })
   ]);
 
+  const failedWhatsAppAttemptIds = new Set(
+    whatsappMessages
+      .map((message) => message.callingAttemptId)
+      .filter((attemptId): attemptId is string => Boolean(attemptId))
+  );
+  const actionableEvents = events.filter(
+    (event) => !isDuplicateWhatsAppJob(event, failedWhatsAppAttemptIds)
+  );
+
   return [
     ...syncRuns.map((run) =>
       providerError({
@@ -372,7 +418,7 @@ async function getProviderErrors(): Promise<OperationsProviderErrorDto[]> {
         occurredAt: mapping.updatedAt
       })
     ),
-    ...events.map((event) =>
+    ...actionableEvents.map((event) =>
       providerError({
         id: event.id,
         provider: "WORKER",
@@ -459,6 +505,8 @@ function usageIndicator(input: {
 }
 
 async function getUsageIndicators(): Promise<OperationsUsageIndicatorDto[]> {
+  const voiceConfig = getVoiceConfig();
+  const messagingConfig = getMessagingConfig();
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
   const [
     sentEmails,
@@ -501,21 +549,21 @@ async function getUsageIndicators(): Promise<OperationsUsageIndicatorDto[]> {
     usageIndicator({
       key: "voice-calls",
       label: "Voice call attempts",
-      provider: "TWILIO",
+      provider: voiceConfig.provider.toUpperCase(),
       count: voiceCalls,
       unit: "calls"
     }),
     usageIndicator({
       key: "whatsapp-outbound",
       label: "Outbound WhatsApp messages",
-      provider: "META_WHATSAPP",
+      provider: messagingConfig.provider.toUpperCase(),
       count: whatsappMessages,
       unit: "messages"
     }),
     usageIndicator({
       key: "whatsapp-events-24h",
       label: "WhatsApp provider events",
-      provider: "META_WHATSAPP",
+      provider: messagingConfig.provider.toUpperCase(),
       count: whatsappEvents,
       unit: "events",
       period: "LAST_24_HOURS"

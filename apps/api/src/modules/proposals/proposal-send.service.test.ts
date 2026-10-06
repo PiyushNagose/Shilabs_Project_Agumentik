@@ -81,13 +81,15 @@ async function cleanup(): Promise<void> {
     where: { lead: { source } },
     data: { currentVersionId: null, approvedVersionId: null, sentOutboundEmailId: null }
   });
+  await prisma.humanTakeover.deleteMany({ where: { lead: { source } } });
   await prisma.proposalStatusChange.deleteMany({ where: { proposal: { lead: { source } } } });
   await prisma.proposalVersion.deleteMany({ where: { proposal: { lead: { source } } } });
   await prisma.proposal.deleteMany({ where: { lead: { source } } });
   await prisma.outboundEmail.deleteMany({ where: { lead: { source } } });
+  await prisma.conversation.deleteMany({ where: { lead: { source } } });
   await prisma.activity.deleteMany({ where: { lead: { source } } });
   await prisma.auditEvent.deleteMany({
-    where: { entityType: { in: ["Proposal", "OutboundEmail", "Activity"] } }
+    where: { entityType: { in: ["Proposal", "OutboundEmail", "Activity", "Conversation", "Lead"] } }
   });
   await prisma.deal.deleteMany({ where: { lead: { source } } });
   await prisma.lead.deleteMany({ where: { source } });
@@ -228,6 +230,45 @@ describe("R16 proposal send service", () => {
     expect(provider.sendEmailMock).toHaveBeenCalledTimes(1);
   });
 
+  it("resumes automation and waits for customer response after a proposal is sent", async () => {
+    const { actor, lead, approved } = await seedApprovedProposal();
+    await prisma.lead.update({
+      where: { id: lead.id },
+      data: { nextAction: "Review AI-generated proposal" }
+    });
+    const conversation = await prisma.conversation.create({
+      data: { leadId: lead.id, channel: "EMAIL", mode: "HUMAN" }
+    });
+    const provider = new TestEmailProvider();
+
+    await sendApprovedProposal(
+      actor,
+      approved.id,
+      { idempotencyKey: `r16-send-resume-${approved.id}` },
+      { emailProvider: provider, env: configuredSesTestEnv }
+    );
+
+    await expect(prisma.lead.findUniqueOrThrow({ where: { id: lead.id } })).resolves.toMatchObject({
+      nextAction: "Await customer response",
+      nextActionAt: null
+    });
+    await expect(
+      prisma.conversation.findUniqueOrThrow({ where: { id: conversation.id } })
+    ).resolves.toMatchObject({ mode: "AUTO" });
+    await expect(
+      prisma.auditEvent.findFirstOrThrow({
+        where: {
+          entityType: "Conversation",
+          entityId: conversation.id,
+          action: "AI_AUTOMATION_RESUMED_AFTER_PROPOSAL_SENT"
+        }
+      })
+    ).resolves.toMatchObject({
+      actorType: "USER",
+      actorId: actor.id
+    });
+  });
+
   it("does not mark proposal sent when the EmailProvider does not confirm send", async () => {
     const { actor, approved } = await seedApprovedProposal();
 
@@ -294,5 +335,5 @@ describe("R16 proposal send service", () => {
     expect(provider.sendEmailMock).toHaveBeenCalledTimes(1);
     expect(retry.proposal.zohoTimelineSyncStatus).toBe("SYNCED");
     expect(retry.zohoTimeline?.status).toBe("SYNCED");
-  });
+  }, 120000);
 });

@@ -12,6 +12,7 @@ import {
   processInboundMessageReply,
   type ProcessReplyOptions
 } from "../reply-processing/reply-processing.service.js";
+import { publishRealtimeEvent } from "../realtime/realtime.service.js";
 
 type PersistedWhatsAppProvider = "META_WHATSAPP" | "TWILIO";
 type PublicWhatsAppProvider = "META_WHATSAPP" | "TWILIO_WHATSAPP";
@@ -50,7 +51,9 @@ function normalizePhone(phone: string | null | undefined): string | null {
   if (!phone) return null;
   const normalized = phone.trim().replace(/[()\s.-]/g, "");
   return /^\+?[1-9]\d{7,14}$/u.test(normalized)
-    ? (normalized.startsWith("+") ? normalized : `+${normalized}`)
+    ? normalized.startsWith("+")
+      ? normalized
+      : `+${normalized}`
     : null;
 }
 
@@ -111,7 +114,9 @@ function publicProvider(provider: PersistedWhatsAppProvider): PublicWhatsAppProv
   return provider === "META_WHATSAPP" ? "META_WHATSAPP" : "TWILIO_WHATSAPP";
 }
 
-async function findLeadForInboundWhatsApp(waId: string): Promise<
+async function findLeadForInboundWhatsApp(
+  waId: string
+): Promise<
   | { ok: true; leadId: string; contactId: string; conversationId: string | null }
   | { ok: false; code: string; message: string }
 > {
@@ -132,7 +137,11 @@ async function findLeadForInboundWhatsApp(waId: string): Promise<
   });
 
   if (leads.length === 0) {
-    return { ok: false, code: "LEAD_NOT_FOUND", message: "No eligible lead matched WhatsApp sender" };
+    return {
+      ok: false,
+      code: "LEAD_NOT_FOUND",
+      message: "No eligible lead matched WhatsApp sender"
+    };
   }
   if (leads.length > 1) {
     return {
@@ -143,7 +152,11 @@ async function findLeadForInboundWhatsApp(waId: string): Promise<
   }
   const lead = leads[0];
   if (!lead) {
-    return { ok: false, code: "LEAD_NOT_FOUND", message: "No eligible lead matched WhatsApp sender" };
+    return {
+      ok: false,
+      code: "LEAD_NOT_FOUND",
+      message: "No eligible lead matched WhatsApp sender"
+    };
   }
   return {
     ok: true,
@@ -153,7 +166,10 @@ async function findLeadForInboundWhatsApp(waId: string): Promise<
   };
 }
 
-async function stopIncompatibleAutomation(tx: Prisma.TransactionClient, leadId: string): Promise<void> {
+async function stopIncompatibleAutomation(
+  tx: Prisma.TransactionClient,
+  leadId: string
+): Promise<void> {
   const stoppedAt = new Date();
   const activeFollowUps = await tx.followUpSequence.findMany({
     where: { leadId, status: "ACTIVE" },
@@ -242,7 +258,10 @@ export function verifyMetaWebhookChallenge(input: {
   throw new AppError(403, "AUTHORIZATION_ERROR", "Meta WhatsApp webhook verification failed");
 }
 
-async function processStatus(status: WebhookStatus, payload: Prisma.InputJsonObject): Promise<void> {
+async function processStatus(
+  status: WebhookStatus,
+  payload: Prisma.InputJsonObject
+): Promise<void> {
   const providerEventId = `whatsapp-status:${status.id}:${status.status}:${status.timestamp ?? ""}`;
   const existingEvent = await prisma.whatsAppProviderEvent.findUnique({
     where: { provider_providerEventId: { provider: "META_WHATSAPP", providerEventId } }
@@ -253,7 +272,8 @@ async function processStatus(status: WebhookStatus, payload: Prisma.InputJsonObj
     where: { providerMessageId: status.id }
   });
   const mapped = statusToOutboundStatus(status.status);
-  const failure = mapped.status === "FAILED" ? statusFailure(status) : { code: null, message: null };
+  const failure =
+    mapped.status === "FAILED" ? statusFailure(status) : { code: null, message: null };
   const happenedAt = whatsappTimestamp(status.timestamp);
 
   await prisma.$transaction(async (tx) => {
@@ -302,16 +322,31 @@ async function processStatus(status: WebhookStatus, payload: Prisma.InputJsonObj
     await tx.domainEventOutbox.upsert({
       where: { idempotencyKey: `domain-event:whatsapp-status:${providerEventId}` },
       create: {
-        eventType: mapped.status === "FAILED" ? "WHATSAPP_DELIVERY_FAILED" : "WHATSAPP_STATUS_UPDATED",
+        eventType:
+          mapped.status === "FAILED" ? "WHATSAPP_DELIVERY_FAILED" : "WHATSAPP_STATUS_UPDATED",
         aggregateType: "OutboundWhatsAppMessage",
         aggregateId: outbound.id,
-        payload: { leadId: outbound.leadId, outboundWhatsAppMessageId: outbound.id, status: mapped.status },
+        payload: {
+          leadId: outbound.leadId,
+          outboundWhatsAppMessageId: outbound.id,
+          status: mapped.status
+        },
         correlationId: outbound.id,
         idempotencyKey: `domain-event:whatsapp-status:${providerEventId}`
       },
       update: {}
     });
   });
+  if (outbound) {
+    await publishRealtimeEvent({
+      entityType: "lead",
+      action: mapped.status === "FAILED" ? "whatsapp-delivery-failed" : "whatsapp-status-updated",
+      leadId: outbound.leadId,
+      domainEventId: null,
+      sourceEventType:
+        mapped.status === "FAILED" ? "WHATSAPP_DELIVERY_FAILED" : "WHATSAPP_STATUS_UPDATED"
+    }).catch(() => undefined);
+  }
 }
 
 async function processInboundMessage(input: {
@@ -347,7 +382,7 @@ async function processInboundMessage(input: {
     return;
   }
 
-  const persistedMessageId = await prisma.$transaction(
+  const persisted = await prisma.$transaction(
     async (tx) => {
       const conversationId =
         match.conversationId ??
@@ -417,18 +452,30 @@ async function processInboundMessage(input: {
           eventType: "MESSAGE_RECEIVED",
           aggregateType: "Message",
           aggregateId: persistedMessage.id,
-          payload: { leadId: match.leadId, conversationId, messageId: persistedMessage.id, channel: "WHATSAPP" },
+          payload: {
+            leadId: match.leadId,
+            conversationId,
+            messageId: persistedMessage.id,
+            channel: "WHATSAPP"
+          },
           correlationId: conversationId,
           idempotencyKey: `domain-event:whatsapp-reply:${persistedMessage.id}`
         },
         update: {}
       });
       await stopIncompatibleAutomation(tx, match.leadId);
-      return persistedMessage.id;
+      return { conversationId, messageId: persistedMessage.id };
     },
     { maxWait: 10000, timeout: 30000 }
   );
-  await processInboundMessageReply(persistedMessageId, input.replyProcessingOptions);
+  await publishRealtimeEvent({
+    entityType: "lead",
+    action: "whatsapp-reply-received",
+    leadId: match.leadId,
+    conversationId: persisted.conversationId,
+    sourceEventType: "MESSAGE_RECEIVED"
+  }).catch(() => undefined);
+  await processInboundMessageReply(persisted.messageId, input.replyProcessingOptions);
 }
 
 export async function ingestMetaWhatsAppWebhook(input: {
@@ -442,7 +489,11 @@ export async function ingestMetaWhatsAppWebhook(input: {
   const config = getMessagingConfig(input.env);
   const provider = input.provider ?? createMessagingProvider(config);
   if (!provider.verifyWebhookSignature({ rawBody: input.rawBody, signature: input.signature })) {
-    throw new AppError(403, "AUTHORIZATION_ERROR", "Meta WhatsApp webhook signature verification failed");
+    throw new AppError(
+      403,
+      "AUTHORIZATION_ERROR",
+      "Meta WhatsApp webhook signature verification failed"
+    );
   }
 
   const values = asWebhookValues(input.body);
@@ -509,7 +560,8 @@ export async function ingestTwilioWhatsAppWebhook(input: {
     throw new AppError(403, "AUTHORIZATION_ERROR", "Twilio WhatsApp webhook signature is invalid");
   }
 
-  const messageSid = twilioParam(input.body, "MessageSid") ?? twilioParam(input.body, "SmsMessageSid");
+  const messageSid =
+    twilioParam(input.body, "MessageSid") ?? twilioParam(input.body, "SmsMessageSid");
   const from = normalizeTwilioWhatsAppIdentity(twilioParam(input.body, "From"));
   if (!messageSid || !from) {
     return { provider: "TWILIO_WHATSAPP", processed: 0 };

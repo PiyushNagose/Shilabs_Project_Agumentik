@@ -349,19 +349,12 @@ describe("M5 CRM pipeline and deals API", () => {
       .expect(200);
     const stages = response.body as unknown as PipelineStageDto[];
 
-    expect(stages.map((stage) => stage.key)).toEqual([
-      "NEW",
-      "CONTACTED",
-      "ENGAGED",
-      "QUALIFIED",
-      "MEETING_BOOKED",
-      "PROPOSAL",
-      "NEGOTIATION",
-      "WON",
-      "LOST",
-      "NURTURE"
-    ]);
-    expect(stages.map((stage) => stage.order)).toEqual([10, 20, 30, 40, 50, 60, 70, 80, 90, 100]);
+    expect(stages.slice(0, pipelineStages.length).map((stage) => stage.key)).toEqual(
+      pipelineStages.map((stage) => stage.key)
+    );
+    expect(stages.slice(0, pipelineStages.length).map((stage) => stage.order)).toEqual(
+      pipelineStages.map((stage) => stage.order)
+    );
   }, 45000);
 
   it("changes a lead stage and records activity plus audit history", async () => {

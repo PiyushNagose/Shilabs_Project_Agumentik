@@ -8,6 +8,7 @@ import {
   type WorkerMessagingProvider
 } from "../integrations/meta-whatsapp.provider.js";
 import { ZohoTimelineSyncer, type TimelineSyncer } from "../followups/zoho-timeline.syncer.js";
+import { normalizeAutomationPhone } from "../shared/automation-phone.js";
 
 type WhatsAppBlock = readonly [
   code: string,
@@ -19,14 +20,6 @@ function payloadString(event: DomainEventOutbox, key: string): string | null {
   const payload = event.payload as Prisma.JsonObject;
   const value = payload[key];
   return typeof value === "string" ? value : null;
-}
-
-function normalizePhone(phone: string | null | undefined): string | null {
-  if (!phone) return null;
-  const normalized = phone.trim().replace(/[()\s.-]/g, "");
-  return /^\+?[1-9]\d{7,14}$/u.test(normalized)
-    ? (normalized.startsWith("+") ? normalized : `+${normalized}`)
-    : null;
 }
 
 function missingMessagingConfig(config: MessagingConfig): string[] {
@@ -197,11 +190,11 @@ export async function executeWhatsAppSend(input: {
       createdAt: { gte: attempt.sequence.createdAt }
     }
   });
-  const to = lead.contact.whatsappId ?? normalizePhone(lead.contact.phone);
+  const to =
+    lead.contact.whatsappId ??
+    normalizeAutomationPhone(lead.contact.phone, config.e2eAllowedToNumbers);
   const block: WhatsAppBlock | null =
-    attempt.sequence.status !== "ACTIVE"
-      ? ["CALLING_SEQUENCE_NOT_ACTIVE", `Calling sequence status is ${attempt.sequence.status}`, "BLOCKED"]
-      : !to
+    !to
         ? ["WHATSAPP_ID_MISSING", "Contact WhatsApp identity is not usable", "FAILED"]
         : lead.contact.doNotContact
           ? ["CONTACT_DO_NOT_CONTACT", "Contact is marked do-not-contact", "BLOCKED"]
@@ -252,13 +245,16 @@ export async function executeWhatsAppSend(input: {
       callingAttemptId,
       conversationId: conversation?.id ?? null,
       toWhatsAppId,
-      normalizedToPhone: normalizePhone(lead.contact.phone),
+      normalizedToPhone: normalizeAutomationPhone(lead.contact.phone, config.e2eAllowedToNumbers),
       provider: persistedProvider,
       fromPhoneNumberId:
         config.provider === "twilio_whatsapp"
           ? config.twilioWhatsApp.sandboxFrom
           : config.metaWhatsApp.phoneNumberId,
-      templateName: config.metaWhatsApp.defaultTemplateName,
+      templateName:
+        config.provider === "twilio_whatsapp"
+          ? config.twilioWhatsApp.contentSid || config.metaWhatsApp.defaultTemplateName
+          : config.metaWhatsApp.defaultTemplateName,
       templateLanguage: config.metaWhatsApp.defaultTemplateLanguage,
       idempotencyKey,
       status: "PROVIDER_PENDING"

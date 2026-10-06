@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { GeminiAIConfig } from "../../../config/ai.js";
 import { AppError } from "../../../shared/errors.js";
 import type { AIProvider, SalesReplyInput } from "../../ai/ai.provider.js";
+import { sourceContainsGroundedQuote } from "../../ai/grounding.js";
 import {
   aiInputSchema,
   salesReplyResultSchema,
@@ -178,7 +179,8 @@ export class GeminiProvider implements AIProvider {
         qualification.evidence.some(
           (item) =>
             !parsedInput.data.messages.some(
-              (message) => message.id === item.messageId && message.body.includes(item.quote)
+              (message) =>
+                message.id === item.messageId && sourceContainsGroundedQuote(message.body, item.quote)
             )
         )
       )
@@ -196,7 +198,9 @@ export class GeminiProvider implements AIProvider {
         briefing.usedKnowledgeIds.some(
           (id) => !parsedInput.data.approvedKnowledge.some((knowledge) => knowledge.id === id)
         ) ||
-        briefing.evidence.some((item) => !sourceTexts.get(item.sourceId)?.includes(item.quote))
+        briefing.evidence.some(
+          (item) => !sourceContainsGroundedQuote(sourceTexts.get(item.sourceId), item.quote)
+        )
       ) {
         throw providerError();
       }

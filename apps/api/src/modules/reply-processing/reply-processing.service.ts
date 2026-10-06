@@ -6,20 +6,25 @@ import { prisma } from "../../shared/prisma.js";
 import { createAIProvider } from "../ai/ai.factory.js";
 import type { AIProvider, ReplyUnderstandingResult } from "../ai/ai.provider.js";
 import { replyUnderstandingResultSchema } from "../ai/ai.schemas.js";
+import { sourceContainsGroundedQuote } from "../ai/grounding.js";
 import { publishDomainEvent } from "../domain-events/domain-events.service.js";
+import type { EmailProvider } from "../email/email.provider.js";
 import { listApprovedKnowledge } from "../knowledge-base/knowledge-base.service.js";
 import { createMeetingRequestForReply } from "../meetings/meeting.service.js";
 import { createNegotiationHandoffForReply } from "../notifications/notification.service.js";
 import { recalculateQualification } from "../qualification/qualification.service.js";
+import { orchestrateSalesConversationForReply } from "../sales-conversation/sales-conversation-orchestrator.service.js";
 import { recalculateLeadScoreForSystem } from "../scoring/scoring.service.js";
 import {
   explicitNegotiationSignals,
+  hasExplicitDncStopSignal,
   intentRequiresHumanReviewGate,
   safeReplyUnderstandingOutput
 } from "./reply-policy.js";
 
 export interface ProcessReplyOptions {
   provider?: AIProvider;
+  emailProvider?: EmailProvider;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -62,7 +67,10 @@ function toDto(run: ReplyRunRecord): ReplyProcessingRunDto {
   };
 }
 
-function providerMetadata(env: NodeJS.ProcessEnv | undefined, provider?: AIProvider): {
+function providerMetadata(
+  env: NodeJS.ProcessEnv | undefined,
+  provider?: AIProvider
+): {
   providerName: string;
   model: string;
 } {
@@ -81,7 +89,7 @@ function validateGrounding(input: {
 }): void {
   for (const evidence of input.output.evidence) {
     const message = input.messages.find((item) => item.id === evidence.messageId);
-    if (!message?.body.includes(evidence.quote)) {
+    if (!sourceContainsGroundedQuote(message?.body, evidence.quote)) {
       throw new AppError(502, "PROVIDER_ERROR", "AI reply evidence was not grounded in messages");
     }
   }
@@ -145,6 +153,11 @@ export async function processInboundReply(
         intent: completed.intent,
         summary: completed.summary
       });
+      await orchestrateSalesConversationForReply(completed.id, {
+        aiProvider: options?.provider,
+        emailProvider: options?.emailProvider,
+        env: options?.env
+      });
     }
     return toDto(completed);
   }
@@ -176,7 +189,8 @@ export async function processInboundReply(
       requirement: eligibleInbound.lead.requirement,
       serviceInterest: eligibleInbound.lead.serviceInterest,
       company: eligibleInbound.lead.company.name,
-      contact: `${eligibleInbound.lead.contact.firstName} ${eligibleInbound.lead.contact.lastName}`.trim(),
+      contact:
+        `${eligibleInbound.lead.contact.firstName} ${eligibleInbound.lead.contact.lastName}`.trim(),
       doNotContact: eligibleInbound.lead.contact.doNotContact
     },
     qualification,
@@ -207,7 +221,10 @@ export async function processInboundReply(
         body: message.body
       })),
       leadContext: JSON.stringify(inputContext),
-      approvedKnowledge: approvedKnowledge.map((item) => ({ id: item.versionId, content: item.content }))
+      approvedKnowledge: approvedKnowledge.map((item) => ({
+        id: item.versionId,
+        content: item.content
+      }))
     });
     const parsed = replyUnderstandingResultSchema.parse(rawOutput);
     validateGrounding({
@@ -215,7 +232,7 @@ export async function processInboundReply(
       messages,
       approvedKnowledgeIds
     });
-    const output = safeReplyUnderstandingOutput(parsed);
+    const output = safeReplyUnderstandingOutput(parsed, messages);
     await recalculateQualification(eligibleInbound.lead.id, provider);
     await recalculateLeadScoreForSystem(eligibleInbound.lead.id);
     const run = await persistSuccessfulRun({
@@ -231,6 +248,11 @@ export async function processInboundReply(
       intent: output.intent,
       summary: output.summary
     });
+    await orchestrateSalesConversationForReply(run.id, {
+      aiProvider: provider,
+      emailProvider: options?.emailProvider,
+      env: options?.env
+    });
     return toDto(run);
   } catch (error) {
     const code = error instanceof AppError ? error.code : "PROVIDER_ERROR";
@@ -242,7 +264,7 @@ export async function processInboundReply(
         inbound: eligibleInbound,
         idempotencyKey,
         inputContext,
-        output: safeReplyUnderstandingOutput(fallbackOutput),
+        output: safeReplyUnderstandingOutput(fallbackOutput, messages),
         metadata: {
           providerName: "deterministic-negotiation-safety",
           model: "explicit-commercial-terms-v1"
@@ -253,6 +275,11 @@ export async function processInboundReply(
         inbound: eligibleInbound,
         intent: fallbackOutput.intent,
         summary: fallbackOutput.summary
+      });
+      await orchestrateSalesConversationForReply(run.id, {
+        aiProvider: options?.provider,
+        emailProvider: options?.emailProvider,
+        env: options?.env
       });
       return toDto(run);
     }
@@ -268,7 +295,9 @@ export async function processInboundReply(
   }
 }
 
-function messageProvider(message: Prisma.MessageGetPayload<Record<string, never>>): "TWILIO" | "META_WHATSAPP" {
+function messageProvider(
+  message: Prisma.MessageGetPayload<Record<string, never>>
+): "TWILIO" | "META_WHATSAPP" {
   const metadata = message.metadata;
   if (
     typeof metadata === "object" &&
@@ -295,7 +324,11 @@ export async function processInboundMessageReply(
       }
     }
   });
-  if (message?.direction !== "INBOUND" || message.senderType !== "PROSPECT" || message.conversation.channel !== "WHATSAPP") {
+  if (
+    message?.direction !== "INBOUND" ||
+    message.senderType !== "PROSPECT" ||
+    message.conversation.channel !== "WHATSAPP"
+  ) {
     throw new AppError(409, "CONFLICT", "Inbound message is not eligible for reply processing");
   }
   const lead = message.conversation.lead;
@@ -340,7 +373,9 @@ export async function processInboundMessageReply(
   return processInboundReply(inbound.id, options);
 }
 
-async function findEligibleInbound(inboundEmailId: string): Promise<EligibleReplyInboundRecord | null> {
+async function findEligibleInbound(
+  inboundEmailId: string
+): Promise<EligibleReplyInboundRecord | null> {
   const inbound = await prisma.inboundEmail.findUnique({
     where: { id: inboundEmailId },
     include: {
@@ -394,6 +429,98 @@ async function createMeetingRequestForMeetingIntent(input: {
         inboundEmailId: input.inbound.id,
         conversationId: input.inbound.conversation.id,
         code: error instanceof AppError ? error.code : "MEETING_REQUEST_FAILED"
+      }
+    });
+  }
+}
+
+async function stopLeadAutomationForCustomerIntent(input: {
+  client: Prisma.TransactionClient;
+  leadId: string;
+  reason: string;
+}): Promise<void> {
+  const stoppedAt = new Date();
+  const followUps = await input.client.followUpSequence.findMany({
+    where: { leadId: input.leadId, status: "ACTIVE" },
+    include: { attempts: { where: { status: "SCHEDULED" } } }
+  });
+  for (const sequence of followUps) {
+    const eventIds = sequence.attempts
+      .map((attempt) => attempt.domainEventId)
+      .filter((id): id is string => Boolean(id));
+    await input.client.followUpSequence.update({
+      where: { id: sequence.id },
+      data: { status: "STOPPED", stopReason: input.reason, stoppedAt }
+    });
+    await input.client.followUpAttempt.updateMany({
+      where: { sequenceId: sequence.id, status: "SCHEDULED" },
+      data: {
+        status: "CANCELLED",
+        failedAt: stoppedAt,
+        failureCode: input.reason,
+        failureMessage: "Customer intent stopped pending follow-up automation"
+      }
+    });
+    await input.client.domainEventOutbox.updateMany({
+      where: { id: { in: eventIds }, status: { in: ["PENDING", "QUEUED", "PROCESSING"] } },
+      data: {
+        status: "ATTENTION_REQUIRED",
+        deadLetteredAt: stoppedAt,
+        lastErrorCode: input.reason,
+        lastErrorMessage: "Customer intent stopped pending follow-up automation"
+      }
+    });
+    await input.client.auditEvent.create({
+      data: {
+        actorType: "SYSTEM",
+        entityType: "FollowUpSequence",
+        entityId: sequence.id,
+        action: "FOLLOW_UP_SEQUENCE_STOPPED",
+        after: { leadId: input.leadId, reason: input.reason }
+      }
+    });
+  }
+
+  const callingSequences = await input.client.callingSequence.findMany({
+    where: { leadId: input.leadId, status: "ACTIVE" },
+    include: { attempts: { where: { status: "SCHEDULED" } } }
+  });
+  for (const sequence of callingSequences) {
+    const eventIds = sequence.attempts
+      .map((attempt) => attempt.domainEventId)
+      .filter((id): id is string => Boolean(id));
+    await input.client.callingSequence.update({
+      where: { id: sequence.id },
+      data: { status: "STOPPED", stopReason: input.reason, stoppedAt }
+    });
+    await input.client.callingAttempt.updateMany({
+      where: { sequenceId: sequence.id, status: "SCHEDULED" },
+      data: {
+        status: "SKIPPED",
+        completedAt: stoppedAt,
+        failureCode: input.reason,
+        failureMessage: "Customer intent stopped pending calling automation"
+      }
+    });
+    await input.client.domainEventOutbox.updateMany({
+      where: {
+        OR: [{ id: { in: eventIds } }, { correlationId: sequence.id }],
+        status: { in: ["PENDING", "QUEUED", "PROCESSING"] }
+      },
+      data: {
+        status: "ATTENTION_REQUIRED",
+        deadLetteredAt: stoppedAt,
+        lastErrorCode: input.reason,
+        lastErrorMessage: "Customer intent stopped pending calling/WhatsApp automation"
+      }
+    });
+    await input.client.auditEvent.create({
+      data: {
+        actorType: "SYSTEM",
+        entityType: "CallingSequence",
+        entityId: sequence.id,
+        action: "CALLING_SEQUENCE_STOPPED",
+        after: { leadId: input.leadId, reason: input.reason }
       }
     });
   }
@@ -531,6 +658,37 @@ async function persistSuccessfulRun(input: {
         where: { id: conversationId },
         data: { mode: "PAUSED" }
       });
+      await stopLeadAutomationForCustomerIntent({
+        client: tx,
+        leadId: input.inbound.lead.id,
+        reason: "CUSTOMER_NOT_INTERESTED"
+      });
+      const explicitDnc = hasExplicitDncStopSignal(input.inbound.textBody);
+      if (explicitDnc) {
+        await tx.contact.update({
+          where: { id: input.inbound.lead.contactId },
+          data: { doNotContact: true }
+        });
+        if (input.inbound.lead.contact.email && input.inbound.lead.contact.normalizedEmail) {
+          await tx.emailSuppression.upsert({
+            where: { normalizedEmail: input.inbound.lead.contact.normalizedEmail },
+            create: {
+              email: input.inbound.lead.contact.email,
+              normalizedEmail: input.inbound.lead.contact.normalizedEmail,
+              reason: "UNSUBSCRIBE",
+              source: "CUSTOMER_REPLY",
+              provider: input.inbound.provider,
+              providerEventId: input.inbound.providerEventId
+            },
+            update: {
+              reason: "UNSUBSCRIBE",
+              source: "CUSTOMER_REPLY",
+              provider: input.inbound.provider,
+              providerEventId: input.inbound.providerEventId
+            }
+          });
+        }
+      }
     }
     if (humanHandoffRequired) {
       await tx.conversation.update({
@@ -553,10 +711,7 @@ async function persistSuccessfulRun(input: {
         actorType: "SYSTEM",
         entityType: "ReplyProcessingRun",
         entityId: run.id,
-        action:
-          input.output.intent === "NEGOTIATION"
-            ? "NEGOTIATION_DETECTED"
-            : "REPLY_UNDERSTOOD",
+        action: input.output.intent === "NEGOTIATION" ? "NEGOTIATION_DETECTED" : "REPLY_UNDERSTOOD",
         after: {
           inboundEmailId: input.inbound.id,
           intent: input.output.intent,
@@ -568,9 +723,7 @@ async function persistSuccessfulRun(input: {
     await publishDomainEvent({
       client: tx,
       eventType:
-        input.output.intent === "NEGOTIATION"
-          ? "NEGOTIATION_DETECTED"
-          : "REPLY_UNDERSTOOD",
+        input.output.intent === "NEGOTIATION" ? "NEGOTIATION_DETECTED" : "REPLY_UNDERSTOOD",
       aggregateType: "ReplyProcessingRun",
       aggregateId: run.id,
       correlationId: input.inbound.id,

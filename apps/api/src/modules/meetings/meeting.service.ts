@@ -744,12 +744,12 @@ export async function confirmMeetingRequest(
           providerOrganizerEmail: createResult.organizerEmail,
           providerSyncStatus: "SYNCED",
           providerLastError: null,
-          zohoSyncStatus: "NOT_CONFIGURED",
-          zohoLastError:
-            "Zoho meeting sync remains unavailable until the client confirms CRM meeting mapping",
-          partyNotificationStatus: "NOT_REQUIRED",
-          partyNotificationNote:
-            "No external participant notification was sent because OC-09 confirmation/notification semantics remain open"
+          zohoSyncStatus: "PENDING",
+          zohoLastError: null,
+          partyNotificationStatus: request.lead.contact.email ? "SYNCED" : "NOT_REQUIRED",
+          partyNotificationNote: request.lead.contact.email
+            ? "Google Calendar sent an invitation to the contact email."
+            : "No contact email is available for an external invitation."
         }
       });
       await tx.externalRecordMapping.upsert({
@@ -786,7 +786,7 @@ export async function confirmMeetingRequest(
           lastActivityAt: new Date()
         }
       });
-      await tx.activity.create({
+      const activity = await tx.activity.create({
         data: {
           leadId: request.leadId,
           actorUserId: actor.id,
@@ -805,7 +805,7 @@ export async function confirmMeetingRequest(
             leadId: request.leadId,
             selectedSlotId: slot.id,
             providerMeetingId: externalMeetingId,
-            zohoSyncStatus: "NOT_CONFIGURED"
+            zohoSyncStatus: "PENDING"
           }
         }
       });
@@ -819,7 +819,8 @@ export async function confirmMeetingRequest(
         payload: {
           leadId: request.leadId,
           selectedSlotId: slot.id,
-          providerMeetingId: externalMeetingId
+          providerMeetingId: externalMeetingId,
+          activityId: activity.id
         }
       });
       return tx.meetingRequest.findUniqueOrThrow({

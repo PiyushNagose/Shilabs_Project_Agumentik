@@ -888,6 +888,34 @@ describe("web app", () => {
     expect(screen.getByRole("button", { name: "Sign in" })).toBeTruthy();
   });
 
+  it("finishes workspace initialization when a filter refresh completes first", async () => {
+    storeAuth();
+    window.history.replaceState(null, "", "/crm");
+    let finishStages!: (response: Response) => void;
+    const stagesResponse = new Promise<Response>((resolve) => { finishStages = resolve; });
+    let filtered = false;
+    vi.spyOn(window, "fetch").mockImplementation((input) => {
+      const url = requestUrl(input);
+      if (url.endsWith("/api/pipeline/stages")) return stagesResponse;
+      if (url.includes("/api/leads?") && new URL(url).searchParams.get("search") === "filtered") {
+        filtered = true;
+        return Promise.resolve(jsonResponse(leadPage([
+          { ...lead, company: { ...lead.company, name: "Filtered company" } }
+        ])));
+      }
+      return crmFetch(input);
+    });
+    render(<App />);
+    fireEvent.change(await screen.findByRole("searchbox", { name: "Search leads" }), {
+      target: { value: "filtered" }
+    });
+    await waitFor(() => expect(filtered).toBe(true));
+    finishStages(jsonResponse([newStage, qualifiedStage]));
+    await waitFor(() => expect(screen.queryByText("Loading CRM")).toBeNull());
+    expect(within(screen.getByRole("table", { name: "Leads list" })).getByText("Filtered company")).toBeTruthy();
+    expect(within(screen.getByLabelText("Change lead stage")).getByRole("option", { name: "Qualified" })).toBeTruthy();
+  });
+
   it("shows the authenticated app shell after login", async () => {
     vi.spyOn(window, "fetch").mockImplementation((input) => {
       const url = requestUrl(input);
@@ -1243,8 +1271,8 @@ describe("web app", () => {
     expect(await screen.findByText("No proposals")).toBeTruthy();
     fireEvent.click(await screen.findByRole("button", { name: "Generate grounded proposal" }));
 
-    expect(await screen.findAllByText("AI Sales Automation Proposal")).toHaveLength(2);
-    expect(screen.getAllByText("WAITING APPROVAL").length).toBeGreaterThanOrEqual(2);
+    expect(await screen.findByRole("heading", { name: "AI Sales Automation Proposal" })).toBeTruthy();
+    expect(screen.getAllByText("WAITING APPROVAL").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("Grounded proposal content from persisted qualification and approved knowledge.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Approve" })).toBeTruthy();
     expect(
@@ -1504,12 +1532,12 @@ describe("web app", () => {
     render(<App />);
     expect(await screen.findByText("No proposals")).toBeTruthy();
     fireEvent.click(await screen.findByRole("button", { name: "Generate grounded proposal" }));
-    expect(await screen.findAllByText("AI Sales Automation Proposal")).toHaveLength(2);
+    expect(await screen.findByRole("heading", { name: "AI Sales Automation Proposal" })).toBeTruthy();
     expect((await screen.findByRole("status")).textContent).toContain("Grounded proposal generated");
 
     cleanup();
     render(<App />);
-    expect(await screen.findAllByText("AI Sales Automation Proposal")).toHaveLength(2);
+    expect(await screen.findByRole("heading", { name: "AI Sales Automation Proposal" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Generate grounded proposal" })).toBeNull();
 
     fireEvent.change(screen.getByLabelText("Title"), {
@@ -1523,7 +1551,7 @@ describe("web app", () => {
 
     cleanup();
     render(<App />);
-    expect(await screen.findAllByText("Edited AI Sales Proposal")).toHaveLength(2);
+    expect(await screen.findByRole("heading", { name: "Edited AI Sales Proposal" })).toBeTruthy();
     expect(fieldValue("Proposal content")).toBe("Edited persisted proposal content.");
 
     fireEvent.click(screen.getByRole("button", { name: "Approve" }));
@@ -1533,7 +1561,7 @@ describe("web app", () => {
 
     cleanup();
     render(<App />);
-    expect(await screen.findAllByText("Edited AI Sales Proposal")).toHaveLength(2);
+    expect(await screen.findByRole("heading", { name: "Edited AI Sales Proposal" })).toBeTruthy();
     expect(screen.getAllByText("APPROVED").length).toBeGreaterThanOrEqual(1);
     expect(buttonDisabled("Send approved")).toBe(false);
 
@@ -1544,7 +1572,7 @@ describe("web app", () => {
 
     cleanup();
     render(<App />);
-    expect(await screen.findAllByText("Edited AI Sales Proposal")).toHaveLength(2);
+    expect(await screen.findByRole("heading", { name: "Edited AI Sales Proposal" })).toBeTruthy();
     expect(screen.getAllByText("SENT").length).toBeGreaterThanOrEqual(1);
     expect(buttonDisabled("Send approved")).toBe(true);
     expect(sendCalls).toBe(1);

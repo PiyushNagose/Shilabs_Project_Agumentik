@@ -52,7 +52,7 @@ function getInitials(firstName: string, lastName: string): string {
 function viewTitle(view: ShellView): string {
   if (view === "Dashboard") return "Sales Engineer Action Dashboard";
   if (view === "Operations") return "Operations Dashboard";
-  return "Sales Workspace";
+  return view === "CRM" || view === "My Workspace" ? "Sales Workspace" : view;
 }
 
 const routeByView: Record<ShellView, string> = {
@@ -135,7 +135,10 @@ export function AuthenticatedShell(): React.JSX.Element {
       leadId: input.leadId ?? null,
       tab: input.tab
     };
-    window.history.pushState(null, "", routeFor(nextRoute));
+    const path = routeFor(nextRoute);
+    if (window.location.pathname + window.location.search !== path) {
+      window.history.pushState(null, "", path);
+    }
     setRouteState(nextRoute);
     setWorkspaceTarget({ leadId: nextRoute.leadId, tab: nextRoute.tab });
   }
@@ -182,9 +185,11 @@ export function AuthenticatedShell(): React.JSX.Element {
         {navItems.map((item) => (
           <a
             className={activeView === item.label ? "active-nav" : ""}
+            aria-current={activeView === item.label ? "page" : undefined}
             href={routeFor({ view: item.label })}
             key={item.label}
             onClick={(event) => {
+              if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
               event.preventDefault();
               navigate({ view: item.label });
             }}
@@ -206,6 +211,7 @@ export function AuthenticatedShell(): React.JSX.Element {
           onOpenLead={(leadId, tab) => {
             navigate({ view: "CRM", leadId, tab });
           }}
+          onOpenOperations={() => navigate({ view: "Operations" })}
         />
       ) : activeView === "Operations" ? (
         <OperationsDashboard accessToken={accessToken} />
@@ -221,8 +227,8 @@ export function AuthenticatedShell(): React.JSX.Element {
         <section className="crm-workspace">
           <div className="workspace-panel reserved-workspace">
             <div className="state-block" role="status">
-              <strong>{activeView} is reserved for live platform data</strong>
-              <span>This milestone does not expose that workflow yet, so no demo or fake runtime data is shown.</span>
+              <strong>{activeView} is not available yet</strong>
+              <span>This section has not been enabled.</span>
             </div>
           </div>
         </section>

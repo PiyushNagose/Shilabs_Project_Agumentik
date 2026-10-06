@@ -4,6 +4,22 @@ export const workerPrisma = new PrismaClient();
 
 export type DomainEventRecord = DomainEventOutbox;
 
+export async function expireExhaustedPendingDomainEvents(now: Date): Promise<number> {
+  return workerPrisma.$executeRaw`
+    UPDATE "DomainEventOutbox"
+    SET
+      status = 'ATTENTION_REQUIRED',
+      "failedAt" = ${now},
+      "deadLetteredAt" = ${now},
+      "lastErrorCode" = 'MAX_ATTEMPTS_EXHAUSTED',
+      "lastErrorMessage" = 'Domain event reached max attempts before processing',
+      "updatedAt" = ${now}
+    WHERE status = 'PENDING'
+      AND "nextAttemptAt" <= ${now}
+      AND attempts >= "maxAttempts"
+  `;
+}
+
 export async function findDueDomainEvents(input: {
   now: Date;
   limit: number;
@@ -11,13 +27,12 @@ export async function findDueDomainEvents(input: {
   const candidates = await workerPrisma.domainEventOutbox.findMany({
     where: {
       status: "PENDING",
-      nextAttemptAt: { lte: input.now },
-      attempts: { lt: 1000000 }
+      nextAttemptAt: { lte: input.now }
     },
     orderBy: [{ priority: "desc" }, { nextAttemptAt: "asc" }, { createdAt: "asc" }],
-    take: input.limit * 2
+    take: input.limit
   });
-  return candidates.filter((event) => event.attempts < event.maxAttempts).slice(0, input.limit);
+  return candidates;
 }
 
 export async function markDomainEventQueued(input: {
@@ -136,15 +151,20 @@ export async function recordDomainEventFailure(input: {
 }
 
 export async function recoverStaleDomainEvents(input: {
-  staleBefore: Date;
+  queuedStaleBefore: Date;
+  processingStaleBefore: Date;
   now: Date;
   limit: number;
 }): Promise<number> {
   const staleEvents = await workerPrisma.domainEventOutbox.findMany({
     where: {
       OR: [
-        { status: "QUEUED", queuedAt: { lt: input.staleBefore } },
-        { status: "PROCESSING", lockedAt: { lt: input.staleBefore } }
+        {
+          status: "QUEUED",
+          queuedAt: { lt: input.queuedStaleBefore },
+          nextAttemptAt: { lte: input.now }
+        },
+        { status: "PROCESSING", lockedAt: { lt: input.processingStaleBefore } }
       ]
     },
     take: input.limit

@@ -17,6 +17,11 @@ import type { EmailProvider } from "../email/email.provider.js";
 import { appendActivityToZohoTimeline } from "../integrations/zoho-bigin/zoho-bigin-timeline.service.js";
 import { findDealByLeadId } from "../deals/deal.repository.js";
 import { findLeadById } from "../leads/lead.repository.js";
+import {
+  assertCanAccessLead,
+  assertCanMutateLead,
+  leadVisibilityWhere
+} from "../leads/lead.permissions.js";
 import { toLeadDto } from "../leads/lead.service.js";
 import { listProposals } from "../proposals/proposal.service.js";
 import { getQualification } from "../qualification/qualification.service.js";
@@ -135,7 +140,11 @@ function defaultHumanReplySubject(conversation: ConversationRecord): string {
 function assertHumanReplyActor(actor: AuthenticatedUser, conversation: ConversationRecord): void {
   if (actor.role === "ADMIN" || actor.role === "SALES_MANAGER") return;
   if (conversation.lead.ownerId === actor.id) return;
-  throw new AppError(403, "AUTHORIZATION_ERROR", "Only the assigned owner can send this human reply");
+  throw new AppError(
+    403,
+    "AUTHORIZATION_ERROR",
+    "Only the assigned owner can send this human reply"
+  );
 }
 
 interface SendHumanReplyOptions {
@@ -144,11 +153,15 @@ interface SendHumanReplyOptions {
   zohoTransport?: typeof fetch;
 }
 
-export async function createConversation(input: CreateConversationInput): Promise<ConversationDto> {
+export async function createConversation(
+  actor: AuthenticatedUser,
+  input: CreateConversationInput
+): Promise<ConversationDto> {
   const lead = await findLeadById(input.leadId);
   if (!lead) {
     throw new AppError(404, "NOT_FOUND", "Lead not found");
   }
+  assertCanMutateLead(actor, lead);
 
   const conversation = await createConversationRecord({
     lead: { connect: { id: lead.id } },
@@ -159,23 +172,36 @@ export async function createConversation(input: CreateConversationInput): Promis
   return toConversationDto(conversation);
 }
 
-export async function listConversations(query: ListConversationsQuery): Promise<ConversationDto[]> {
+export async function listConversations(
+  actor: AuthenticatedUser,
+  query: ListConversationsQuery
+): Promise<ConversationDto[]> {
   return (
     await listConversationRecords({
       leadId: query.leadId,
       channel: query.channel,
       mode: query.mode,
-      status: query.status
+      status: query.status,
+      lead: leadVisibilityWhere(actor)
     })
   ).map(toConversationDto);
 }
 
-export async function getConversation(conversationId: string): Promise<ConversationDto> {
-  return toConversationDto(requireConversation(await findConversationById(conversationId)));
+export async function getConversation(
+  actor: AuthenticatedUser,
+  conversationId: string
+): Promise<ConversationDto> {
+  const conversation = requireConversation(await findConversationById(conversationId));
+  assertCanAccessLead(actor, conversation.lead);
+  return toConversationDto(conversation);
 }
 
-export async function listMessages(conversationId: string): Promise<MessageDto[]> {
-  requireConversation(await findConversationById(conversationId));
+export async function listMessages(
+  actor: AuthenticatedUser,
+  conversationId: string
+): Promise<MessageDto[]> {
+  const conversation = requireConversation(await findConversationById(conversationId));
+  assertCanAccessLead(actor, conversation.lead);
   return (await listMessageRecords(conversationId)).map(toMessageDto);
 }
 
@@ -185,6 +211,7 @@ export async function appendMessage(
   input: CreateMessageInput
 ): Promise<MessageDto> {
   const conversation = requireConversation(await findConversationById(conversationId));
+  assertCanMutateLead(actor, conversation.lead);
   if (conversation.status === "CLOSED") {
     throw new AppError(409, "CONFLICT", "Cannot append messages to a closed conversation");
   }
@@ -258,12 +285,16 @@ export async function sendHumanReply(
 
   const subject = input.subject ?? defaultHumanReplySubject(conversation);
   const idempotencyKey = `human-reply:${conversation.id}:${input.idempotencyKey}`;
-  const outboundEmail = await sendOutboundEmail(actor, {
-    leadId: conversation.leadId,
-    subject,
-    textBody: input.body,
-    idempotencyKey
-  }, { env: options?.env, provider: options?.emailProvider });
+  const outboundEmail = await sendOutboundEmail(
+    actor,
+    {
+      leadId: conversation.leadId,
+      subject,
+      textBody: input.body,
+      idempotencyKey
+    },
+    { env: options?.env, provider: options?.emailProvider }
+  );
 
   if (outboundEmail.status !== "SENT") {
     return { outboundEmail, message: null, zohoTimeline: null };
@@ -369,6 +400,7 @@ export async function updateConversationMode(
   input: UpdateConversationModeInput
 ): Promise<ConversationDto> {
   const existing = requireConversation(await findConversationById(conversationId));
+  assertCanMutateLead(actor, existing.lead);
   const conversation = await updateConversationModeWithAudit({
     actorId: actor.id,
     conversationId,
@@ -386,6 +418,7 @@ export async function startHumanTakeover(
   input: StartHumanTakeoverInput
 ): Promise<HumanTakeoverDto> {
   const existing = requireConversation(await findConversationById(conversationId));
+  assertCanMutateLead(actor, existing.lead);
   if (existing.status === "CLOSED") {
     throw new AppError(409, "CONFLICT", "Cannot start human takeover on a closed conversation");
   }
@@ -466,9 +499,11 @@ export async function startHumanTakeover(
 }
 
 export async function getHumanTakeoverBriefing(
+  actor: AuthenticatedUser,
   conversationId: string
 ): Promise<HumanTakeoverBriefingDto> {
   const conversation = requireConversation(await findConversationById(conversationId));
+  assertCanAccessLead(actor, conversation.lead);
   const takeover = await prisma.humanTakeover.findFirst({
     where: { conversationId, status: "ACTIVE" },
     include: { takenOverBy: true },

@@ -38,13 +38,81 @@ function buildWorkerEmailProvider(
   return new WorkerAwsSesProvider(config);
 }
 
+function followUpLeadNextAction(attempt: { stepIndex: number; scheduledAt: Date }): {
+  nextAction: string;
+  nextActionAt: Date;
+} {
+  return {
+    nextAction:
+      attempt.stepIndex === 0
+        ? "Send first follow-up email"
+        : `Send follow-up email ${String(attempt.stepIndex + 1)}`,
+    nextActionAt: attempt.scheduledAt
+  };
+}
+
+function isFollowUpLeadAction(value: string | null): boolean {
+  return value === "Send first follow-up email" || value?.startsWith("Send follow-up email ") === true;
+}
+
+async function hasProspectInboundAfter(input: { leadId: string; since: Date }): Promise<boolean> {
+  const [emailCount, messageCount] = await Promise.all([
+    workerPrisma.inboundEmail.count({
+      where: { leadId: input.leadId, status: "PROCESSED", receivedAt: { gte: input.since } }
+    }),
+    workerPrisma.message.count({
+      where: {
+        direction: "INBOUND",
+        senderType: "PROSPECT",
+        conversation: { leadId: input.leadId },
+        OR: [
+          { sentAt: { gte: input.since } },
+          { deliveredAt: { gte: input.since } },
+          { createdAt: { gte: input.since } }
+        ]
+      }
+    })
+  ]);
+  return emailCount > 0 || messageCount > 0;
+}
+
+async function syncLeadNextActionForFollowUpSequence(sequenceId: string): Promise<void> {
+  const sequence = await workerPrisma.followUpSequence.findUnique({
+    where: { id: sequenceId },
+    include: {
+      lead: { select: { id: true, nextAction: true } },
+      attempts: {
+        where: { status: { in: ["SCHEDULED", "SENDING"] } },
+        orderBy: [{ scheduledAt: "asc" }, { stepIndex: "asc" }]
+      }
+    }
+  });
+  if (!sequence) return;
+
+  const nextAttempt = sequence.status === "ACTIVE" ? sequence.attempts[0] : null;
+  if (nextAttempt) {
+    await workerPrisma.lead.update({
+      where: { id: sequence.leadId },
+      data: followUpLeadNextAction(nextAttempt)
+    });
+    return;
+  }
+
+  if (isFollowUpLeadAction(sequence.lead.nextAction)) {
+    await workerPrisma.lead.update({
+      where: { id: sequence.leadId },
+      data: { nextAction: null, nextActionAt: null }
+    });
+  }
+}
+
 async function markAttemptFailed(input: {
   attemptId: string;
   status: "BLOCKED" | "FAILED" | "SKIPPED";
   code: string;
   message: string;
 }): Promise<void> {
-  await workerPrisma.followUpAttempt.update({
+  const attempt = await workerPrisma.followUpAttempt.update({
     where: { id: input.attemptId },
     data: {
       status: input.status,
@@ -53,6 +121,7 @@ async function markAttemptFailed(input: {
       failureMessage: input.message
     }
   });
+  await syncLeadNextActionForFollowUpSequence(attempt.sequenceId);
 }
 
 async function syncZohoTimelineAfterSend(input: {
@@ -132,6 +201,7 @@ async function reconcileFollowUpSequenceAfterSend(input: {
       where: { id: sequence.id, status: "ACTIVE" },
       data: { currentStep: contiguousSentSteps }
     });
+    await syncLeadNextActionForFollowUpSequence(sequence.id);
     return;
   }
 
@@ -145,6 +215,7 @@ async function reconcileFollowUpSequenceAfterSend(input: {
       followUpSequenceId: sequence.id,
       env: input.env
     });
+    await syncLeadNextActionForFollowUpSequence(sequence.id);
   }
 }
 
@@ -195,16 +266,14 @@ async function sendFollowUpEmail(input: {
   const suppression = normalizedEmail
     ? await workerPrisma.emailSuppression.findUnique({ where: { normalizedEmail } })
     : null;
-  const inboundAfterSequence = await workerPrisma.inboundEmail.count({
-    where: { leadId: lead.id, status: "PROCESSED", receivedAt: { gte: attempt.sequence.createdAt } }
+  const inboundAfterSequence = await hasProspectInboundAfter({
+    leadId: lead.id,
+    since: attempt.sequence.createdAt
   });
   const activeTakeover = await workerPrisma.humanTakeover.findFirst({
     where: {
       status: "ACTIVE",
-      OR: [
-        { leadId: lead.id },
-        ...(conversation ? [{ conversationId: conversation.id }] : [])
-      ]
+      OR: [{ leadId: lead.id }, ...(conversation ? [{ conversationId: conversation.id }] : [])]
     },
     select: { id: true }
   });
@@ -221,7 +290,7 @@ async function sendFollowUpEmail(input: {
             ? ["AUTOMATION_PAUSED", `Conversation mode ${conversation.mode} blocks automation`]
             : activeTakeover
               ? ["HUMAN_TAKEOVER_ACTIVE", "Human takeover blocks follow-up automation"]
-              : inboundAfterSequence > 0
+              : inboundAfterSequence
                 ? ["INBOUND_REPLY_RECEIVED", "Inbound reply stopped follow-up automation"]
                 : null;
   if (blocked) {

@@ -116,7 +116,7 @@ async function fixture() {
       idempotencyKey: `r13-worker-domain-event:${attempt.id}`
     }
   });
-  return { event, attempt };
+  return { event, attempt, lead, sequence };
 }
 
 async function outOfOrderFinalAttemptFixture() {
@@ -242,6 +242,45 @@ describe("R13 follow-up email worker handler", () => {
     await expect(
       workerPrisma.outboundEmail.findUniqueOrThrow({ where: { idempotencyKey: attempt.idempotencyKey } })
     ).resolves.toMatchObject({ status: "SENT", providerMessageId: "ses-r13-1" });
+  }, 45000);
+
+  it("advances lead next action to the next active scheduled follow-up after a send", async () => {
+    const { event, attempt, lead, sequence } = await fixture();
+    const nextScheduledAt = new Date(Date.now() + 60_000);
+    await workerPrisma.lead.update({
+      where: { id: lead.id },
+      data: { nextAction: "Send first follow-up email", nextActionAt: attempt.scheduledAt }
+    });
+    await workerPrisma.followUpAttempt.create({
+      data: {
+        sequenceId: sequence.id,
+        leadId: lead.id,
+        stepIndex: 1,
+        kind: "FOLLOW_UP",
+        scheduledAt: nextScheduledAt,
+        subject: "Following up again",
+        textBody: "Checking back in",
+        idempotencyKey: `r13-worker-attempt:${sequence.id}:1`
+      }
+    });
+    const provider = new TestEmailProvider();
+    const timelineSyncer = new TestTimelineSyncer([
+      { status: "SYNCED", externalRecordId: "zoho-note-next-action", lastError: null }
+    ]);
+    const env = {
+      AWS_SES_REGION: "us-east-1",
+      AWS_SES_FROM_EMAIL: "sales@example.com",
+      AWS_SES_ACCESS_KEY_ID: "test",
+      AWS_SES_SECRET_ACCESS_KEY: "test"
+    };
+
+    await sendFollowUpEmail({ event, provider, env, timelineSyncer });
+
+    await expect(workerPrisma.lead.findUniqueOrThrow({ where: { id: lead.id } }))
+      .resolves.toMatchObject({
+        nextAction: "Send follow-up email 2",
+        nextActionAt: nextScheduledAt
+      });
   }, 45000);
 
   it("retries Zoho only after SES success and never resends", async () => {

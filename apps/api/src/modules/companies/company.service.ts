@@ -2,6 +2,11 @@ import { Prisma } from "@prisma/client";
 import type { CompanyDto } from "@shilabs/shared-types";
 import { normalizeWebsite } from "@shilabs/validation";
 import { AppError } from "../../shared/errors.js";
+import type { AuthenticatedUser } from "../auth/auth.types.js";
+import {
+  assertCanAccessCompany,
+  companyVisibilityWhere
+} from "../authorization/crm-record.permissions.js";
 import type { CreateCompanyInput, UpdateCompanyInput } from "./company.schemas.js";
 import {
   createCompany as createCompanyRecord,
@@ -55,15 +60,20 @@ async function ensureWebsiteIsAvailable(
   }
 }
 
-export async function listCompanies(): Promise<CompanyDto[]> {
-  return (await listCompanyRecords()).map(toCompanyDto);
+export async function listCompanies(actor: AuthenticatedUser): Promise<CompanyDto[]> {
+  return (await listCompanyRecords(companyVisibilityWhere(actor))).map(toCompanyDto);
 }
 
-export async function getCompany(companyId: string): Promise<CompanyDto> {
-  return toCompanyDto(requireCompany(await findCompanyById(companyId)));
+export async function getCompany(actor: AuthenticatedUser, companyId: string): Promise<CompanyDto> {
+  const company = requireCompany(await findCompanyById(companyId));
+  await assertCanAccessCompany(actor, company.id);
+  return toCompanyDto(company);
 }
 
-export async function createCompany(input: CreateCompanyInput): Promise<CompanyDto> {
+export async function createCompany(
+  _actor: AuthenticatedUser,
+  input: CreateCompanyInput
+): Promise<CompanyDto> {
   const normalizedWebsite = normalizeWebsite(input.website);
   await ensureWebsiteIsAvailable(normalizedWebsite);
 
@@ -89,10 +99,12 @@ export async function createCompany(input: CreateCompanyInput): Promise<CompanyD
 }
 
 export async function updateCompany(
+  actor: AuthenticatedUser,
   companyId: string,
   input: UpdateCompanyInput
 ): Promise<CompanyDto> {
   const existing = requireCompany(await findCompanyById(companyId));
+  await assertCanAccessCompany(actor, existing.id);
   const normalizedWebsite =
     "website" in input ? normalizeWebsite(input.website) : existing.normalizedWebsite;
   await ensureWebsiteIsAvailable(normalizedWebsite, companyId);

@@ -7,6 +7,7 @@ import { findAssignableUserById, findLeadById } from "../leads/lead.repository.j
 import { toLeadDto } from "../leads/lead.service.js";
 import { findPipelineStageById } from "../pipeline/pipeline.repository.js";
 import { toPipelineStageDto } from "../pipeline/pipeline.service.js";
+import { assertCanAccessLead, assertCanMutateLead } from "../leads/lead.permissions.js";
 import type { CreateDealInput, UpdateDealInput } from "./deal.schemas.js";
 import {
   createDealWithActivityAndAudit,
@@ -92,6 +93,7 @@ export async function createDeal(
   if (!lead) {
     throw new AppError(404, "NOT_FOUND", "Lead not found");
   }
+  assertCanMutateLead(actor, lead);
 
   const existingDeal = await findDealByLeadId(input.leadId);
   if (existingDeal) {
@@ -127,8 +129,10 @@ export async function createDeal(
   return toDealDto(deal);
 }
 
-export async function getDeal(dealId: string): Promise<DealDto> {
-  return toDealDto(requireDeal(await findDealById(dealId)));
+export async function getDeal(actor: AuthenticatedUser, dealId: string): Promise<DealDto> {
+  const deal = requireDeal(await findDealById(dealId));
+  assertCanAccessLead(actor, deal.lead);
+  return toDealDto(deal);
 }
 
 export async function updateDeal(
@@ -137,6 +141,7 @@ export async function updateDeal(
   input: UpdateDealInput
 ): Promise<DealDto> {
   const existing = requireDeal(await findDealById(dealId));
+  assertCanMutateLead(actor, existing.lead);
   const stage = input.stageId ? await findPipelineStageById(input.stageId) : existing.stage;
 
   if (!stage) {

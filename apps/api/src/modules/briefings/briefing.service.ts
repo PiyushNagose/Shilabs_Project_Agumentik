@@ -6,6 +6,7 @@ import { prisma } from "../../shared/prisma.js";
 import { createAIProvider } from "../ai/ai.factory.js";
 import type { AIProvider, BriefingResult } from "../ai/ai.provider.js";
 import { briefingResultSchema } from "../ai/ai.schemas.js";
+import { sourceContainsGroundedQuote } from "../ai/grounding.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
 import { publishDomainEvent } from "../domain-events/domain-events.service.js";
 import { listApprovedKnowledge } from "../knowledge-base/knowledge-base.service.js";
@@ -150,7 +151,7 @@ function validateGrounding(input: {
     }
   }
   for (const evidence of input.output.evidence) {
-    if (!sourceTexts.get(evidence.sourceId)?.includes(evidence.quote)) {
+    if (!sourceContainsGroundedQuote(sourceTexts.get(evidence.sourceId), evidence.quote)) {
       throw new AppError(502, "PROVIDER_ERROR", "AI briefing evidence was not grounded");
     }
   }

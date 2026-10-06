@@ -1,10 +1,5 @@
 import crypto from "node:crypto";
-import {
-  IntegrationAccountStatus,
-  Prisma,
-  UserRole,
-  VoiceCallStatus
-} from "@prisma/client";
+import { IntegrationAccountStatus, Prisma, UserRole, VoiceCallStatus } from "@prisma/client";
 import { getVoiceConfig, type VoiceConfig } from "@shilabs/shared-config";
 import type {
   IntegrationHealthDto,
@@ -35,6 +30,8 @@ const voiceCallInclude = {
 
 type VoiceCallRecord = Prisma.VoiceCallAttemptGetPayload<{ include: typeof voiceCallInclude }>;
 
+const voiceTransactionOptions = { maxWait: 10000, timeout: 30000 };
+
 interface VoiceServiceOptions {
   env?: NodeJS.ProcessEnv;
   provider?: VoiceProvider;
@@ -42,6 +39,54 @@ interface VoiceServiceOptions {
 
 function displayVoiceProvider(config: VoiceConfig): "TWILIO" | "EXOTEL" {
   return config.provider === "exotel" ? "EXOTEL" : "TWILIO";
+}
+
+async function updateLeadAfterCallingAttemptTerminal(
+  tx: Prisma.TransactionClient,
+  input: { callId: string; leadId: string; completed: boolean }
+): Promise<void> {
+  const callingAttempt = await tx.callingAttempt.findUnique({
+    where: { voiceCallAttemptId: input.callId },
+    include: {
+      sequence: true,
+      outboundWhatsAppMessages: { orderBy: { createdAt: "desc" }, take: 1 }
+    }
+  });
+  if (!callingAttempt) return;
+
+  const nextAttempt = await tx.callingAttempt.findFirst({
+    where: {
+      sequenceId: callingAttempt.sequenceId,
+      attemptIndex: { gt: callingAttempt.attemptIndex },
+      status: "SCHEDULED"
+    },
+    orderBy: { scheduledAt: "asc" }
+  });
+  const whatsapp = callingAttempt.outboundWhatsAppMessages[0];
+  const nextAction =
+    whatsapp?.status === "FAILED" || whatsapp?.status === "BLOCKED"
+      ? "Review WhatsApp delivery"
+      : nextAttempt
+        ? "Call lead again"
+        : null;
+  await tx.lead.update({
+    where: { id: input.leadId },
+    data: {
+      nextAction,
+      nextActionAt: nextAttempt && nextAction === "Call lead again" ? nextAttempt.scheduledAt : null
+    }
+  });
+
+  if (!nextAttempt) {
+    await tx.callingSequence.update({
+      where: { id: callingAttempt.sequenceId },
+      data: {
+        status: input.completed ? "COMPLETED" : "ATTENTION_REQUIRED",
+        completedAt: input.completed ? new Date() : null,
+        stoppedAt: input.completed ? null : new Date()
+      }
+    });
+  }
 }
 
 function voiceSecretRef(config: VoiceConfig): string | null {
@@ -85,6 +130,7 @@ function missingVoiceConfig(config: VoiceConfig): string[] {
     if (config.voiceAi.enabled && !config.voiceAi.streamToken) {
       missing.push("VOICE_AI_STREAM_TOKEN");
     }
+    if (!config.exotel.webhookSecret) missing.push("EXOTEL_WEBHOOK_SECRET");
   }
   if (!config.webhookBaseUrl) missing.push("VOICE_WEBHOOK_BASE_URL");
   return missing;
@@ -201,7 +247,11 @@ function parseDuration(value: string | undefined): number | null {
   return Number.isInteger(duration) && duration >= 0 ? duration : null;
 }
 
-function webhookEventId(prefix: string, providerCallId: string, body: Record<string, string>): string {
+function webhookEventId(
+  prefix: string,
+  providerCallId: string,
+  body: Record<string, string>
+): string {
   const stable =
     body.SequenceNumber ??
     body.RecordingSid ??
@@ -215,7 +265,10 @@ function webhookUrl(config: VoiceConfig, path: string): string {
 
 function bodyAsStringRecord(body: Record<string, unknown>): Record<string, string> {
   return Object.fromEntries(
-    Object.entries(body).map(([key, value]) => [key, typeof value === "string" ? value : String(value)])
+    Object.entries(body).map(([key, value]) => [
+      key,
+      typeof value === "string" ? value : String(value)
+    ])
   );
 }
 
@@ -374,7 +427,7 @@ async function markCallBlocked(input: {
       payload: { leadId: input.leadId, code: input.code }
     });
     return updated;
-  });
+  }, voiceTransactionOptions);
 }
 
 export async function createManualVoiceCall(
@@ -426,27 +479,45 @@ export async function createManualVoiceCall(
   });
 
   const block = (() => {
-    if (!normalizedToPhone) return { code: "CONTACT_PHONE_MISSING", message: "Contact phone is not usable" };
+    if (!normalizedToPhone)
+      return { code: "CONTACT_PHONE_MISSING", message: "Contact phone is not usable" };
     if (!normalizedFromPhone) {
-      return { code: "VOICE_FROM_PHONE_MISSING", message: `${providerName} from number is not usable` };
+      return {
+        code: "VOICE_FROM_PHONE_MISSING",
+        message: `${providerName} from number is not usable`
+      };
     }
-    if (lead.contact.doNotContact) return { code: "CONTACT_DO_NOT_CONTACT", message: "Contact is marked do-not-contact" };
-    if (isTerminalLead(lead.status)) return { code: "TERMINAL_LEAD", message: "Lead is terminal or disqualified" };
+    if (lead.contact.doNotContact)
+      return { code: "CONTACT_DO_NOT_CONTACT", message: "Contact is marked do-not-contact" };
+    if (isTerminalLead(lead.status))
+      return { code: "TERMINAL_LEAD", message: "Lead is terminal or disqualified" };
     if (config.nodeEnv === "production" && !config.productionCallingEnabled) {
-      return { code: "PRODUCTION_CALLING_DISABLED", message: "Production voice calling is disabled" };
+      return {
+        code: "PRODUCTION_CALLING_DISABLED",
+        message: "Production voice calling is disabled"
+      };
     }
     if (config.nodeEnv === "production" && config.complianceConsentMode !== "confirmed") {
-      return { code: "VOICE_CONSENT_NOT_CONFIRMED", message: "Production calling consent/compliance is not confirmed" };
+      return {
+        code: "VOICE_CONSENT_NOT_CONFIRMED",
+        message: "Production calling consent/compliance is not confirmed"
+      };
     }
     if (
       config.nodeEnv !== "production" &&
       config.e2eAllowedToNumbers.length > 0 &&
       !config.e2eAllowedToNumbers.includes(normalizedToPhone)
     ) {
-      return { code: "E2E_NUMBER_NOT_ALLOWED", message: "Destination number is not allowed for local E2E voice testing" };
+      return {
+        code: "E2E_NUMBER_NOT_ALLOWED",
+        message: "Destination number is not allowed for local E2E voice testing"
+      };
     }
     if (config.recordingEnabled && config.complianceConsentMode === "disabled") {
-      return { code: "RECORDING_CONSENT_NOT_CONFIGURED", message: "Recording requires explicit consent configuration" };
+      return {
+        code: "RECORDING_CONSENT_NOT_CONFIGURED",
+        message: "Recording requires explicit consent configuration"
+      };
     }
     return null;
   })();
@@ -489,7 +560,9 @@ export async function createManualVoiceCall(
     twimlUrl: `${config.webhookBaseUrl.replace(/\/$/, "")}/api/voice/twilio/twiml/test-call?attemptId=${created.id}`,
     statusCallbackUrl: webhookUrl(
       config,
-      config.provider === "exotel" ? config.exotel.statusCallbackPath : config.twilio.statusCallbackPath
+      config.provider === "exotel"
+        ? config.exotel.statusCallbackPath
+        : config.twilio.statusCallbackPath
     ),
     recordingCallbackUrl: config.recordingEnabled
       ? webhookUrl(config, config.twilio.recordingCallbackPath)
@@ -557,7 +630,7 @@ export async function createManualVoiceCall(
       payload: { leadId: lead.id, providerCallId: result.providerCallId }
     });
     return updated;
-  });
+  }, voiceTransactionOptions);
 
   await upsertExternalRecordMapping({
     provider,
@@ -694,6 +767,16 @@ export async function ingestTwilioStatusWebhook(input: {
     return createdEvent;
   });
 
+  if (call && isTerminalCallStatus(status)) {
+    await prisma.$transaction((tx) =>
+      updateLeadAfterCallingAttemptTerminal(tx, {
+        callId: call.id,
+        leadId: call.leadId,
+        completed: status === "COMPLETED"
+      })
+    );
+  }
+
   return {
     provider: "TWILIO",
     status: "PROCESSED",
@@ -787,7 +870,7 @@ export async function ingestExotelStatusWebhook(input: {
   const body = bodyAsStringRecord(input.body);
   const providerCallId = exotelProviderCallId(input.body);
   const providerStatus = exotelProviderStatus(input.body);
-  const status = exotelCallStatus(providerStatus);
+  const providerStatusValue = exotelCallStatus(providerStatus);
   const eventId = webhookEventId("exotel-status", providerCallId, body);
   const duplicate = await prisma.voiceProviderEvent.findUnique({
     where: { provider_providerEventId: { provider: "EXOTEL", providerEventId: eventId } }
@@ -805,6 +888,12 @@ export async function ingestExotelStatusWebhook(input: {
   const call = await prisma.voiceCallAttempt.findUnique({
     where: { providerCallId }
   });
+  const status =
+    providerStatusValue === "COMPLETED" && call && !call.answeredAt
+      ? "NO_ANSWER"
+      : providerStatusValue;
+  const noConversationMessage =
+    "Exotel call ended without an answered callback; no conversation was established";
   const durationSeconds = parseDuration(input.body.CallDuration ?? input.body.Duration);
   const now = new Date();
   const event = await prisma.$transaction(async (tx) => {
@@ -831,7 +920,9 @@ export async function ingestExotelStatusWebhook(input: {
             ? `EXOTEL_${status}`
             : undefined,
           failureMessage: ["FAILED", "BUSY", "NO_ANSWER", "CANCELED"].includes(status)
-            ? `Exotel call status: ${providerStatus}`
+            ? status === "NO_ANSWER" && providerStatusValue === "COMPLETED"
+              ? noConversationMessage
+              : `Exotel call status: ${providerStatus}`
             : undefined
         }
       });
@@ -842,15 +933,23 @@ export async function ingestExotelStatusWebhook(input: {
             status: status === "COMPLETED" ? "COMPLETED" : "FAILED",
             completedAt: now,
             failureCode: status === "COMPLETED" ? null : `EXOTEL_${status}`,
-            failureMessage: status === "COMPLETED" ? null : `Exotel call status: ${providerStatus}`
+            failureMessage:
+              status === "COMPLETED"
+                ? null
+                : status === "NO_ANSWER" && providerStatusValue === "COMPLETED"
+                  ? noConversationMessage
+                  : `Exotel call status: ${providerStatus}`
           }
         });
       }
       await tx.activity.create({
         data: {
           leadId: call.leadId,
-          type: status === "FAILED" ? "CALL_FAILED" : "CALL_STATUS_UPDATED",
-          description: `Exotel call status: ${providerStatus}`
+          type: status === "COMPLETED" ? "CALL_STATUS_UPDATED" : "CALL_FAILED",
+          description:
+            status === "NO_ANSWER" && providerStatusValue === "COMPLETED"
+              ? noConversationMessage
+              : `Exotel call status: ${providerStatus}`
         }
       });
       await tx.auditEvent.create({
@@ -874,6 +973,16 @@ export async function ingestExotelStatusWebhook(input: {
     return createdEvent;
   });
 
+  if (call && isTerminalCallStatus(status)) {
+    await prisma.$transaction((tx) =>
+      updateLeadAfterCallingAttemptTerminal(tx, {
+        callId: call.id,
+        leadId: call.leadId,
+        completed: status === "COMPLETED"
+      })
+    );
+  }
+
   return {
     provider: "EXOTEL",
     status: "PROCESSED",
@@ -887,7 +996,7 @@ export function buildTwilioTestCallTwiml(): string {
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     "<Response>",
-    "<Say voice=\"alice\">This is a Shilabs AI Sales Engine local E2E voice test call. No automation sequence has been started.</Say>",
+    '<Say voice="alice">This is a Shilabs AI Sales Engine local E2E voice test call. No automation sequence has been started.</Say>',
     "</Response>"
   ].join("");
 }

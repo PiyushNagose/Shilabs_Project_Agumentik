@@ -44,19 +44,36 @@ async function parseJson(response: Response): Promise<Record<string, unknown> | 
 
 function errorMessage(status: number, body: Record<string, unknown> | null): string {
   const error = body?.error;
-  const metaMessage =
+  const nestedMessage =
     error && typeof error === "object" && !Array.isArray(error)
       ? (error as Record<string, unknown>).message
       : null;
-  return `Meta WhatsApp request failed with status ${String(status)}${
-    typeof metaMessage === "string" ? `: ${metaMessage}` : ""
-  }`;
+  const message =
+    typeof nestedMessage === "string"
+      ? nestedMessage
+      : typeof body?.message === "string"
+        ? body.message
+        : null;
+  const code =
+    error && typeof error === "object" && !Array.isArray(error)
+      ? (error as Record<string, unknown>).code
+      : body?.code;
+  if (String(code) === "21654") {
+    return "Twilio requires a WhatsApp ContentSid for this account; configure an approved template or upgrade the Twilio trial account before retrying";
+  }
+  const suffix = [
+    typeof code === "number" || typeof code === "string" ? `code ${String(code)}` : null,
+    message
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(": ");
+  return `WhatsApp provider request failed with status ${String(status)}${suffix ? `: ${suffix}` : ""}`;
 }
 
 function sanitizeError(error: unknown): string {
   return error instanceof Error && error.message.trim()
     ? redactSecrets(error.message).slice(0, 500)
-    : "Meta WhatsApp request failed";
+    : "WhatsApp provider request failed";
 }
 
 function twilioWhatsAppAddress(value: string): string {
@@ -177,9 +194,13 @@ export class WorkerTwilioWhatsAppProvider implements WorkerMessagingProvider {
     try {
       const body = new URLSearchParams({
         From: twilioWhatsAppAddress(this.config.twilioWhatsApp.sandboxFrom),
-        To: twilioWhatsAppAddress(input.to),
-        Body: this.config.twilioWhatsApp.defaultBody
+        To: twilioWhatsAppAddress(input.to)
       });
+      if (this.config.twilioWhatsApp.contentSid) {
+        body.set("ContentSid", this.config.twilioWhatsApp.contentSid);
+      } else {
+        body.set("Body", this.config.twilioWhatsApp.defaultBody);
+      }
       const response = await requestWithRetry(
         this.config,
         this.transport,

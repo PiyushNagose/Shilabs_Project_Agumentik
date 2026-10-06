@@ -2,7 +2,11 @@ import crypto from "node:crypto";
 import request from "supertest";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { UserRole, UserStatus } from "@prisma/client";
-import type { AuthResponse, IntegrationHealthDto, VoiceWebhookResultDto } from "@shilabs/shared-types";
+import type {
+  AuthResponse,
+  IntegrationHealthDto,
+  VoiceWebhookResultDto
+} from "@shilabs/shared-types";
 import { createApp } from "../../app.js";
 import { prisma } from "../../shared/prisma.js";
 import { hashPassword } from "../auth/auth.service.js";
@@ -14,6 +18,7 @@ const repEmail = "r22-voice-api-rep@example.local";
 const companyPrefix = "R22 Voice API";
 const webhookBaseUrl = "https://voice-e2e.example.test";
 const authToken = "api-test-token";
+const exotelWebhookSecret = "api-test-exotel-webhook-secret";
 
 function setVoiceEnv(): void {
   process.env.VOICE_PROVIDER = "twilio";
@@ -22,6 +27,7 @@ function setVoiceEnv(): void {
   process.env.TWILIO_ACCOUNT_SID = "AC00000000000000000000000000000000";
   process.env.TWILIO_AUTH_TOKEN = authToken;
   process.env.TWILIO_FROM_NUMBER = "+15005550006";
+  process.env.EXOTEL_WEBHOOK_SECRET = exotelWebhookSecret;
 }
 
 async function cleanup(): Promise<void> {
@@ -120,7 +126,10 @@ describe("R22 voice API", () => {
     const repToken = await login(repEmail);
 
     await request(app).get("/api/voice/health").expect(401);
-    await request(app).get("/api/voice/health").set("Authorization", `Bearer ${repToken}`).expect(403);
+    await request(app)
+      .get("/api/voice/health")
+      .set("Authorization", `Bearer ${repToken}`)
+      .expect(403);
 
     process.env.VOICE_PROVIDER = "none";
     const response = await request(app)
@@ -141,18 +150,11 @@ describe("R22 voice API", () => {
       SequenceNumber: "1"
     };
 
-    await request(app)
-      .post("/api/voice/twilio/status")
-      .type("form")
-      .send(body)
-      .expect(401);
+    await request(app).post("/api/voice/twilio/status").type("form").send(body).expect(401);
 
     const response = await request(app)
       .post("/api/voice/twilio/status")
-      .set(
-        "X-Twilio-Signature",
-        signTwilio(`${webhookBaseUrl}/api/voice/twilio/status`, body)
-      )
+      .set("X-Twilio-Signature", signTwilio(`${webhookBaseUrl}/api/voice/twilio/status`, body))
       .type("form")
       .send(body)
       .expect(200);
@@ -224,9 +226,20 @@ describe("R22 voice API", () => {
         idempotencyKey: `api-exotel-calling-attempt:${lead.id}`
       }
     });
+    await prisma.callingAttempt.create({
+      data: {
+        sequenceId: callingSequence.id,
+        leadId: lead.id,
+        contactId: contact.id,
+        attemptIndex: 1,
+        status: "SCHEDULED",
+        scheduledAt: new Date("2026-10-01T12:00:00.000Z"),
+        idempotencyKey: `api-exotel-calling-attempt-next:${lead.id}`
+      }
+    });
 
     const response = await request(app)
-      .post("/api/voice/exotel/status")
+      .post(`/api/voice/exotel/status?exotel_auth=${encodeURIComponent(exotelWebhookSecret)}`)
       .type("form")
       .send({
         CallSid: "exotel-api-status-1",
@@ -242,23 +255,46 @@ describe("R22 voice API", () => {
       callAttemptId: voiceCall.id,
       callStatus: "FAILED"
     });
-    await expect(prisma.voiceCallAttempt.findUniqueOrThrow({ where: { id: voiceCall.id } })).resolves.toMatchObject({
+    await expect(
+      prisma.voiceCallAttempt.findUniqueOrThrow({ where: { id: voiceCall.id } })
+    ).resolves.toMatchObject({
       status: "FAILED",
       durationSeconds: 29,
       failureCode: "EXOTEL_FAILED",
       failureMessage: "Exotel call status: failed"
     });
-    await expect(prisma.callingAttempt.findUniqueOrThrow({ where: { id: callingAttempt.id } })).resolves.toMatchObject({
+    await expect(
+      prisma.callingAttempt.findUniqueOrThrow({ where: { id: callingAttempt.id } })
+    ).resolves.toMatchObject({
       status: "FAILED",
       failureCode: "EXOTEL_FAILED"
+    });
+    await expect(prisma.lead.findUniqueOrThrow({ where: { id: lead.id } })).resolves.toMatchObject({
+      nextAction: "Call lead again",
+      nextActionAt: new Date("2026-10-01T12:00:00.000Z")
+    });
+
+    const answeredResponse = await request(app)
+      .post("/api/voice/exotel/status")
+      .set("X-Shilabs-Exotel-Secret", exotelWebhookSecret)
+      .field("CallSid", "exotel-api-status-1")
+      .field("Status", "answered")
+      .field("DateUpdated", "2026-09-30 11:41:38")
+      .expect(200);
+    expect(answeredResponse.body as VoiceWebhookResultDto).toMatchObject({
+      provider: "EXOTEL",
+      status: "PROCESSED",
+      callAttemptId: voiceCall.id,
+      callStatus: "IN_PROGRESS"
     });
 
     const multipartResponse = await request(app)
       .post("/api/voice/exotel/status")
+      .set("X-Shilabs-Exotel-Secret", exotelWebhookSecret)
       .field("CallSid", "exotel-api-status-1")
       .field("Status", "completed")
       .field("Duration", "30")
-      .field("DateUpdated", "2026-09-30 11:41:38")
+      .field("DateUpdated", "2026-09-30 11:41:39")
       .expect(200);
     expect(multipartResponse.body as VoiceWebhookResultDto).toMatchObject({
       provider: "EXOTEL",
@@ -269,6 +305,7 @@ describe("R22 voice API", () => {
 
     const duplicate = await request(app)
       .post("/api/voice/exotel/status")
+      .set("X-Shilabs-Exotel-Secret", exotelWebhookSecret)
       .type("form")
       .send({
         CallSid: "exotel-api-status-1",
@@ -283,4 +320,14 @@ describe("R22 voice API", () => {
       callAttemptId: voiceCall.id
     });
   }, 45000);
+
+  it("rejects unauthenticated Exotel callbacks and voicebot bootstrap requests", async () => {
+    await request(app)
+      .post("/api/voice/exotel/status")
+      .type("form")
+      .send({ CallSid: "exotel-api-unauthorized", CallStatus: "completed" })
+      .expect(401);
+
+    await request(app).get("/api/voice/exotel/voicebot").expect(401);
+  });
 });

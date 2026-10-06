@@ -28,10 +28,21 @@ import {
   type LeadRecord
 } from "./lead.repository.js";
 import { leadEvents } from "./lead.events.js";
-import { canAssignLead, canCreateLeadWithOwner } from "./lead.permissions.js";
+import {
+  assertCanAccessLead,
+  assertCanMutateLead,
+  canAssignLead,
+  canCreateLeadWithOwner,
+  leadVisibilityWhere
+} from "./lead.permissions.js";
 import { findPipelineStageById as findStageById } from "../pipeline/pipeline.repository.js";
 import { toPipelineStageDto } from "../pipeline/pipeline.service.js";
 import { publishRealtimeEvent } from "../realtime/realtime.service.js";
+import { autoStartLeadAiAutomation } from "../followups/lead-ai-automation.service.js";
+import {
+  assertCanAccessCompany,
+  assertCanAccessContact
+} from "../authorization/crm-record.permissions.js";
 
 export function toLeadDto(lead: LeadRecord): LeadDto {
   return {
@@ -156,7 +167,7 @@ function statusForStage(stage: { key: string; isWon: boolean; isLost: boolean })
   return LeadStatus.OPEN;
 }
 
-function buildLeadWhere(query: ListLeadsQuery): Prisma.LeadWhereInput {
+function buildLeadWhere(actor: AuthenticatedUser, query: ListLeadsQuery): Prisma.LeadWhereInput {
   const search = query.search;
   const searchTokens =
     search
@@ -173,7 +184,7 @@ function buildLeadWhere(query: ListLeadsQuery): Prisma.LeadWhereInput {
     { contact: { email: { contains: value, mode: "insensitive" } } }
   ];
 
-  return {
+  const filters: Prisma.LeadWhereInput = {
     source: query.source,
     status: query.status,
     stageId: query.stageId,
@@ -201,6 +212,8 @@ function buildLeadWhere(query: ListLeadsQuery): Prisma.LeadWhereInput {
         ]
       : undefined
   };
+
+  return { AND: [leadVisibilityWhere(actor), filters] };
 }
 
 export async function createLead(
@@ -217,6 +230,10 @@ export async function createLead(
   }
 
   const ownerId = input.ownerId ?? actor.id;
+  await Promise.all([
+    assertCanAccessCompany(actor, input.companyId, { allowUnlinked: true }),
+    assertCanAccessContact(actor, input.contactId, { allowUnlinked: true })
+  ]);
   await ensureLeadInputs({
     companyId: input.companyId,
     contactId: input.contactId,
@@ -243,11 +260,16 @@ export async function createLead(
     }
   });
 
+  await autoStartLeadAiAutomation(actor, lead.id);
+  const hydratedLead = await findLeadById(lead.id);
   await publishRealtimeEvent({ entityType: "lead", action: "lead-created", leadId: lead.id });
-  return toLeadDto(lead);
+  return toLeadDto(hydratedLead ?? lead);
 }
 
-export async function listLeads(query: ListLeadsQuery): Promise<PaginatedResponse<LeadDto>> {
+export async function listLeads(
+  actor: AuthenticatedUser,
+  query: ListLeadsQuery
+): Promise<PaginatedResponse<LeadDto>> {
   const pagination = getPagination(query);
   const orderBy: Prisma.LeadOrderByWithRelationInput =
     query.sort === "lastActivityAt"
@@ -255,7 +277,7 @@ export async function listLeads(query: ListLeadsQuery): Promise<PaginatedRespons
       : { createdAt: query.direction };
 
   const { leads, total } = await listLeadRecords({
-    where: buildLeadWhere(query),
+    where: buildLeadWhere(actor, query),
     orderBy,
     skip: pagination.skip,
     take: pagination.take
@@ -270,8 +292,10 @@ export async function listLeads(query: ListLeadsQuery): Promise<PaginatedRespons
   };
 }
 
-export async function getLead(leadId: string): Promise<LeadDto> {
-  return toLeadDto(requireLead(await findLeadById(leadId)));
+export async function getLead(actor: AuthenticatedUser, leadId: string): Promise<LeadDto> {
+  const lead = requireLead(await findLeadById(leadId));
+  assertCanAccessLead(actor, lead);
+  return toLeadDto(lead);
 }
 
 export async function updateLead(
@@ -280,6 +304,7 @@ export async function updateLead(
   input: UpdateLeadInput
 ): Promise<LeadDto> {
   const existing = requireLead(await findLeadById(leadId));
+  assertCanMutateLead(actor, existing);
   const lead = await updateLeadWithAudit({
     actorId: actor.id,
     leadId,
@@ -347,6 +372,7 @@ export async function updateLeadStatus(
   input: UpdateLeadStatusInput
 ): Promise<LeadDto> {
   const existing = requireLead(await findLeadById(leadId));
+  assertCanMutateLead(actor, existing);
   const lead = await updateLeadWithAudit({
     actorId: actor.id,
     leadId,
@@ -367,6 +393,7 @@ export async function updateLeadStage(
   input: UpdateLeadStageInput
 ): Promise<LeadDto> {
   const existing = requireLead(await findLeadById(leadId));
+  assertCanMutateLead(actor, existing);
   const targetStage = await findStageById(input.stageId);
 
   if (!targetStage) {

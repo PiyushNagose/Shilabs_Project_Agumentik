@@ -7,12 +7,7 @@ import type { AuthenticatedUser } from "../auth/auth.types.js";
 import { prisma } from "../../shared/prisma.js";
 
 export type RealtimeEntityType =
-  | "workspace"
-  | "lead"
-  | "dashboard"
-  | "operations"
-  | "notifications"
-  | "domain-event";
+  "workspace" | "lead" | "dashboard" | "operations" | "notifications" | "domain-event";
 
 export interface RealtimeEvent {
   type: "realtime:update";
@@ -38,7 +33,7 @@ function jsonMessage(event: RealtimeEvent): string {
 
 function canReceiveLeadEvent(user: AuthenticatedUser, ownerId: string | null | undefined): boolean {
   if (user.role === UserRole.ADMIN || user.role === UserRole.SALES_MANAGER) return true;
-  return Boolean(ownerId && ownerId === user.id);
+  return ownerId === null || ownerId === user.id;
 }
 
 async function ownerIdForLead(leadId: string | null | undefined): Promise<string | null> {
@@ -47,7 +42,9 @@ async function ownerIdForLead(leadId: string | null | undefined): Promise<string
   return lead?.ownerId ?? null;
 }
 
-export async function publishRealtimeEvent(input: Omit<RealtimeEvent, "type" | "occurredAt">): Promise<void> {
+export async function publishRealtimeEvent(
+  input: Omit<RealtimeEvent, "type" | "occurredAt">
+): Promise<void> {
   const event: RealtimeEvent = {
     type: "realtime:update",
     occurredAt: new Date().toISOString(),
@@ -62,7 +59,7 @@ export async function publishRealtimeEvent(input: Omit<RealtimeEvent, "type" | "
   }
 }
 
-export function installRealtimeWebSocketServer(server: Server): void {
+export function installRealtimeWebSocketServer(server: Server): () => Promise<void> {
   const wss = new WebSocketServer({ noServer: true });
 
   server.on("upgrade", (request: IncomingMessage, socket, head) => {
@@ -108,6 +105,13 @@ export function installRealtimeWebSocketServer(server: Server): void {
       clients.delete(socket);
     });
   });
+
+  return () =>
+    new Promise<void>((resolve) => {
+      for (const socket of wss.clients) socket.terminate();
+      clients.clear();
+      wss.close(() => resolve());
+    });
 }
 
 export function isInternalRealtimePublishAuthorized(secret: string | undefined): boolean {
@@ -117,4 +121,3 @@ export function isInternalRealtimePublishAuthorized(secret: string | undefined):
   }
   return secret === config.realtimeInternalSecret;
 }
-

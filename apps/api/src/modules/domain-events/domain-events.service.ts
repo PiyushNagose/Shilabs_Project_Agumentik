@@ -30,6 +30,12 @@ export interface PublishDomainEventInput {
   client?: TransactionClient;
 }
 
+export function canPublishDomainEventRealtimeImmediately(
+  client: TransactionClient | undefined
+): boolean {
+  return client === undefined;
+}
+
 export function toDomainEventDto(event: DomainEventRecord): DomainEventOutboxDto {
   return {
     id: event.id,
@@ -80,17 +86,20 @@ export async function publishDomainEvent(
       nextAttemptAt: input.nextAttemptAt ?? new Date()
     }
   });
-  const payload = input.payload as Prisma.JsonObject;
-  const leadId = typeof payload.leadId === "string" ? payload.leadId : null;
-  const conversationId = typeof payload.conversationId === "string" ? payload.conversationId : null;
-  await publishRealtimeEvent({
-    entityType: leadId ? "lead" : "workspace",
-    action: "domain-event-published",
-    leadId,
-    conversationId,
-    domainEventId: event.id,
-    sourceEventType: event.eventType
-  }).catch(() => undefined);
+  if (canPublishDomainEventRealtimeImmediately(input.client)) {
+    const payload = input.payload as Prisma.JsonObject;
+    const leadId = typeof payload.leadId === "string" ? payload.leadId : null;
+    const conversationId =
+      typeof payload.conversationId === "string" ? payload.conversationId : null;
+    await publishRealtimeEvent({
+      entityType: leadId ? "lead" : "workspace",
+      action: "domain-event-published",
+      leadId,
+      conversationId,
+      domainEventId: event.id,
+      sourceEventType: event.eventType
+    }).catch(() => undefined);
+  }
   return toDomainEventDto(event);
 }
 
@@ -139,17 +148,40 @@ export async function retryDomainEvent(
   id: string
 ): Promise<DomainEventOutboxDto> {
   return prisma.$transaction(async (tx) => {
-    const event = await tx.domainEventOutbox.update({
-      where: { id },
+    const existing = await tx.domainEventOutbox.findUnique({ where: { id } });
+    if (!existing) {
+      throw new AppError(404, "NOT_FOUND", "Domain event not found");
+    }
+    if (existing.status !== "FAILED" && existing.status !== "ATTENTION_REQUIRED") {
+      throw new AppError(
+        409,
+        "CONFLICT",
+        `Domain event in ${existing.status} state cannot be retried`
+      );
+    }
+    const updated = await tx.domainEventOutbox.updateMany({
+      where: { id, status: existing.status },
       data: {
         status: "PENDING",
+        attempts: 0,
         failedAt: null,
+        deadLetteredAt: null,
         lockedAt: null,
         lockedBy: null,
+        queueName: null,
+        queueJobId: null,
+        queuedAt: null,
+        processedAt: null,
+        lastErrorCode: null,
+        lastErrorMessage: null,
         retryRequestedByUserId: actor.id,
         nextAttemptAt: new Date()
       }
     });
+    if (updated.count !== 1) {
+      throw new AppError(409, "CONFLICT", "Domain event state changed before retry was accepted");
+    }
+    const event = await tx.domainEventOutbox.findUniqueOrThrow({ where: { id } });
     await tx.auditEvent.create({
       data: {
         actorType: "USER",
@@ -157,7 +189,8 @@ export async function retryDomainEvent(
         entityType: "DomainEventOutbox",
         entityId: event.id,
         action: "DOMAIN_EVENT_RETRY_REQUESTED",
-        after: { eventType: event.eventType, status: event.status }
+        before: { status: existing.status, attempts: existing.attempts },
+        after: { eventType: event.eventType, status: event.status, attempts: event.attempts }
       }
     });
     return toDomainEventDto(event);

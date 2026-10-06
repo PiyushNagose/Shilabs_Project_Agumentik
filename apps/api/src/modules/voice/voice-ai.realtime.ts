@@ -1,7 +1,7 @@
 import type { IncomingMessage, Server } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import type { Prisma } from "@prisma/client";
-import { getVoiceConfig } from "@shilabs/shared-config";
+import { getVoiceConfig, verifyExpiringVoiceStreamToken } from "@shilabs/shared-config";
 import { listApprovedKnowledge } from "../knowledge-base/knowledge-base.service.js";
 import {
   finalizeVoiceConversationRun,
@@ -107,7 +107,7 @@ async function buildInstructions(providerCallId: string): Promise<string> {
   ].join("\n");
 }
 
-export function installExotelVoiceAiWebSocketServer(server: Server): void {
+export function installExotelVoiceAiWebSocketServer(server: Server): () => Promise<void> {
   const wss = new WebSocketServer({ noServer: true });
 
   server.on("upgrade", (request: IncomingMessage, socket, head) => {
@@ -122,7 +122,10 @@ export function installExotelVoiceAiWebSocketServer(server: Server): void {
         : null;
     if (pathname !== streamPath && !pathToken) return;
     const token = url.searchParams.get("token") ?? pathToken;
-    if (!config.voiceAi.enabled || !config.voiceAi.streamToken || token !== config.voiceAi.streamToken) {
+    if (
+      !config.voiceAi.enabled ||
+      !verifyExpiringVoiceStreamToken({ token, secret: config.voiceAi.streamToken })
+    ) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
       socket.destroy();
       return;
@@ -138,7 +141,9 @@ export function installExotelVoiceAiWebSocketServer(server: Server): void {
       (request as IncomingMessage & { voiceAiUrl?: URL }).voiceAiUrl ??
       new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
     let providerCallId =
-      url.searchParams.get("CallSid") ?? url.searchParams.get("Sid") ?? url.searchParams.get("call_sid");
+      url.searchParams.get("CallSid") ??
+      url.searchParams.get("Sid") ??
+      url.searchParams.get("call_sid");
     let streamSid: string | null = null;
     let voiceAiSession: VoiceAiSession | null = null;
     const turns: VoiceTranscriptTurn[] = [];
@@ -157,7 +162,10 @@ export function installExotelVoiceAiWebSocketServer(server: Server): void {
       if (!message) return;
       const name = eventName(message);
       providerCallId = callSidFromMessage(message, providerCallId);
-      streamSid = nestedString(message, "start", "stream_sid") ?? stringValue(message.stream_sid) ?? streamSid;
+      streamSid =
+        nestedString(message, "start", "stream_sid") ??
+        stringValue(message.stream_sid) ??
+        streamSid;
 
       if (name === "start" && providerCallId) {
         void startVoiceConversationRun({
@@ -198,4 +206,10 @@ export function installExotelVoiceAiWebSocketServer(server: Server): void {
     exotelSocket.on("close", finalize);
     exotelSocket.on("error", finalize);
   });
+
+  return () =>
+    new Promise<void>((resolve) => {
+      for (const socket of wss.clients) socket.terminate();
+      wss.close(() => resolve());
+    });
 }

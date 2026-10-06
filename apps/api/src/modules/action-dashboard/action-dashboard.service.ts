@@ -65,6 +65,28 @@ function failureDetail(code: string | null, message: string | null): string {
   return message ?? code ?? "Attention is required before automation can continue.";
 }
 
+function domainEventPayloadString(event: { payload: Prisma.JsonValue }, key: string): string | null {
+  const payload = event.payload as Prisma.JsonObject;
+  const value = payload[key];
+  return typeof value === "string" ? value : null;
+}
+
+function domainEventTitle(eventType: string, aggregateType: string): string {
+  const labels: Record<string, string> = {
+    EMAIL_SEND_REQUESTED: "Email delivery job failed",
+    FOLLOWUP_EMAIL_SEND_REQUESTED: "Follow-up email job failed",
+    WHATSAPP_SEND_REQUESTED: "WhatsApp delivery job failed",
+    CALL_REQUESTED: "Calling job failed",
+    CALL_AUTOMATION_ATTEMPT_DUE: "Calling attempt job failed",
+    PROPOSAL_SEND_REQUESTED: "Proposal delivery job failed",
+    MEETING_CONFIRMATION_SEND_REQUESTED: "Meeting notification job failed",
+    MEETING_CONFIRMED: "Confirmed meeting sync failed",
+    MEETING_REQUESTED: "Meeting request bookkeeping failed",
+    NOTIFICATION_ACKNOWLEDGED: "Notification acknowledgement bookkeeping failed"
+  };
+  return labels[eventType] ?? `${aggregateType} job failed (${eventType})`;
+}
+
 export async function getSalesActionDashboard(
   actor: AuthenticatedUser
 ): Promise<SalesActionDashboardDto> {
@@ -167,7 +189,18 @@ export async function getSalesActionDashboard(
     }),
     managersCanSeeOperations
       ? prisma.domainEventOutbox.findMany({
-          where: { status: { in: ["FAILED", "ATTENTION_REQUIRED"] } },
+          where: {
+            status: { in: ["FAILED", "ATTENTION_REQUIRED"] },
+            eventType: {
+              notIn: [
+                "MEETING_REQUESTED",
+                "NOTIFICATION_ACKNOWLEDGED",
+                "PROPOSAL_GENERATED",
+                "PROPOSAL_APPROVED",
+                "PROPOSAL_SENT"
+              ]
+            }
+          },
           orderBy: [{ priority: "desc" }, { updatedAt: "desc" }],
           take: DASHBOARD_LIMIT
         })
@@ -343,21 +376,37 @@ export async function getSalesActionDashboard(
     lead: toLeadDto(message.lead)
   }));
 
-  const outboxFailures: SalesActionDashboardItemDto[] = failedDomainEvents.map((event) => ({
+  // The durable WhatsApp job and its outbound message are two persisted views
+  // of one attempt. Keep the outbound record as the actionable failure because
+  // it has the lead/provider context, and avoid showing the same attempt twice.
+  const failedWhatsAppAttemptIds = new Set(
+    failedWhatsAppMessages
+      .map((message) => message.callingAttemptId)
+      .filter((attemptId): attemptId is string => Boolean(attemptId))
+  );
+  const outboxFailures: SalesActionDashboardItemDto[] = failedDomainEvents
+    .filter(
+      (event) =>
+        !(
+          event.eventType === "WHATSAPP_SEND_REQUESTED" &&
+          failedWhatsAppAttemptIds.has(domainEventPayloadString(event, "callingAttemptId") ?? "")
+        )
+    )
+    .map((event) => ({
     id: `domain-event:${event.id}`,
     type: "FAILURE",
     severity: event.status === "ATTENTION_REQUIRED" ? "CRITICAL" : "WARNING",
-    title: "Durable job requires attention",
+    title: domainEventTitle(event.eventType, event.aggregateType),
     detail: failureDetail(event.lastErrorCode, event.lastErrorMessage),
     status: event.status,
     leadId: null,
     conversationId: null,
     proposalId: null,
-    sourceEntityType: "DomainEventOutbox",
+    sourceEntityType: `DomainEventOutbox:${event.eventType}`,
     sourceEntityId: event.id,
     occurredAt: event.updatedAt.toISOString(),
     lead: null
-  }));
+    }));
 
   const negotiationAndTakeoverAlerts = sortItems([
     ...internalAlerts,
@@ -376,7 +425,7 @@ export async function getSalesActionDashboard(
     ...negotiationAndTakeoverAlerts,
     ...meetingItems,
     ...failuresRequiringAttention
-  ]).slice(0, 75);
+  ]);
 
   return {
     generatedAt: new Date().toISOString(),

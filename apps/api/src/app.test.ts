@@ -19,7 +19,13 @@ const apiConfig: ApiConfig = {
 };
 
 describe("api health endpoints", () => {
-  const app = createApp();
+  const app = createApp({
+    readinessCheck: () =>
+      Promise.resolve({
+        ready: true,
+        dependencies: { database: "ok", redis: "ok" }
+      })
+  });
 
   it("returns health status", async () => {
     const response = await request(app).get("/health").expect(200);
@@ -35,8 +41,20 @@ describe("api health endpoints", () => {
 
     expect(response.body).toMatchObject({
       status: "ok",
-      service: "api"
+      service: "api",
+      dependencies: { database: "ok", redis: "ok" }
     });
+  });
+
+  it("returns 503 when a required dependency is unavailable", async () => {
+    const unavailableApp = createApp({
+      readinessCheck: () =>
+        Promise.resolve({
+          ready: false,
+          dependencies: { database: "ok", redis: "error" }
+        })
+    });
+    await request(unavailableApp).get("/ready").expect(503);
   });
 
   it("registers the R13 follow-up lead hydration route", async () => {

@@ -9,10 +9,12 @@ export type LeadQualificationRecord = Prisma.LeadQualificationGetPayload<{
   include: typeof qualificationInclude;
 }>;
 
-export async function findLeadForQualification(leadId: string): Promise<{ id: string } | null> {
+export async function findLeadForQualification(
+  leadId: string
+): Promise<{ id: string; ownerId: string | null } | null> {
   return prisma.lead.findUnique({
     where: { id: leadId },
-    select: { id: true }
+    select: { id: true, ownerId: true }
   });
 }
 

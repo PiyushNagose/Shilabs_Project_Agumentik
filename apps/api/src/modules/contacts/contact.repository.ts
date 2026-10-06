@@ -20,8 +20,9 @@ export type ContactRecord = Pick<
   | "updatedAt"
 >;
 
-export async function listContacts(): Promise<ContactRecord[]> {
+export async function listContacts(where: Prisma.ContactWhereInput = {}): Promise<ContactRecord[]> {
   return prisma.contact.findMany({
+    where,
     orderBy: [{ createdAt: "asc" }, { lastName: "asc" }]
   });
 }

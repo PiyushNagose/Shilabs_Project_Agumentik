@@ -121,6 +121,19 @@ export async function updateConversationModeWithAudit(input: {
         },
         include: conversationInclude
       });
+      const clearsHumanTakeover =
+        conversation.mode === "AUTO" || conversation.mode === "DRAFT_ONLY" || conversation.mode === "CLOSED";
+      const activeTakeovers = clearsHumanTakeover
+        ? await transaction.humanTakeover.findMany({
+            where: { conversationId: input.conversationId, status: "ACTIVE" },
+            select: { id: true, leadId: true, conversationId: true, takenOverByUserId: true }
+          })
+        : [];
+      if (activeTakeovers.length > 0) {
+        await transaction.humanTakeover.deleteMany({
+          where: { id: { in: activeTakeovers.map((takeover) => takeover.id) } }
+        });
+      }
 
       await transaction.auditEvent.create({
         data: {
@@ -137,6 +150,34 @@ export async function updateConversationModeWithAudit(input: {
           }
         }
       });
+      for (const takeover of activeTakeovers) {
+        await transaction.auditEvent.create({
+          data: {
+            actorType: "USER",
+            actorId: input.actorId,
+            entityType: "HumanTakeover",
+            entityId: takeover.id,
+            action: "HUMAN_TAKEOVER_ENDED",
+            after: {
+              leadId: takeover.leadId,
+              conversationId: takeover.conversationId,
+              takenOverByUserId: takeover.takenOverByUserId,
+              conversationMode: conversation.mode
+            }
+          }
+        });
+        await transaction.activity.create({
+          data: {
+            leadId: takeover.leadId,
+            actorUserId: input.actorId,
+            type: "HUMAN_TAKEOVER",
+            description:
+              conversation.mode === "CLOSED"
+                ? "Human takeover ended because conversation was closed"
+                : "Human takeover ended; AI automation resumed"
+          }
+        });
+      }
 
       return conversation;
     },

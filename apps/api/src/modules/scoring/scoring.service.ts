@@ -1,7 +1,12 @@
 import { Prisma } from "@prisma/client";
-import type { LeadScoreOverrideDto, LeadScoreResultDto, ScoringConfigDto } from "@shilabs/shared-types";
+import type {
+  LeadScoreOverrideDto,
+  LeadScoreResultDto,
+  ScoringConfigDto
+} from "@shilabs/shared-types";
 import { AppError } from "../../shared/errors.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
+import { assertCanMutateLead } from "../leads/lead.permissions.js";
 import { calculateLeadScore, classifyScore } from "./scoring.engine.js";
 import { scoringEvents } from "./scoring.events.js";
 import type { OverrideLeadScoreInput, UpdateScoringConfigInput } from "./scoring.schemas.js";
@@ -127,6 +132,8 @@ export async function recalculateLeadScore(
   actor: AuthenticatedUser,
   leadId: string
 ): Promise<LeadScoreResultDto> {
+  const lead = requireLead(await findLeadWithQualification(leadId));
+  assertCanMutateLead(actor, lead);
   return recalculateLeadScoreWithActor({ type: "USER", id: actor.id }, leadId);
 }
 
@@ -208,6 +215,7 @@ export async function overrideLeadScore(
   const existingConfig = requireConfig(configRecord);
   const config = toScoringConfigDto(existingConfig);
   const existingLead = requireLead(lead);
+  assertCanMutateLead(actor, existingLead);
   const temperature = classifyScore(input.score, config);
   const result = await overrideLeadScoreWithActivityAndAudit({
     lead: existingLead,

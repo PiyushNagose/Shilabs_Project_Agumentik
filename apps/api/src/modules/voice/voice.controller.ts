@@ -1,5 +1,5 @@
 import type { Request, Response } from "express";
-import { getVoiceConfig } from "@shilabs/shared-config";
+import { getVoiceConfig, verifySharedSecret } from "@shilabs/shared-config";
 import type {
   IntegrationHealthDto,
   VoiceCallAttemptDto,
@@ -21,6 +21,17 @@ import type {
   TwilioRecordingWebhookInput,
   TwilioStatusWebhookInput
 } from "./voice.schemas.js";
+import { AppError } from "../../shared/errors.js";
+
+function assertExotelRequestAuthorized(request: Request): void {
+  const config = getVoiceConfig();
+  const querySecret =
+    typeof request.query.exotel_auth === "string" ? request.query.exotel_auth : undefined;
+  const presented = request.header("x-shilabs-exotel-secret") ?? querySecret;
+  if (!verifySharedSecret(config.exotel.webhookSecret, presented)) {
+    throw new AppError(401, "AUTHENTICATION_ERROR", "Exotel callback authentication failed");
+  }
+}
 
 export async function getVoiceHealthController(
   _request: Request,
@@ -64,6 +75,7 @@ export async function ingestExotelStatusWebhookController(
   request: Request<never, VoiceWebhookResultDto, ExotelStatusWebhookInput>,
   response: Response<VoiceWebhookResultDto>
 ): Promise<void> {
+  assertExotelRequestAuthorized(request);
   response.status(200).json(await ingestExotelStatusWebhook({ body: request.body }));
 }
 
@@ -71,6 +83,7 @@ export function getExotelVoicebotStreamUrlController(
   request: Request,
   response: Response<{ url: string }>
 ): void {
+  assertExotelRequestAuthorized(request);
   response.status(200).json(
     buildExotelVoicebotStreamUrl({
       query: { ...request.query, ...(request.body as Record<string, unknown> | undefined) }

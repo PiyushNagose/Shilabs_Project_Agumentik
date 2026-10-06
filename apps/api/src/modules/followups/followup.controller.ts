@@ -5,6 +5,7 @@ import type { StartFollowUpSequenceInput } from "./followup.schemas.js";
 import {
   accelerateFollowUpSequenceForE2E,
   listFollowUpSequencesForLead,
+  runCallingAttemptNowForE2E,
   startFollowUpSequence
 } from "./followup.service.js";
 
@@ -12,7 +13,16 @@ export async function listFollowUpSequencesForLeadController(
   request: Request<{ leadId: string }>,
   response: Response<FollowUpSequenceDto[]>
 ): Promise<void> {
-  response.status(200).json(await listFollowUpSequencesForLead(request.params.leadId));
+  response
+    .status(200)
+    .json(await listFollowUpSequencesForLead(getRequiredUser(request), request.params.leadId));
+}
+
+export async function runCallingAttemptNowForE2EController(
+  request: Request<{ leadId: string }>,
+  response: Response<{ status: "ACCELERATED" | "ALREADY_QUEUED"; attemptId: string; scheduledAt: string }>
+): Promise<void> {
+  response.status(200).json(await runCallingAttemptNowForE2E(getRequiredUser(request), request.params.leadId));
 }
 
 export async function startFollowUpSequenceController(
@@ -21,7 +31,9 @@ export async function startFollowUpSequenceController(
 ): Promise<void> {
   response
     .status(201)
-    .json(await startFollowUpSequence(getRequiredUser(request), request.params.leadId, request.body));
+    .json(
+      await startFollowUpSequence(getRequiredUser(request), request.params.leadId, request.body)
+    );
 }
 
 export async function accelerateFollowUpSequenceForE2EController(
@@ -30,5 +42,7 @@ export async function accelerateFollowUpSequenceForE2EController(
 ): Promise<void> {
   response
     .status(200)
-    .json(await accelerateFollowUpSequenceForE2E(getRequiredUser(request), request.params.sequenceId));
+    .json(
+      await accelerateFollowUpSequenceForE2E(getRequiredUser(request), request.params.sequenceId)
+    );
 }

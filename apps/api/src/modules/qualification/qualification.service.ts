@@ -5,6 +5,7 @@ import { createAIProvider } from "../ai/ai.factory.js";
 import type { AIProvider } from "../ai/ai.provider.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
 import { findLeadById } from "../leads/lead.repository.js";
+import { assertCanMutateLead } from "../leads/lead.permissions.js";
 import {
   findLeadForQualification,
   findQualificationByLeadId,
@@ -80,7 +81,7 @@ function emptyQualification(leadId: string): LeadQualificationDto {
   };
 }
 
-function requireLead(lead: { id: string } | null): { id: string } {
+function requireLead<TLead extends { id: string }>(lead: TLead | null): TLead {
   if (!lead) throw new AppError(404, "NOT_FOUND", "Lead not found");
   return lead;
 }
@@ -170,7 +171,8 @@ export async function updateQualification(
   leadId: string,
   input: UpdateQualificationInput
 ): Promise<LeadQualificationDto> {
-  requireLead(await findLeadForQualification(leadId));
+  const lead = requireLead(await findLeadById(leadId));
+  assertCanMutateLead(actor, lead);
   const existing = await findQualificationByLeadId(leadId);
   const evidence = await validateEvidence(leadId, input.evidence ?? existing?.evidence ?? []);
   const data = mergeQualification(existing, input);

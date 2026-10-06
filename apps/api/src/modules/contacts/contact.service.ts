@@ -2,6 +2,12 @@ import { Prisma } from "@prisma/client";
 import type { ContactDto } from "@shilabs/shared-types";
 import { normalizeEmail, normalizePhone } from "@shilabs/validation";
 import { AppError } from "../../shared/errors.js";
+import type { AuthenticatedUser } from "../auth/auth.types.js";
+import {
+  assertCanAccessCompany,
+  assertCanAccessContact,
+  contactVisibilityWhere
+} from "../authorization/crm-record.permissions.js";
 import { findCompanyById } from "../companies/company.repository.js";
 import type { CreateContactInput, UpdateContactInput } from "./contact.schemas.js";
 import {
@@ -67,16 +73,22 @@ async function ensureContactIsUnique(input: {
   }
 }
 
-export async function listContacts(): Promise<ContactDto[]> {
-  return (await listContactRecords()).map(toContactDto);
+export async function listContacts(actor: AuthenticatedUser): Promise<ContactDto[]> {
+  return (await listContactRecords(contactVisibilityWhere(actor))).map(toContactDto);
 }
 
-export async function getContact(contactId: string): Promise<ContactDto> {
-  return toContactDto(requireContact(await findContactById(contactId)));
+export async function getContact(actor: AuthenticatedUser, contactId: string): Promise<ContactDto> {
+  const contact = requireContact(await findContactById(contactId));
+  await assertCanAccessContact(actor, contact.id);
+  return toContactDto(contact);
 }
 
-export async function createContact(input: CreateContactInput): Promise<ContactDto> {
+export async function createContact(
+  actor: AuthenticatedUser,
+  input: CreateContactInput
+): Promise<ContactDto> {
   await ensureCompanyExists(input.companyId);
+  await assertCanAccessCompany(actor, input.companyId, { allowUnlinked: true });
   const normalizedEmail = normalizeEmail(input.email);
   const normalizedPhone = normalizePhone(input.phone);
   const whatsappId = input.whatsappId ?? null;
@@ -115,10 +127,12 @@ export async function createContact(input: CreateContactInput): Promise<ContactD
 }
 
 export async function updateContact(
+  actor: AuthenticatedUser,
   contactId: string,
   input: UpdateContactInput
 ): Promise<ContactDto> {
   const existing = requireContact(await findContactById(contactId));
+  await assertCanAccessContact(actor, existing.id);
   const normalizedEmail = "email" in input ? normalizeEmail(input.email) : existing.normalizedEmail;
   const normalizedPhone = "phone" in input ? normalizePhone(input.phone) : existing.normalizedPhone;
   const whatsappId = "whatsappId" in input ? (input.whatsappId ?? null) : existing.whatsappId;

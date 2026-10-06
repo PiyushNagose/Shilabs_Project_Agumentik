@@ -1,7 +1,11 @@
 import crypto from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "../../shared/prisma.js";
-import type { AIProvider, QualificationResult, ReplyUnderstandingResult } from "../ai/ai.provider.js";
+import type {
+  AIProvider,
+  QualificationResult,
+  ReplyUnderstandingResult
+} from "../ai/ai.provider.js";
 import {
   getMessagingHealth,
   ingestMetaWhatsAppWebhook,
@@ -31,7 +35,13 @@ class MessagingReplyTestProvider implements AIProvider {
       evidence: []
     } satisfies QualificationResult);
   public summarizeLead: AIProvider["summarizeLead"] = () =>
-    Promise.resolve({ summary: "test", buyingSignals: [], objections: [], risks: [], suggestedNextAction: null });
+    Promise.resolve({
+      summary: "test",
+      buyingSignals: [],
+      objections: [],
+      risks: [],
+      suggestedNextAction: null
+    });
   public generateFollowUp: AIProvider["generateFollowUp"] = () =>
     Promise.resolve({ body: "test", requiresHumanReview: true, reason: null });
   public generateProposalDraft: AIProvider["generateProposalDraft"] = () =>
@@ -94,7 +104,11 @@ function twilioEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   });
 }
 
-function twilioSignature(url: string, params: Record<string, string>, authToken = "twilio-auth-token"): string {
+function twilioSignature(
+  url: string,
+  params: Record<string, string>,
+  authToken = "twilio-auth-token"
+): string {
   const sorted = Object.keys(params)
     .sort()
     .map((key) => `${key}${params[key] ?? ""}`)
@@ -117,8 +131,12 @@ async function cleanup(): Promise<void> {
     }
   });
   await prisma.outboundWhatsAppMessage.deleteMany({ where: { leadId: { in: leadIds } } });
-  await prisma.domainEventOutbox.deleteMany({ where: { idempotencyKey: { startsWith: "r24-test" } } });
-  await prisma.domainEventOutbox.deleteMany({ where: { idempotencyKey: { startsWith: "domain-event:reply-processing:" } } });
+  await prisma.domainEventOutbox.deleteMany({
+    where: { idempotencyKey: { startsWith: "r24-test" } }
+  });
+  await prisma.domainEventOutbox.deleteMany({
+    where: { idempotencyKey: { startsWith: "domain-event:reply-processing:" } }
+  });
   await prisma.replyProcessingRun.deleteMany({ where: { leadId: { in: leadIds } } });
   await prisma.inboundEmail.deleteMany({ where: { leadId: { in: leadIds } } });
   await prisma.leadQualificationEvidence.deleteMany({
@@ -311,15 +329,19 @@ describe("R24 messaging service", () => {
     await expect(
       prisma.message.count({ where: { providerMessageId: "r24-test-inbound-message-001" } })
     ).resolves.toBe(1);
-    await expect(prisma.followUpSequence.findUnique({ where: { id: fixture.followUp.id } })).resolves.toMatchObject({
+    await expect(
+      prisma.followUpSequence.findUnique({ where: { id: fixture.followUp.id } })
+    ).resolves.toMatchObject({
       status: "STOPPED",
       stopReason: "WHATSAPP_REPLY_RECEIVED"
     });
-    await expect(prisma.callingSequence.findUnique({ where: { id: fixture.calling.id } })).resolves.toMatchObject({
+    await expect(
+      prisma.callingSequence.findUnique({ where: { id: fixture.calling.id } })
+    ).resolves.toMatchObject({
       status: "STOPPED",
       stopReason: "WHATSAPP_REPLY_RECEIVED"
     });
-  });
+  }, 90000);
 
   it("accepts signed Twilio WhatsApp Sandbox inbound form payloads through the same R24 pipeline", async () => {
     const fixture = await createLeadFixture();

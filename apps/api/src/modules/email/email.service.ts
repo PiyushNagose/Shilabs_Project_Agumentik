@@ -34,6 +34,7 @@ import type { AuthenticatedUser } from "../auth/auth.types.js";
 import { upsertIntegrationAccount } from "../integrations/integration-mapping.repository.js";
 import { AwsSesProvider } from "../integrations/aws-ses/aws-ses.provider.js";
 import { MailpitEmailProvider } from "../integrations/mailpit/mailpit.provider.js";
+import { publishRealtimeEvent } from "../realtime/realtime.service.js";
 import type { EmailProvider } from "./email.provider.js";
 import {
   sesNotificationSchema,
@@ -75,7 +76,9 @@ function assertE2ELocalInboundEnabled(env: NodeJS.ProcessEnv): void {
 }
 
 function firstNonEmpty(...values: (string | undefined)[]): string | null {
-  return values.map((value) => value?.trim()).find((value): value is string => Boolean(value)) ?? null;
+  return (
+    values.map((value) => value?.trim()).find((value): value is string => Boolean(value)) ?? null
+  );
 }
 
 function getE2EInboundSigningConfig(env: NodeJS.ProcessEnv): {
@@ -83,7 +86,8 @@ function getE2EInboundSigningConfig(env: NodeJS.ProcessEnv): {
   webhookSecret: string;
   providerEnv: NodeJS.ProcessEnv;
 } {
-  const fromEmail = firstNonEmpty(env.AWS_SES_FROM_EMAIL, env.MAILPIT_FROM_EMAIL) ?? "sales@shilabs.local";
+  const fromEmail =
+    firstNonEmpty(env.AWS_SES_FROM_EMAIL, env.MAILPIT_FROM_EMAIL) ?? "sales@shilabs.local";
   const webhookSecret =
     firstNonEmpty(env.AWS_SES_WEBHOOK_SECRET, env[E2E_INBOUND_WEBHOOK_SECRET_ENV]) ?? "";
   if (!webhookSecret) {
@@ -1546,10 +1550,73 @@ export async function ingestSesInboundEmail(input: {
         });
       }
 
+      const activeCallingSequences = await tx.callingSequence.findMany({
+        where: { leadId: match.leadId, status: "ACTIVE" },
+        include: { attempts: { where: { status: "SCHEDULED" } } }
+      });
+      for (const sequence of activeCallingSequences) {
+        await tx.callingSequence.update({
+          where: { id: sequence.id },
+          data: {
+            status: "STOPPED",
+            stopReason: "INBOUND_EMAIL_RECEIVED",
+            stoppedAt
+          }
+        });
+        await tx.callingAttempt.updateMany({
+          where: { sequenceId: sequence.id, status: "SCHEDULED" },
+          data: {
+            status: "SKIPPED",
+            completedAt: stoppedAt,
+            failureCode: "INBOUND_EMAIL_RECEIVED",
+            failureMessage: "Inbound email received before scheduled call executed"
+          }
+        });
+        await tx.domainEventOutbox.updateMany({
+          where: {
+            OR: [
+              {
+                id: {
+                  in: sequence.attempts
+                    .map((attempt) => attempt.domainEventId)
+                    .filter((id): id is string => Boolean(id))
+                }
+              },
+              { correlationId: sequence.id }
+            ],
+            status: { in: ["PENDING", "QUEUED", "PROCESSING"] }
+          },
+          data: {
+            status: "ATTENTION_REQUIRED",
+            deadLetteredAt: stoppedAt,
+            lastErrorCode: "INBOUND_EMAIL_RECEIVED",
+            lastErrorMessage: "Inbound email stopped pending calling/WhatsApp automation"
+          }
+        });
+        await tx.auditEvent.create({
+          data: {
+            actorType: "SYSTEM",
+            entityType: "CallingSequence",
+            entityId: sequence.id,
+            action: "CALLING_SEQUENCE_STOPPED",
+            after: { leadId: match.leadId, reason: "INBOUND_EMAIL_RECEIVED" }
+          }
+        });
+      }
+
       return inbound;
     },
     { maxWait: 10000, timeout: 30000 }
   );
+
+  if (processed.leadId) {
+    await publishRealtimeEvent({
+      entityType: "lead",
+      action: "inbound-email-received",
+      leadId: processed.leadId,
+      conversationId: processed.conversationId
+    }).catch(() => undefined);
+  }
 
   return {
     provider: "AWS_SES",

@@ -24,7 +24,7 @@ export async function getDealController(
   request: Request<{ id: string }>,
   response: Response<DealDto>
 ): Promise<void> {
-  const deal = await getDeal(request.params.id);
+  const deal = await getDeal(requireRequestUser(request), request.params.id);
   response.status(200).json(deal);
 }
 

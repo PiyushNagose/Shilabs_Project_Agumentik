@@ -270,6 +270,42 @@ describe("R23 calling automation", () => {
     ).resolves.toBe(1);
   }, 90000);
 
+  it("normalizes a local E2E phone against the configured allowed E.164 number", async () => {
+    const exotelEnv = {
+      ...env,
+      VOICE_PROVIDER: "exotel",
+      VOICE_E2E_ALLOWED_TO_NUMBERS: "+917724960195",
+      EXOTEL_ACCOUNT_SID: "exotel-account",
+      EXOTEL_API_KEY: "exotel-key",
+      EXOTEL_API_TOKEN: "exotel-token",
+      EXOTEL_API_SUBDOMAIN: "api.exotel.test",
+      EXOTEL_CALLER_ID: "08000000000",
+      EXOTEL_APP_URL: "https://voice-e2e.example.test/exotel-flow"
+    } as NodeJS.ProcessEnv;
+    const { contact, sequence } = await createCompletedFollowUp();
+    await workerPrisma.contact.update({ where: { id: contact.id }, data: { phone: "07724960195" } });
+    await scheduleCallingSequenceAfterFailedEmailSequence({ followUpSequenceId: sequence.id, env: exotelEnv });
+    const attempt = await workerPrisma.callingAttempt.findFirstOrThrow({
+      where: { sequence: { followUpSequenceId: sequence.id }, attemptIndex: 0 }
+    });
+    const event = await workerPrisma.domainEventOutbox.findUniqueOrThrow({ where: { id: attempt.domainEventId ?? "" } });
+    const provider = new TestVoiceProvider({
+      status: "ACCEPTED",
+      providerCallId: `exotel-local-phone-${crypto.randomUUID()}`,
+      providerStatus: "queued",
+      lastError: null
+    });
+
+    await executeCallingAutomationAttempt({
+      event,
+      env: exotelEnv,
+      provider,
+      timelineSyncer: new TestTimelineSyncer()
+    });
+
+    expect(provider.calls[0]?.to).toBe("+917724960195");
+  });
+
   it("blocks execution-time ineligible contacts without calling the provider", async () => {
     const { contact, sequence } = await createCompletedFollowUp();
     await workerPrisma.contact.update({ where: { id: contact.id }, data: { doNotContact: true } });

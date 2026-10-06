@@ -41,28 +41,33 @@ export async function listConversationsController(
 ): Promise<void> {
   response
     .status(200)
-    .json(await listConversations(request.validatedQuery as ListConversationsQuery));
+    .json(
+      await listConversations(
+        requireRequestUser(request),
+        request.validatedQuery as ListConversationsQuery
+      )
+    );
 }
 
 export async function createConversationController(
   request: Request<Record<string, never>, ConversationDto, CreateConversationInput>,
   response: Response<ConversationDto>
 ): Promise<void> {
-  response.status(201).json(await createConversation(request.body));
+  response.status(201).json(await createConversation(requireRequestUser(request), request.body));
 }
 
 export async function getConversationController(
   request: Request<{ id: string }>,
   response: Response<ConversationDto>
 ): Promise<void> {
-  response.status(200).json(await getConversation(request.params.id));
+  response.status(200).json(await getConversation(requireRequestUser(request), request.params.id));
 }
 
 export async function listMessagesController(
   request: Request<{ id: string }>,
   response: Response<MessageDto[]>
 ): Promise<void> {
-  response.status(200).json(await listMessages(request.params.id));
+  response.status(200).json(await listMessages(requireRequestUser(request), request.params.id));
 }
 
 export async function appendMessageController(
@@ -107,5 +112,7 @@ export async function getHumanTakeoverBriefingController(
   request: Request<{ id: string }>,
   response: Response<HumanTakeoverBriefingDto>
 ): Promise<void> {
-  response.status(200).json(await getHumanTakeoverBriefing(request.params.id));
+  response
+    .status(200)
+    .json(await getHumanTakeoverBriefing(requireRequestUser(request), request.params.id));
 }

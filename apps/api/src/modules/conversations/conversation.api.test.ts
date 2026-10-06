@@ -110,45 +110,68 @@ async function createLead(token: string): Promise<LeadDto> {
 }
 
 async function cleanup(): Promise<void> {
+  const companies = await prisma.company.findMany({
+    where: { name: { startsWith: companyNamePrefix } },
+    select: { id: true }
+  });
+  const companyIds = companies.map((company) => company.id);
+  const contacts = await prisma.contact.findMany({
+    where: { companyId: { in: companyIds } },
+    select: { id: true }
+  });
+  const contactIds = contacts.map((contact) => contact.id);
+  const leads = await prisma.lead.findMany({
+    where: { companyId: { in: companyIds } },
+    select: { id: true }
+  });
+  const leadIds = leads.map((lead) => lead.id);
+  const conversations = await prisma.conversation.findMany({
+    where: { leadId: { in: leadIds } },
+    select: { id: true }
+  });
+  const conversationIds = conversations.map((conversation) => conversation.id);
+  const takeovers = await prisma.humanTakeover.findMany({
+    where: { leadId: { in: leadIds } },
+    select: { id: true }
+  });
+  const takeoverIds = takeovers.map((takeover) => takeover.id);
+
   await prisma.authSession.deleteMany({ where: { user: { email: adminEmail } } });
   await prisma.message.deleteMany({
-    where: { conversation: { lead: { company: { name: { startsWith: companyNamePrefix } } } } }
+    where: { conversationId: { in: conversationIds } }
   });
   await prisma.humanTakeover.deleteMany({
-    where: { lead: { company: { name: { startsWith: companyNamePrefix } } } }
+    where: { leadId: { in: leadIds } }
   });
   await prisma.emailProviderEvent.deleteMany({
-    where: { outboundEmail: { lead: { company: { name: { startsWith: companyNamePrefix } } } } }
+    where: { outboundEmail: { leadId: { in: leadIds } } }
   });
   await prisma.outboundEmail.deleteMany({
-    where: { lead: { company: { name: { startsWith: companyNamePrefix } } } }
+    where: { leadId: { in: leadIds } }
   });
   await prisma.conversation.deleteMany({
-    where: { lead: { company: { name: { startsWith: companyNamePrefix } } } }
+    where: { id: { in: conversationIds } }
   });
   await prisma.auditEvent.deleteMany({
     where: {
       OR: [
-        { entityType: "Conversation" },
-        { entityType: "Lead" },
-        { entityType: "Company" },
-        { entityType: "Contact" }
+        { entityId: { in: companyIds } },
+        { entityId: { in: contactIds } },
+        { entityId: { in: leadIds } },
+        { entityId: { in: conversationIds } },
+        { entityId: { in: takeoverIds } }
       ]
     }
   });
   await prisma.activity.deleteMany({
-    where: { lead: { company: { name: { startsWith: companyNamePrefix } } } }
+    where: { leadId: { in: leadIds } }
   });
   await prisma.deal.deleteMany({
-    where: { lead: { company: { name: { startsWith: companyNamePrefix } } } }
+    where: { leadId: { in: leadIds } }
   });
-  await prisma.lead.deleteMany({
-    where: { company: { name: { startsWith: companyNamePrefix } } }
-  });
-  await prisma.contact.deleteMany({
-    where: { company: { name: { startsWith: companyNamePrefix } } }
-  });
-  await prisma.company.deleteMany({ where: { name: { startsWith: companyNamePrefix } } });
+  await prisma.lead.deleteMany({ where: { id: { in: leadIds } } });
+  await prisma.contact.deleteMany({ where: { id: { in: contactIds } } });
+  await prisma.company.deleteMany({ where: { id: { in: companyIds } } });
   await prisma.user.deleteMany({ where: { email: adminEmail } });
 }
 
@@ -345,6 +368,52 @@ describe("M7/M8 conversations API", () => {
     expect(briefing.conversationSummary.mode).toBe("HUMAN");
     expect(briefing.conversationSummary.messageCount).toBe(1);
     expect(briefing.latestActions.map((activity) => activity.type)).toContain("HUMAN_TAKEOVER");
+  }, 45000);
+
+  it("clears active human takeover when automation is explicitly resumed", async () => {
+    const token = await login();
+    const lead = await createLead(token);
+    const conversationResponse = await request(app)
+      .post("/api/conversations")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ leadId: lead.id, channel: "EMAIL" })
+      .expect(201);
+    const conversation = conversationResponse.body as unknown as ConversationDto;
+
+    const takeoverResponse = await request(app)
+      .post(`/api/conversations/${conversation.id}/takeover`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ reason: "Manual review" })
+      .expect(201);
+    const takeover = takeoverResponse.body as unknown as HumanTakeoverDto;
+
+    const modeResponse = await request(app)
+      .patch(`/api/conversations/${conversation.id}/mode`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ mode: "AUTO" })
+      .expect(200);
+    const updated = modeResponse.body as unknown as ConversationDto;
+
+    expect(updated.mode).toBe("AUTO");
+    await expect(
+      prisma.humanTakeover.count({ where: { conversationId: conversation.id, status: "ACTIVE" } })
+    ).resolves.toBe(0);
+    await prisma.auditEvent.findFirstOrThrow({
+      where: {
+        entityType: "HumanTakeover",
+        entityId: takeover.id,
+        action: "HUMAN_TAKEOVER_ENDED"
+      }
+    });
+    await expect(
+      prisma.activity.count({
+        where: {
+          leadId: lead.id,
+          type: "HUMAN_TAKEOVER",
+          description: { contains: "AI automation resumed" }
+        }
+      })
+    ).resolves.toBe(1);
   }, 45000);
 
   it("prevents duplicate provider message ids", async () => {

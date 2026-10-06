@@ -9,6 +9,7 @@ import type { AIProvider } from "../ai/ai.provider.js";
 import { listApprovedKnowledge } from "../knowledge-base/knowledge-base.service.js";
 import { publishDomainEvent } from "../domain-events/domain-events.service.js";
 import { validateOutboundEmailPreSend } from "../email/email.service.js";
+import { assertCanAccessLead, assertCanMutateLead } from "../leads/lead.permissions.js";
 import type { StartFollowUpSequenceInput } from "./followup.schemas.js";
 
 const DEFAULT_CADENCE_DAYS = [0, 1, 5, 9] as const;
@@ -18,6 +19,7 @@ const FOLLOW_UP_CADENCE_MODES = {
 } as const;
 
 type SequenceRecord = Prisma.FollowUpSequenceGetPayload<{ include: { attempts: true } }>;
+type FollowUpLeadActionAttempt = Pick<SequenceRecord["attempts"][number], "stepIndex" | "scheduledAt">;
 
 interface StartOptions {
   provider?: AIProvider;
@@ -70,11 +72,22 @@ function toSequenceDto(
     lastErrorCode: sequence.lastErrorCode,
     lastErrorMessage: sequence.lastErrorMessage,
     idempotencyKey: sequence.idempotencyKey,
-    attempts: sequence.attempts
-      .sort((a, b) => a.stepIndex - b.stepIndex)
-      .map(toAttemptDto),
+    attempts: sequence.attempts.sort((a, b) => a.stepIndex - b.stepIndex).map(toAttemptDto),
     createdAt: sequence.createdAt.toISOString(),
     updatedAt: sequence.updatedAt.toISOString()
+  };
+}
+
+function followUpLeadNextAction(attempt: FollowUpLeadActionAttempt): {
+  nextAction: string;
+  nextActionAt: Date;
+} {
+  return {
+    nextAction:
+      attempt.stepIndex === 0
+        ? "Send first follow-up email"
+        : `Send follow-up email ${String(attempt.stepIndex + 1)}`,
+    nextActionAt: attempt.scheduledAt
   };
 }
 
@@ -88,7 +101,9 @@ async function isE2EAccelerationEligible(sequence: SequenceRecord): Promise<bool
     return false;
   }
 
-  const eventIds = scheduledAttempts.map((attempt) => attempt.domainEventId).filter(Boolean) as string[];
+  const eventIds = scheduledAttempts
+    .map((attempt) => attempt.domainEventId)
+    .filter(Boolean) as string[];
   if (eventIds.length !== scheduledAttempts.length) {
     return false;
   }
@@ -124,8 +139,15 @@ async function loadSequence(id: string): Promise<FollowUpSequenceDto> {
 }
 
 export async function listFollowUpSequencesForLead(
+  actor: AuthenticatedUser,
   leadId: string
 ): Promise<FollowUpSequenceDto[]> {
+  const lead = await prisma.lead.findUnique({
+    where: { id: leadId },
+    select: { id: true, ownerId: true }
+  });
+  if (!lead) throw new AppError(404, "NOT_FOUND", "Lead not found");
+  assertCanAccessLead(actor, lead);
   const sequences = await prisma.followUpSequence.findMany({
     where: { leadId },
     include: { attempts: true },
@@ -189,6 +211,7 @@ export async function startFollowUpSequence(
     }
   });
   if (!lead) throw new AppError(404, "NOT_FOUND", "Lead not found");
+  assertCanMutateLead(actor, lead);
 
   const eligibility = await validateOutboundEmailPreSend(actor, { leadId });
   if (!eligibility.allowed) {
@@ -296,62 +319,71 @@ export async function startFollowUpSequence(
           idempotencyKey
         }
       });
+      let firstScheduledAttempt: FollowUpLeadActionAttempt | null = null;
 
-    for (const [index, day] of DEFAULT_CADENCE_DAYS.entries()) {
-      const scheduledAt = scheduleAt(now, timing.offsetsMinutes[index] ?? day * 24 * 60);
-      const attempt = await tx.followUpAttempt.create({
-        data: {
-          sequenceId: created.id,
-          leadId,
-          stepIndex: index,
-          kind: index === 0 ? "FIRST_EMAIL" : "FOLLOW_UP",
-          scheduledAt,
-          subject: subjectFor({
+      for (const [index, day] of DEFAULT_CADENCE_DAYS.entries()) {
+        const scheduledAt = scheduleAt(now, timing.offsetsMinutes[index] ?? day * 24 * 60);
+        const attempt = await tx.followUpAttempt.create({
+          data: {
+            sequenceId: created.id,
+            leadId,
             stepIndex: index,
-            serviceInterest: lead.serviceInterest,
-            requirement: lead.requirement
-          }),
-          textBody: drafts[index] ?? "",
-          idempotencyKey: `follow-up-attempt:${created.id}:${String(index)}`
-        }
-      });
-      const event = await publishDomainEvent({
-        client: tx,
-        eventType: "FOLLOWUP_EMAIL_SEND_REQUESTED",
-        aggregateType: "FollowUpAttempt",
-        aggregateId: attempt.id,
-        correlationId: created.id,
-        idempotencyKey: `domain-event:follow-up-attempt:${attempt.id}`,
-        nextAttemptAt: scheduledAt,
-        payload: {
-          followUpSequenceId: created.id,
-          followUpAttemptId: attempt.id,
-          leadId,
-          conversationId: emailConversation.id,
-          stepIndex: index
-        }
-      });
-      await tx.followUpAttempt.update({
-        where: { id: attempt.id },
-        data: { domainEventId: event.id }
-      });
-    }
-
-    await tx.auditEvent.create({
-      data: {
-        actorType: "USER",
-        actorId: actor.id,
-        entityType: "FollowUpSequence",
-        entityId: created.id,
-        action: "FOLLOW_UP_SEQUENCE_STARTED",
-        after: {
-          leadId,
-          cadenceDays: [...DEFAULT_CADENCE_DAYS],
-          cadenceMode: FOLLOW_UP_CADENCE_MODES[timing.mode],
-          cadenceOffsetsMinutes: timing.offsetsMinutes
-        }
+            kind: index === 0 ? "FIRST_EMAIL" : "FOLLOW_UP",
+            scheduledAt,
+            subject: subjectFor({
+              stepIndex: index,
+              serviceInterest: lead.serviceInterest,
+              requirement: lead.requirement
+            }),
+            textBody: drafts[index] ?? "",
+            idempotencyKey: `follow-up-attempt:${created.id}:${String(index)}`
+          }
+        });
+        const event = await publishDomainEvent({
+          client: tx,
+          eventType: "FOLLOWUP_EMAIL_SEND_REQUESTED",
+          aggregateType: "FollowUpAttempt",
+          aggregateId: attempt.id,
+          correlationId: created.id,
+          idempotencyKey: `domain-event:follow-up-attempt:${attempt.id}`,
+          nextAttemptAt: scheduledAt,
+          payload: {
+            followUpSequenceId: created.id,
+            followUpAttemptId: attempt.id,
+            leadId,
+            conversationId: emailConversation.id,
+            stepIndex: index
+          }
+        });
+        await tx.followUpAttempt.update({
+          where: { id: attempt.id },
+          data: { domainEventId: event.id }
+        });
+        firstScheduledAttempt ??= attempt;
       }
-    });
+
+      if (firstScheduledAttempt) {
+        await tx.lead.update({
+          where: { id: leadId },
+          data: followUpLeadNextAction(firstScheduledAttempt)
+        });
+      }
+
+      await tx.auditEvent.create({
+        data: {
+          actorType: "USER",
+          actorId: actor.id,
+          entityType: "FollowUpSequence",
+          entityId: created.id,
+          action: "FOLLOW_UP_SEQUENCE_STARTED",
+          after: {
+            leadId,
+            cadenceDays: [...DEFAULT_CADENCE_DAYS],
+            cadenceMode: FOLLOW_UP_CADENCE_MODES[timing.mode],
+            cadenceOffsetsMinutes: timing.offsetsMinutes
+          }
+        }
+      });
 
       return created;
     },
@@ -390,7 +422,9 @@ export async function accelerateFollowUpSequenceForE2E(
     return toSequenceDto(sequence);
   }
 
-  const eventIds = scheduledAttempts.map((attempt) => attempt.domainEventId).filter(Boolean) as string[];
+  const eventIds = scheduledAttempts
+    .map((attempt) => attempt.domainEventId)
+    .filter(Boolean) as string[];
   if (eventIds.length !== scheduledAttempts.length) {
     throw new AppError(
       409,
@@ -439,6 +473,22 @@ export async function accelerateFollowUpSequenceForE2E(
       });
     }
 
+    const nextAttempt = scheduledAttempts
+      .map((attempt) => ({
+        stepIndex: attempt.stepIndex,
+        scheduledAt: scheduleAt(
+          now,
+          timing.offsetsMinutes[attempt.stepIndex] ?? timing.offsetsMinutes.at(-1) ?? 0
+        )
+      }))
+      .sort((a, b) => a.scheduledAt.getTime() - b.scheduledAt.getTime())[0];
+    if (nextAttempt) {
+      await tx.lead.update({
+        where: { id: sequence.leadId },
+        data: followUpLeadNextAction(nextAttempt)
+      });
+    }
+
     await tx.auditEvent.create({
       data: {
         actorType: "USER",
@@ -459,6 +509,132 @@ export async function accelerateFollowUpSequenceForE2E(
   });
 
   return loadSequence(sequence.id);
+}
+
+export async function runCallingAttemptNowForE2E(
+  actor: AuthenticatedUser,
+  leadId: string,
+  options?: { env?: NodeJS.ProcessEnv; now?: Date }
+): Promise<{ status: "ACCELERATED" | "ALREADY_QUEUED"; attemptId: string; scheduledAt: string }> {
+  if (getFollowUpTimingConfig(options?.env).mode !== "e2e_accelerated_minutes") {
+    throw new AppError(409, "CONFLICT", "E2E calling acceleration is not enabled in this environment");
+  }
+  const lead = await prisma.lead.findUnique({ where: { id: leadId } });
+  if (!lead) throw new AppError(404, "NOT_FOUND", "Lead not found");
+  assertCanMutateLead(actor, lead);
+
+  const sequences = await prisma.callingSequence.findMany({
+    where: { leadId, status: { in: ["ACTIVE", "ATTENTION_REQUIRED"] } },
+    include: { attempts: { orderBy: { attemptIndex: "asc" } } },
+    orderBy: { createdAt: "desc" }
+  });
+  const sequence = sequences.find(
+    (candidate) =>
+      candidate.attempts.some((item) => item.status === "SCHEDULED") &&
+      candidate.attempts.some((item) => item.voiceCallAttemptId)
+  );
+  const attempt = sequence?.attempts.find((item) => item.status === "SCHEDULED");
+  const exhausted = sequences.find(
+    (candidate) =>
+      candidate.attempts.some((item) => item.voiceCallAttemptId) &&
+      candidate.attempts.length > 0 &&
+      candidate.attempts.every((item) => item.status !== "SCHEDULED")
+  );
+
+  if (!attempt && exhausted) {
+    const scheduledAt = options?.now ?? new Date();
+    const retryKey = `calling-sequence:e2e-retry:${exhausted.id}`;
+    const retry = await prisma.$transaction(async (tx) => {
+      const createdSequence = await tx.callingSequence.upsert({
+        where: { idempotencyKey: retryKey },
+        create: {
+          leadId,
+          contactId: exhausted.contactId,
+          followUpSequenceId: exhausted.followUpSequenceId,
+          cadenceOffsets: [0],
+          maxAttempts: 1,
+          idempotencyKey: retryKey
+        },
+        update: { status: "ACTIVE", stopReason: null, stoppedAt: null, completedAt: null }
+      });
+      const createdAttempt = await tx.callingAttempt.upsert({
+        where: { idempotencyKey: `calling-attempt:${createdSequence.id}:0` },
+        create: {
+          sequenceId: createdSequence.id,
+          leadId,
+          contactId: exhausted.contactId,
+          attemptIndex: 0,
+          scheduledAt,
+          idempotencyKey: `calling-attempt:${createdSequence.id}:0`
+        },
+        update: { status: "SCHEDULED", scheduledAt, failureCode: null, failureMessage: null }
+      });
+      const event = await tx.domainEventOutbox.upsert({
+        where: { idempotencyKey: `domain-event:calling-attempt:${createdAttempt.id}` },
+        create: {
+          eventType: "CALL_AUTOMATION_ATTEMPT_DUE",
+          aggregateType: "CallingAttempt",
+          aggregateId: createdAttempt.id,
+          payload: { leadId, contactId: exhausted.contactId, callingSequenceId: createdSequence.id, callingAttemptId: createdAttempt.id },
+          correlationId: createdSequence.id,
+          idempotencyKey: `domain-event:calling-attempt:${createdAttempt.id}`,
+          nextAttemptAt: scheduledAt,
+          maxAttempts: 5
+        },
+        update: { nextAttemptAt: scheduledAt, status: "PENDING", lastErrorCode: null, lastErrorMessage: null }
+      });
+      await tx.callingAttempt.update({ where: { id: createdAttempt.id }, data: { domainEventId: event.id } });
+      await tx.domainEventOutbox.upsert({
+        where: { idempotencyKey: `domain-event:whatsapp-send:${createdAttempt.id}` },
+        create: {
+          eventType: "WHATSAPP_SEND_REQUESTED",
+          aggregateType: "CallingAttempt",
+          aggregateId: createdAttempt.id,
+          payload: { leadId, contactId: exhausted.contactId, callingSequenceId: createdSequence.id, callingAttemptId: createdAttempt.id },
+          correlationId: createdSequence.id,
+          idempotencyKey: `domain-event:whatsapp-send:${createdAttempt.id}`,
+          nextAttemptAt: scheduledAt,
+          maxAttempts: 5
+        },
+        update: {}
+      });
+      await tx.lead.update({ where: { id: leadId }, data: { nextAction: "Call lead now", nextActionAt: scheduledAt } });
+      return { id: createdAttempt.id, scheduledAt };
+    });
+    return { status: "ACCELERATED", attemptId: retry.id, scheduledAt: retry.scheduledAt.toISOString() };
+  }
+
+  if (!attempt?.domainEventId || !sequence) {
+    throw new AppError(409, "CONFLICT", "No active scheduled AI calling attempt is available");
+  }
+  const event = await prisma.domainEventOutbox.findUnique({
+    where: { id: attempt.domainEventId },
+    select: { status: true }
+  });
+  if (event?.status !== "PENDING") {
+    if (event?.status === "QUEUED" || event?.status === "PROCESSING") {
+      return { status: "ALREADY_QUEUED", attemptId: attempt.id, scheduledAt: attempt.scheduledAt.toISOString() };
+    }
+    throw new AppError(409, "CONFLICT", "Calling attempt is no longer pending");
+  }
+
+  const scheduledAt = options?.now ?? new Date();
+  await prisma.$transaction(async (tx) => {
+    await tx.callingAttempt.update({ where: { id: attempt.id }, data: { scheduledAt } });
+    await tx.domainEventOutbox.update({ where: { id: attempt.domainEventId ?? "" }, data: { nextAttemptAt: scheduledAt } });
+    await tx.lead.update({ where: { id: leadId }, data: { nextAction: "Call lead now", nextActionAt: scheduledAt } });
+    await tx.auditEvent.create({
+      data: {
+        actorType: "USER",
+        actorId: actor.id,
+        entityType: "CallingAttempt",
+        entityId: attempt.id,
+        action: "CALLING_ATTEMPT_E2E_ACCELERATED",
+        after: { leadId, scheduledAt: scheduledAt.toISOString() }
+      }
+    });
+  });
+  return { status: "ACCELERATED", attemptId: attempt.id, scheduledAt: scheduledAt.toISOString() };
 }
 
 export async function stopActiveFollowUpsForLead(input: {
@@ -482,7 +658,11 @@ export async function stopActiveFollowUpsForLead(input: {
       });
       await tx.domainEventOutbox.updateMany({
         where: {
-          id: { in: sequence.attempts.map((attempt) => attempt.domainEventId).filter(Boolean) as string[] },
+          id: {
+            in: sequence.attempts
+              .map((attempt) => attempt.domainEventId)
+              .filter(Boolean) as string[]
+          },
           status: { in: ["PENDING", "QUEUED"] }
         },
         data: {

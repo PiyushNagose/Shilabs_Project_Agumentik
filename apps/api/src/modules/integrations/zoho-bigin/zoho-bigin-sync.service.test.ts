@@ -33,11 +33,11 @@ function tokenResponse(): Response {
   });
 }
 
-function contactsResponse(phone = "+91 98765 43210"): Response {
+function contactsResponse(phone = "+91 98765 43210", id = "r3-zoho-contact-1"): Response {
   return Response.json({
     data: [
       {
-        id: "r3-zoho-contact-1",
+        id,
         First_Name: "Priya",
         Last_Name: "Nair",
         Email: "Priya@Example.com",
@@ -64,23 +64,49 @@ async function cleanup(): Promise<void> {
       ]
     }
   });
-  const leadIds = mappings
+  const mappedLeadIds = mappings
     .filter((mapping) => mapping.entityType === "LEAD")
     .map((mapping) => mapping.localEntityId);
-  const contactIds = mappings
+  const mappedContactIds = mappings
     .filter((mapping) => mapping.entityType === "CONTACT")
     .map((mapping) => mapping.localEntityId);
-  const companyIds = mappings
+  const mappedCompanyIds = mappings
     .filter((mapping) => mapping.entityType === "COMPANY")
     .map((mapping) => mapping.localEntityId);
+  const leads = await prisma.lead.findMany({
+    where: { OR: [{ id: { in: mappedLeadIds } }, { company: { name: "R3 Account" } }] },
+    select: { id: true }
+  });
+  const contacts = await prisma.contact.findMany({
+    where: { OR: [{ id: { in: mappedContactIds } }, { company: { name: "R3 Account" } }] },
+    select: { id: true }
+  });
+  const leadIds = leads.map((lead) => lead.id);
+  const contactIds = contacts.map((contact) => contact.id);
 
   await prisma.externalRecordMapping.deleteMany({
     where: { provider: "ZOHO_BIGIN", externalRecordId: { startsWith: "r3-zoho-" } }
   });
+  const followUpAttemptIds = (
+    await prisma.followUpAttempt.findMany({
+      where: { leadId: { in: leadIds } },
+      select: { id: true }
+    })
+  ).map((attempt) => attempt.id);
+  await prisma.domainEventOutbox.deleteMany({
+    where: { aggregateType: "FollowUpAttempt", aggregateId: { in: followUpAttemptIds } }
+  });
+  await prisma.followUpAttempt.deleteMany({ where: { leadId: { in: leadIds } } });
+  await prisma.followUpSequence.deleteMany({ where: { leadId: { in: leadIds } } });
+  await prisma.message.deleteMany({
+    where: { conversation: { leadId: { in: leadIds } } }
+  });
+  await prisma.conversation.deleteMany({ where: { leadId: { in: leadIds } } });
+  await prisma.activity.deleteMany({ where: { leadId: { in: leadIds } } });
   await prisma.lead.deleteMany({ where: { id: { in: leadIds } } });
   await prisma.contact.deleteMany({ where: { id: { in: contactIds } } });
   await prisma.company.deleteMany({
-    where: { OR: [{ id: { in: companyIds } }, { name: "R3 Account" }] }
+    where: { OR: [{ id: { in: mappedCompanyIds } }, { name: "R3 Account" }] }
   });
   await prisma.integrationSyncRun.deleteMany({
     where: { provider: "ZOHO_BIGIN", operation: "LEAD_CONTACT_SYNC", requestedByUserId: actor.id }
@@ -196,5 +222,30 @@ describe("Zoho lead/contact sync", () => {
     const lead = await prisma.lead.findUniqueOrThrow({ where: { id: leadMapping.localEntityId } });
     expect(lead.score).toBe(77);
     expect(lead.nextAction).toBe("Call after proposal review");
+  });
+
+  it("skips a duplicate Zoho contact identity without turning the sync into a failure", async () => {
+    const firstTransport = vi
+      .fn<FetchTransport>()
+      .mockResolvedValueOnce(tokenResponse())
+      .mockResolvedValueOnce(contactsResponse());
+    await expect(syncZohoLeadContacts({ actor, env, transport: firstTransport })).resolves.toMatchObject({
+      status: "COMPLETED",
+      succeededRecords: 1,
+      skippedRecords: 0,
+      failedRecords: 0
+    });
+
+    const duplicateTransport = vi
+      .fn<FetchTransport>()
+      .mockResolvedValueOnce(tokenResponse())
+      .mockResolvedValueOnce(contactsResponse("+91 98765 43210", "r3-zoho-contact-duplicate"));
+    await expect(syncZohoLeadContacts({ actor, env, transport: duplicateTransport })).resolves.toMatchObject({
+      status: "COMPLETED",
+      succeededRecords: 0,
+      skippedRecords: 1,
+      failedRecords: 0,
+      lastError: null
+    });
   });
 });

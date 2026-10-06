@@ -16,6 +16,7 @@ const app = createApp();
 const adminEmail = "leads-api-admin@example.local";
 const managerEmail = "leads-api-manager@example.local";
 const repEmail = "leads-api-rep@example.local";
+const otherRepEmail = "leads-api-other-rep@example.local";
 const companyNamePrefix = "M4 Lead Company";
 
 async function login(email: string): Promise<string> {
@@ -86,13 +87,52 @@ async function createLead(
   return body;
 }
 
+async function deleteFollowUpsForLeadCompanyPrefix(): Promise<void> {
+  const attemptIds = (
+    await prisma.followUpAttempt.findMany({
+      where: {
+        lead: {
+          company: {
+            name: { startsWith: companyNamePrefix }
+          }
+        }
+      },
+      select: { id: true }
+    })
+  ).map((attempt) => attempt.id);
+  await prisma.domainEventOutbox.deleteMany({
+    where: {
+      aggregateType: "FollowUpAttempt",
+      aggregateId: { in: attemptIds }
+    }
+  });
+  await prisma.followUpAttempt.deleteMany({
+    where: {
+      lead: {
+        company: {
+          name: { startsWith: companyNamePrefix }
+        }
+      }
+    }
+  });
+  await prisma.followUpSequence.deleteMany({
+    where: {
+      lead: {
+        company: {
+          name: { startsWith: companyNamePrefix }
+        }
+      }
+    }
+  });
+}
+
 describe("leads API", () => {
   beforeEach(async () => {
     await prisma.authSession.deleteMany({
       where: {
         user: {
           email: {
-            in: [adminEmail, managerEmail, repEmail]
+            in: [adminEmail, managerEmail, repEmail, otherRepEmail]
           }
         }
       }
@@ -100,6 +140,36 @@ describe("leads API", () => {
     await prisma.auditEvent.deleteMany({
       where: {
         entityType: "Lead"
+      }
+    });
+    await deleteFollowUpsForLeadCompanyPrefix();
+    await prisma.message.deleteMany({
+      where: {
+        conversation: {
+          lead: {
+            company: {
+              name: { startsWith: companyNamePrefix }
+            }
+          }
+        }
+      }
+    });
+    await prisma.conversation.deleteMany({
+      where: {
+        lead: {
+          company: {
+            name: { startsWith: companyNamePrefix }
+          }
+        }
+      }
+    });
+    await prisma.activity.deleteMany({
+      where: {
+        lead: {
+          company: {
+            name: { startsWith: companyNamePrefix }
+          }
+        }
       }
     });
     await prisma.lead.deleteMany({
@@ -124,7 +194,7 @@ describe("leads API", () => {
     await prisma.user.deleteMany({
       where: {
         email: {
-          in: [adminEmail, managerEmail, repEmail]
+          in: [adminEmail, managerEmail, repEmail, otherRepEmail]
         }
       }
     });
@@ -155,6 +225,14 @@ describe("leads API", () => {
           lastName: "Rep",
           role: UserRole.SALES_REP,
           status: UserStatus.ACTIVE
+        },
+        {
+          email: otherRepEmail,
+          passwordHash,
+          firstName: "Other",
+          lastName: "Rep",
+          role: UserRole.SALES_REP,
+          status: UserStatus.ACTIVE
         }
       ]
     });
@@ -165,7 +243,7 @@ describe("leads API", () => {
       where: {
         user: {
           email: {
-            in: [adminEmail, managerEmail, repEmail]
+            in: [adminEmail, managerEmail, repEmail, otherRepEmail]
           }
         }
       }
@@ -173,6 +251,36 @@ describe("leads API", () => {
     await prisma.auditEvent.deleteMany({
       where: {
         entityType: "Lead"
+      }
+    });
+    await deleteFollowUpsForLeadCompanyPrefix();
+    await prisma.message.deleteMany({
+      where: {
+        conversation: {
+          lead: {
+            company: {
+              name: { startsWith: companyNamePrefix }
+            }
+          }
+        }
+      }
+    });
+    await prisma.conversation.deleteMany({
+      where: {
+        lead: {
+          company: {
+            name: { startsWith: companyNamePrefix }
+          }
+        }
+      }
+    });
+    await prisma.activity.deleteMany({
+      where: {
+        lead: {
+          company: {
+            name: { startsWith: companyNamePrefix }
+          }
+        }
       }
     });
     await prisma.lead.deleteMany({
@@ -197,7 +305,7 @@ describe("leads API", () => {
     await prisma.user.deleteMany({
       where: {
         email: {
-          in: [adminEmail, managerEmail, repEmail]
+          in: [adminEmail, managerEmail, repEmail, otherRepEmail]
         }
       }
     });
@@ -306,6 +414,35 @@ describe("leads API", () => {
       }
     });
   }, 30000);
+
+  it("limits sales reps to their assigned leads", async () => {
+    const adminToken = await login(adminEmail);
+    const repToken = await login(repEmail);
+    const rep = await prisma.user.findUniqueOrThrow({ where: { email: repEmail } });
+    const otherRep = await prisma.user.findUniqueOrThrow({ where: { email: otherRepEmail } });
+    const ownLead = await createLead(adminToken, { ownerId: rep.id });
+    const otherLead = await createLead(adminToken, { ownerId: otherRep.id });
+
+    const listResponse = await request(app)
+      .get("/api/leads")
+      .set("Authorization", `Bearer ${repToken}`)
+      .expect(200);
+    const page = listResponse.body as unknown as PaginatedResponse<LeadDto>;
+
+    expect(page.items.some((lead) => lead.id === ownLead.id)).toBe(true);
+    expect(page.items.some((lead) => lead.id === otherLead.id)).toBe(false);
+
+    await request(app)
+      .get(`/api/leads/${otherLead.id}`)
+      .set("Authorization", `Bearer ${repToken}`)
+      .expect(403);
+
+    await request(app)
+      .patch(`/api/leads/${otherLead.id}`)
+      .set("Authorization", `Bearer ${repToken}`)
+      .send({ requirement: "Trying to edit another rep's lead" })
+      .expect(403);
+  }, 45000);
 
   it("supports search, filters, sorting and pagination", async () => {
     const token = await login(adminEmail);

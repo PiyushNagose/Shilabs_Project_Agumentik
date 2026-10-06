@@ -1,6 +1,7 @@
 import { getWorkerConfig } from "@shilabs/shared-config";
 import type { WorkerStatus } from "@shilabs/shared-types";
 import { closeDomainEventWorker, startDomainEventWorker } from "./queues/domain-event.queue.js";
+import { workerPrisma } from "./domain-events/domain-event.repository.js";
 
 export function createWorkerRuntime(env: NodeJS.ProcessEnv = process.env): WorkerStatus {
   const config = getWorkerConfig(env);
@@ -21,8 +22,9 @@ export async function startWorkerRuntime(env: NodeJS.ProcessEnv = process.env): 
   close: () => Promise<void>;
 }> {
   const status = createWorkerRuntime(env);
+  await workerPrisma.$queryRaw`SELECT 1`;
   if (!status.queuesEnabled) {
-    return { status, close: () => Promise.resolve() };
+    return { status, close: () => workerPrisma.$disconnect() };
   }
 
   const worker = await startDomainEventWorker(env);
@@ -30,6 +32,7 @@ export async function startWorkerRuntime(env: NodeJS.ProcessEnv = process.env): 
     status,
     close: async () => {
       await closeDomainEventWorker(worker);
+      await workerPrisma.$disconnect();
     }
   };
 }

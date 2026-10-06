@@ -1,10 +1,31 @@
 import { PrismaClient, ActivityType, AuditActorType, UserRole } from "@prisma/client";
+import { afterEach } from "vitest";
 
 const databaseUrl = process.env.DATABASE_URL;
 const runDatabaseTests = databaseUrl === undefined ? describe.skip : describe;
 
 runDatabaseTests("database schema integration", () => {
   const prisma = new PrismaClient();
+
+  afterEach(async () => {
+    const companies = await prisma.company.findMany({
+      where: { name: { startsWith: "Relationship Test " } },
+      select: { id: true }
+    });
+    const companyIds = companies.map((company) => company.id);
+    const leads = await prisma.lead.findMany({
+      where: { companyId: { in: companyIds } },
+      select: { id: true }
+    });
+    await prisma.auditEvent.deleteMany({
+      where: { entityType: "Lead", entityId: { in: leads.map((lead) => lead.id) } }
+    });
+    await prisma.activity.deleteMany({ where: { lead: { companyId: { in: companyIds } } } });
+    await prisma.lead.deleteMany({ where: { companyId: { in: companyIds } } });
+    await prisma.contact.deleteMany({ where: { companyId: { in: companyIds } } });
+    await prisma.company.deleteMany({ where: { id: { in: companyIds } } });
+    await prisma.user.deleteMany({ where: { email: { startsWith: "owner-" } } });
+  });
 
   afterAll(async () => {
     await prisma.$disconnect();

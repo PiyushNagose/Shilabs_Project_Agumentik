@@ -291,7 +291,7 @@ describe("calendar provider foundation", () => {
 
     expect(calls.map((call) => call.url)).toEqual([
       "https://oauth2.googleapis.com/token",
-      "https://www.googleapis.com/calendar/v3/calendars/primary/events?sendUpdates=none"
+      "https://www.googleapis.com/calendar/v3/calendars/primary/events?sendUpdates=all"
     ]);
     const eventBody = parseJsonBody(calls[1]?.body);
     expect(eventBody.id).toMatch(/^[a-v0-9]+$/);

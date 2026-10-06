@@ -328,6 +328,25 @@ describe("Gemini AI provider", () => {
     expect(body).not.toContain("additionalProperties");
   });
 
+  it("accepts Gemini briefing evidence when exact source words have normalized whitespace", async () => {
+    const { provider, transport } = setupGemini();
+    const whitespaceInput: SalesReplyInput = {
+      ...input,
+      messages: [{ id: "m1", senderType: "PROSPECT", body: "Hi,\nWe need a website" }]
+    };
+    transport.mockResolvedValueOnce(
+      geminiCompletion({
+        ...briefing,
+        evidence: [{ sourceId: "m1", quote: "Hi, We need a website" }]
+      })
+    );
+
+    await expect(provider.generateBriefing(whitespaceInput)).resolves.toMatchObject({
+      summary: briefing.summary,
+      evidence: [{ sourceId: "m1", quote: "Hi, We need a website" }]
+    });
+  });
+
   it("rejects invalid Gemini outputs and fabricated evidence", async () => {
     const { provider, transport } = setupGemini();
     transport
