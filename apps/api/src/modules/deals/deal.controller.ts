@@ -1,8 +1,8 @@
 import type { Request, Response } from "express";
-import type { DealDto } from "@shilabs/shared-types";
+import type { DealDto, PaginatedResponse } from "@shilabs/shared-types";
 import { AppError } from "../../shared/errors.js";
-import { createDeal, getDeal, updateDeal } from "./deal.service.js";
-import type { CreateDealInput, UpdateDealInput } from "./deal.schemas.js";
+import { createDeal, getDeal, listDeals, updateDeal } from "./deal.service.js";
+import type { CreateDealInput, ListDealsQuery, UpdateDealInput } from "./deal.schemas.js";
 
 function requireRequestUser(request: Request) {
   if (!request.user) {
@@ -18,6 +18,13 @@ export async function createDealController(
 ): Promise<void> {
   const deal = await createDeal(requireRequestUser(request), request.body);
   response.status(201).json(deal);
+}
+
+export async function listDealsController(
+  request: Request,
+  response: Response<PaginatedResponse<DealDto>>
+): Promise<void> {
+  response.status(200).json(await listDeals(requireRequestUser(request), request.validatedQuery as ListDealsQuery));
 }
 
 export async function getDealController(

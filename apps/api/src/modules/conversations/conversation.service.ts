@@ -534,7 +534,9 @@ export async function getHumanTakeoverBriefing(
     }),
     getQualification(conversation.leadId),
     listProposals({ leadId: conversation.leadId, limit: 10 }),
-    findDealByLeadId(conversation.leadId),
+    conversation.workspaceId
+      ? findDealByLeadId(conversation.leadId, conversation.workspaceId)
+      : Promise.resolve(null),
     prisma.activity.findMany({
       where: { leadId: conversation.leadId },
       include: { actorUser: true },

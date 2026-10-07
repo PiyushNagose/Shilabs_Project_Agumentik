@@ -25,7 +25,8 @@ export const createDealSchema = z.object({
   status: dealStatusSchema.optional(),
   proposalStatus: proposalStatusSchema.nullable().optional(),
   wonReason: nullableTrimmedString,
-  lostReason: nullableTrimmedString
+  lostReason: nullableTrimmedString,
+  closeDate: z.iso.datetime().nullable().optional()
 });
 
 export const updateDealSchema = createDealSchema
@@ -37,3 +38,14 @@ export const updateDealSchema = createDealSchema
 
 export type CreateDealInput = z.infer<typeof createDealSchema>;
 export type UpdateDealInput = z.infer<typeof updateDealSchema>;
+
+export const listDealsQuerySchema = z.object({
+  pipelineId: z.string().trim().min(1).optional(),
+  stageId: z.string().trim().min(1).optional(),
+  ownerId: z.string().trim().min(1).optional(),
+  status: dealStatusSchema.optional(),
+  search: z.string().trim().max(120).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(50)
+});
+export type ListDealsQuery = z.infer<typeof listDealsQuerySchema>;

@@ -2,7 +2,7 @@ import type React from "react";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { PublicUser } from "@shilabs/shared-types";
 import { clearAuth, loadAuth, saveAuth } from "./auth-storage.js";
-import { AuthApiError, loginRequest, logoutRequest, meRequest } from "./auth-api.js";
+import { AuthApiError, loginRequest, logoutRequest, meRequest } from "../../services/api/auth.js";
 
 type AuthStatus = "checking" | "authenticated" | "unauthenticated" | "unavailable";
 

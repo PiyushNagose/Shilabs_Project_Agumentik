@@ -59,6 +59,16 @@ enum DealStatus {
   LOST
 }
 
+enum PipelineStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum PipelineStageStatus {
+  ACTIVE
+  ARCHIVED
+}
+
 enum ProposalStatus {
   DRAFT
   SENT
@@ -614,6 +624,7 @@ model Workspace {
 
   members WorkspaceMember[]
   tasks   Task[]
+  pipelines Pipeline[]
 
   @@index([status])
 }
@@ -829,24 +840,50 @@ model Contact {
   @@index([workspaceId, companyId])
 }
 
+model Pipeline {
+  id          String         @id @default(cuid())
+  workspaceId String
+  name        String
+  type        String         @default("SALES")
+  isDefault   Boolean        @default(false)
+  status      PipelineStatus @default(ACTIVE)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  workspace Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  stages    PipelineStage[]
+  deals     Deal[]
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId, status])
+}
+
 model PipelineStage {
   id          String   @id @default(cuid())
   workspaceId String?
+  pipelineId  String?
   key         String   @unique
+  semanticKey String?
   label       String
   order       Int      @unique
+  position    Int      @default(0)
   probability Int
+  color       String?
+  status      PipelineStageStatus @default(ACTIVE)
   isClosed    Boolean  @default(false)
   isWon       Boolean  @default(false)
   isLost      Boolean  @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  leads Lead[]
-  deals Deal[]
+  pipeline Pipeline? @relation(fields: [pipelineId], references: [id], onDelete: Restrict)
+  leads    Lead[]
+  deals    Deal[]
 
   @@index([isClosed])
   @@index([workspaceId, order])
+  @@index([pipelineId, position])
+  @@unique([pipelineId, semanticKey])
 }
 
 model Lead {
@@ -984,6 +1021,7 @@ model LeadQualificationEvidence {
 model Deal {
   id             String          @id @default(cuid())
   workspaceId    String?
+  pipelineId     String?
   leadId         String          @unique
   stageId        String
   ownerId        String?
@@ -994,16 +1032,19 @@ model Deal {
   proposalStatus ProposalStatus?
   wonReason      String?
   lostReason     String?
+  closeDate      DateTime?
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
 
   lead                   Lead                    @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  pipeline               Pipeline?               @relation(fields: [pipelineId], references: [id], onDelete: Restrict)
   stage                  PipelineStage           @relation(fields: [stageId], references: [id], onDelete: Restrict)
   owner                  User?                   @relation("DealOwner", fields: [ownerId], references: [id], onDelete: SetNull)
   proposals              Proposal[]
   proposalGenerationRuns ProposalGenerationRun[]
 
   @@index([stageId])
+  @@index([pipelineId, stageId])
   @@index([ownerId])
   @@index([status])
 }

@@ -114,6 +114,36 @@ const conversation = {
   lead
 };
 
+const leadTask = {
+  id: "task_1",
+  workspaceId: "workspace_1",
+  title: "Prepare discovery summary",
+  description: "Capture the confirmed customer requirements.",
+  status: "OPEN",
+  priority: "HIGH",
+  dueAt: new Date(Date.now() + 60_000).toISOString(),
+  reminderAt: null,
+  assignedToUserId: adminUser.id,
+  createdByType: "AGENT",
+  createdByUserId: null,
+  createdByAgentId: "agent_1",
+  sourceType: "LEAD_AUTOMATION",
+  sourceId: lead.id,
+  leadId: lead.id,
+  contactId: lead.contactId,
+  companyId: lead.companyId,
+  dealId: null,
+  isNextAction: true,
+  completedAt: null,
+  completedByType: null,
+  completedByUserId: null,
+  metadata: {},
+  correlationId: "correlation_1",
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+  assignedToUser: adminUser
+};
+
 const inboundMessage = {
   id: "message_1",
   conversationId: conversation.id,
@@ -753,6 +783,14 @@ function crmFetch(input: RequestInfo | URL): Promise<Response> {
     return Promise.resolve(jsonResponse(leadPage()));
   }
 
+  if (url.endsWith("/api/companies")) {
+    return Promise.resolve(jsonResponse([lead.company]));
+  }
+
+  if (url.endsWith("/api/contacts")) {
+    return Promise.resolve(jsonResponse([lead.contact]));
+  }
+
   if (url.endsWith("/api/pipeline/stages")) {
     return Promise.resolve(jsonResponse([newStage, qualifiedStage]));
   }
@@ -775,23 +813,60 @@ function crmFetch(input: RequestInfo | URL): Promise<Response> {
         {
           id: "activity_1",
           leadId: lead.id,
+          entityType: "LEAD",
+          entityId: lead.id,
+          actorType: "USER",
           actorUserId: adminUser.id,
+          actorAgentId: null,
+          sourceType: "LEAD_API",
+          sourceId: lead.id,
           type: "STAGE_CHANGED",
+          title: "Lead stage changed",
+          summary: "Stage moved from New to Qualified",
           description: "Stage changed from New to Qualified",
+          metadata: {},
+          occurredAt: new Date().toISOString(),
+          correlationId: "correlation_activity_1",
+          visibility: "BUSINESS",
           createdAt: new Date().toISOString(),
           actorUser: adminUser
         },
         {
           id: "activity_2",
           leadId: lead.id,
+          entityType: "MESSAGE",
+          entityId: "message_1",
+          actorType: "SYSTEM",
           actorUserId: null,
+          actorAgentId: null,
+          sourceType: "CONVERSATION",
+          sourceId: conversation.id,
           type: "MESSAGE_RECEIVED",
+          title: "Prospect replied",
+          summary: "Inbound prospect message recorded",
           description: "Inbound prospect message recorded",
+          metadata: {},
+          occurredAt: new Date().toISOString(),
+          correlationId: "correlation_activity_2",
+          visibility: "BUSINESS",
           createdAt: new Date().toISOString(),
           actorUser: null
         }
       ])
     );
+  }
+
+  if (url.includes("/api/tasks")) {
+    if (url.endsWith("/api/tasks/task_1/complete")) {
+      return Promise.resolve(jsonResponse({
+        ...leadTask,
+        status: "COMPLETED",
+        completedAt: new Date().toISOString(),
+        completedByType: "USER",
+        completedByUserId: adminUser.id
+      }));
+    }
+    return Promise.resolve(jsonResponse([leadTask]));
   }
 
   if (url.includes("/api/notifications?")) {
@@ -864,6 +939,13 @@ async function openCrm(): Promise<void> {
   fireEvent.click(await screen.findByText("CRM"));
 }
 
+async function openFirstLeadProfile(): Promise<void> {
+  await openCrm();
+  fireEvent.click(await screen.findByRole("button", { name: /Priya Prospect/ }));
+  fireEvent.click(await screen.findByRole("button", { name: /View full profile/ }));
+  await screen.findByLabelText("Lead profile");
+}
+
 function storeAuth(user = adminUser): void {
   window.localStorage.setItem("shilabs.accessToken", "header.payload.signature");
   window.localStorage.setItem("shilabs.user", JSON.stringify(user));
@@ -913,7 +995,7 @@ describe("web app", () => {
     finishStages(jsonResponse([newStage, qualifiedStage]));
     await waitFor(() => expect(screen.queryByText("Loading CRM")).toBeNull());
     expect(within(screen.getByRole("table", { name: "Leads list" })).getByText("Filtered company")).toBeTruthy();
-    expect(within(screen.getByLabelText("Change lead stage")).getByRole("option", { name: "Qualified" })).toBeTruthy();
+    expect(screen.getByRole("table", { name: "Leads list" })).toBeTruthy();
   });
 
   it("shows the authenticated app shell after login", async () => {
@@ -952,7 +1034,7 @@ describe("web app", () => {
     expect(await screen.findByText("Sales Engineer Actions")).toBeTruthy();
     expect(screen.getAllByText("Proposal waiting for approval").length).toBeGreaterThan(0);
     await openCrm();
-    expect(await screen.findAllByText("Shilabs Prospect")).toHaveLength(2);
+    expect(await screen.findAllByText("Shilabs Prospect")).toHaveLength(1);
   });
 
   it("validates a stored session before showing the authenticated shell", async () => {
@@ -967,6 +1049,19 @@ describe("web app", () => {
       true
     );
     expect(await screen.findByText("Sales Engineer Actions")).toBeTruthy();
+  });
+
+  it("persists the collapsed sidebar without changing the active view", async () => {
+    storeAuth();
+    mockCrmFetch();
+
+    render(<App />);
+
+    expect(await screen.findByText("Sales Engineer Actions")).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Collapse sidebar" }));
+    expect(screen.getByRole("button", { name: "Expand sidebar" })).toBeTruthy();
+    expect(window.localStorage.getItem("shilabs.sidebar.collapsed")).toBe("true");
+    expect(screen.getByRole("heading", { name: "Sales Engineer Action Dashboard" })).toBeTruthy();
   });
 
   it("clears stored auth and returns to login when session validation returns 401", async () => {
@@ -1097,7 +1192,8 @@ describe("web app", () => {
     render(<App />);
 
     expect(await screen.findByText("Dashboard")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Logout" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open account menu" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Logout" }));
 
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "Sign in" })).toBeTruthy();
@@ -1113,7 +1209,7 @@ describe("web app", () => {
     render(<App />);
     await openCrm();
 
-    expect(await screen.findAllByText("Shilabs Prospect")).toHaveLength(2);
+    expect(await screen.findAllByText("Shilabs Prospect")).toHaveLength(1);
     fireEvent.change(screen.getByLabelText("Search leads"), {
       target: { value: "crm" }
     });
@@ -1134,7 +1230,7 @@ describe("web app", () => {
     render(<App />);
     await openCrm();
 
-    expect(await screen.findAllByText("Shilabs Prospect")).toHaveLength(2);
+    expect(await screen.findAllByText("Shilabs Prospect")).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: "Sync Zoho" }));
 
     expect(await screen.findByText("Zoho sync completed: 1/1 imported")).toBeTruthy();
@@ -1156,7 +1252,7 @@ describe("web app", () => {
     const fetchSpy = mockCrmFetch();
 
     render(<App />);
-    await openCrm();
+    await openFirstLeadProfile();
 
     expect(await screen.findByText("Negotiation handoff required")).toBeTruthy();
     expect(
@@ -1176,7 +1272,7 @@ describe("web app", () => {
     const fetchSpy = mockCrmFetch();
 
     render(<App />);
-    await openCrm();
+    await openFirstLeadProfile();
 
     expect(await screen.findByText("Needs a production CRM workspace")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Change lead stage"), {
@@ -1206,7 +1302,7 @@ describe("web app", () => {
     render(<App />);
 
     expect(await screen.findByText("Qualification signals")).toBeTruthy();
-    expect(screen.getByText("AI sales automation for website leads")).toBeTruthy();
+    expect(screen.getAllByText("AI sales automation for website leads").length).toBeGreaterThan(0);
     expect(screen.getByText("Automated lead follow-up and qualification")).toBeTruthy();
     expect(screen.getByText("INR 100000 per month")).toBeTruthy();
     expect(screen.getByText("Founder is the final decision maker")).toBeTruthy();
@@ -1605,7 +1701,7 @@ describe("web app", () => {
     });
 
     render(<App />);
-    await openCrm();
+    await openFirstLeadProfile();
 
     fireEvent.click(await screen.findByRole("tab", { name: "Conversation" }));
     expect(await screen.findByText("We need a new real-estate website.")).toBeTruthy();
@@ -1845,7 +1941,7 @@ describe("web app", () => {
     const fetchSpy = mockCrmFetch();
 
     render(<App />);
-    await openCrm();
+    await openFirstLeadProfile();
 
     fireEvent.click(await screen.findByRole("tab", { name: "Conversation" }));
     fireEvent.change(await screen.findByLabelText("AI mode"), {
@@ -1973,7 +2069,7 @@ describe("web app", () => {
     });
 
     render(<App />);
-    await openCrm();
+    await openFirstLeadProfile();
 
     fireEvent.click(await screen.findByRole("tab", { name: "Conversation" }));
     expect(await screen.findByText("Follow-up automation")).toBeTruthy();
@@ -2012,7 +2108,7 @@ describe("web app", () => {
     });
 
     render(<App />);
-    await openCrm();
+    await openFirstLeadProfile();
     fireEvent.click(await screen.findByRole("tab", { name: "Conversation" }));
     fireEvent.click(await screen.findByRole("button", { name: "Start follow-up automation" }));
 
@@ -2027,7 +2123,7 @@ describe("web app", () => {
     expect(await screen.findByText("FIRST EMAIL")).toBeTruthy();
     expect(screen.getByText("ACTIVE")).toBeTruthy();
     expect(screen.getByText("SCHEDULED")).toBeTruthy();
-    expect(screen.getByText("AI sales automation for website leads")).toBeTruthy();
+    expect(screen.getAllByText("AI sales automation for website leads").length).toBeGreaterThan(0);
     expect(
       fetchSpy.mock.calls.filter(([input]) =>
         requestUrl(input).endsWith("/api/followups/leads/lead_1")
@@ -2054,7 +2150,7 @@ describe("web app", () => {
     expect(await screen.findByText("FIRST EMAIL")).toBeTruthy();
     expect(screen.getByText("ACTIVE")).toBeTruthy();
     expect(screen.getByText("SCHEDULED")).toBeTruthy();
-    expect(screen.getByText("AI sales automation for website leads")).toBeTruthy();
+    expect(screen.getAllByText("AI sales automation for website leads").length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: "Accelerate E2E" })).toBeNull();
     expect(
       fetchSpy.mock.calls.some(([input]) =>
@@ -2144,7 +2240,7 @@ describe("web app", () => {
     });
 
     render(<App />);
-    await openCrm();
+    await openFirstLeadProfile();
 
     fireEvent.click(await screen.findByRole("tab", { name: "Conversation" }));
 
@@ -2167,7 +2263,7 @@ describe("web app", () => {
     const fetchSpy = mockCrmFetch();
 
     render(<App />);
-    await openCrm();
+    await openFirstLeadProfile();
 
     fireEvent.click(await screen.findByRole("tab", { name: "AI Insights" }));
 
@@ -2201,10 +2297,93 @@ describe("web app", () => {
     fireEvent.click(openWorkspaceButton);
 
     expect(await screen.findByText("Sales Workspace")).toBeTruthy();
-    expect(await screen.findAllByText("Shilabs Prospect")).toHaveLength(2);
+    expect(await screen.findByLabelText("Lead profile")).toBeTruthy();
     expect(
       fetchSpy.mock.calls.some(([input]) => requestUrl(input).endsWith("/api/leads/lead_1"))
     ).toBe(true);
+  });
+
+  it("opens lead quick view without losing list filters or changing the route", async () => {
+    storeAuth();
+    mockCrmFetch();
+    render(<App />);
+    await openCrm();
+
+    const search = await screen.findByRole("searchbox", { name: "Search leads" });
+    fireEvent.change(search, { target: { value: "Priya" } });
+    fireEvent.click(await screen.findByRole("button", { name: /Priya Prospect/ }));
+
+    const quickView = await screen.findByRole("dialog", { name: "Lead quick view" });
+    expect(await within(quickView).findByText("Lead stage changed")).toBeTruthy();
+    expect(window.location.pathname).toBe("/crm");
+    expect(screen.getByRole<HTMLInputElement>("searchbox", { name: "Search leads" }).value).toBe("Priya");
+
+    fireEvent.click(screen.getByRole("button", { name: "Close Lead quick view" }));
+    expect(screen.queryByRole("dialog", { name: "Lead quick view" })).toBeNull();
+    expect(screen.getByRole<HTMLInputElement>("searchbox", { name: "Search leads" }).value).toBe("Priya");
+  });
+
+  it("uses persisted task and business activity APIs in the routed lead profile", async () => {
+    storeAuth();
+    window.history.replaceState(null, "", "/crm/leads/lead_1?tab=Tasks");
+    const fetchSpy = mockCrmFetch();
+    render(<App />);
+
+    expect(await screen.findByText("Lead work")).toBeTruthy();
+    expect(await screen.findByText("Prepare discovery summary")).toBeTruthy();
+    expect(screen.getAllByText("HIGH").length).toBeGreaterThanOrEqual(2);
+    fireEvent.click(screen.getByRole("button", { name: "Complete Prepare discovery summary" }));
+    await waitFor(() => expect(
+      fetchSpy.mock.calls.some(([input, init]) =>
+        requestUrl(input).endsWith("/api/tasks/task_1/complete") && init?.method === "POST"
+      )
+    ).toBe(true));
+
+    fireEvent.click(screen.getByRole("tab", { name: "Sessions" }));
+    expect(await screen.findByText("Lead stage changed")).toBeTruthy();
+    expect(screen.getByText("Stage moved from New to Qualified")).toBeTruthy();
+    expect(screen.getByText(/Development Admin \/ LEAD_API/)).toBeTruthy();
+  });
+
+  it("renders rich lead contacts and preserves the selected system filter behind quick view", async () => {
+    storeAuth();
+    window.history.replaceState(null, "", "/contacts");
+    mockCrmFetch();
+    render(<App />);
+
+    const contactsHeading = await screen.findByRole("heading", { name: "Lead contacts", level: 2 });
+    expect(contactsHeading.closest(".app-page-content")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Needs follow-up/ }));
+    expect(screen.getByRole("button", { name: /Needs follow-up/ }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Save current view" }));
+    expect(JSON.parse(window.localStorage.getItem("shilabs.lead-contacts.saved-view") ?? "{}")).toMatchObject({
+      segment: "follow-up",
+      sort: "activity"
+    });
+    expect(screen.getByRole("button", { name: "My contact view" })).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Preview Priya Prospect" }));
+    const contactQuickView = await screen.findByRole("dialog", { name: "Lead quick view" });
+    expect(await within(contactQuickView).findByText("Lead stage changed")).toBeTruthy();
+    expect(window.location.pathname).toBe("/contacts");
+    fireEvent.click(screen.getByRole("button", { name: "Close Lead quick view" }));
+    expect(screen.getByRole("button", { name: /Needs follow-up/ }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("renders company cards and links account relationships to lead and deal workspaces", async () => {
+    storeAuth();
+    window.history.replaceState(null, "", "/companies");
+    mockCrmFetch();
+    render(<App />);
+
+    const companiesHeading = await screen.findByRole("heading", { name: "Companies", level: 2 });
+    expect(companiesHeading.closest(".app-page-content")).toBeTruthy();
+    expect(await screen.findByText("Shilabs Prospect")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /View account/ }));
+    const drawer = await screen.findByRole("dialog", { name: "Company details" });
+    expect(within(drawer).getAllByText("Priya Prospect")).toHaveLength(2);
+    fireEvent.click(within(drawer).getByRole("button", { name: "Deal" }));
+    await waitFor(() => expect(window.location.pathname).toBe("/crm/leads/lead_1"));
+    expect(new URLSearchParams(window.location.search).get("tab")).toBe("Deal");
   });
 
   it("opens the operations dashboard for administrators", async () => {

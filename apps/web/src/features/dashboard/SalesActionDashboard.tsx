@@ -79,9 +79,14 @@ function leadLabel(item: SalesActionDashboardItemDto): string {
 }
 
 function dashboardGroupKey(item: SalesActionDashboardItemDto): string {
-  return [item.type, item.title, item.detail, item.status, item.severity, item.leadId ?? "workspace"].join(
-    "::"
-  );
+  return [
+    item.type,
+    item.title,
+    item.detail,
+    item.status,
+    item.severity,
+    item.leadId ?? "workspace"
+  ].join("::");
 }
 
 function groupDashboardItems(items: SalesActionDashboardItemDto[]): DashboardItemGroup[] {
@@ -102,7 +107,8 @@ function groupDashboardItems(items: SalesActionDashboardItemDto[]): DashboardIte
     });
   }
   return [...groups.values()].sort(
-    (left, right) => new Date(right.item.occurredAt).getTime() - new Date(left.item.occurredAt).getTime()
+    (left, right) =>
+      new Date(right.item.occurredAt).getTime() - new Date(left.item.occurredAt).getTime()
   );
 }
 
@@ -129,16 +135,23 @@ function DashboardSection({
   onOpenOperations?: () => void;
   onToggleExpanded: () => void;
 }): React.JSX.Element {
-  const groupedItems = groupRepeated ? groupDashboardItems(items) : items.map((item) => ({
-    key: item.id,
-    item,
-    count: 1
-  }));
-  const visibleItems = expanded ? groupedItems : groupedItems.slice(0, DASHBOARD_SECTION_PREVIEW_LIMIT);
+  const groupedItems = groupRepeated
+    ? groupDashboardItems(items)
+    : items.map((item) => ({
+        key: item.id,
+        item,
+        count: 1
+      }));
+  const visibleItems = expanded
+    ? groupedItems
+    : groupedItems.slice(0, DASHBOARD_SECTION_PREVIEW_LIMIT);
   const hiddenCount = Math.max(groupedItems.length - visibleItems.length, 0);
 
   return (
-    <section className="dashboard-section" aria-label={title}>
+    <section
+      className={`dashboard-section${expanded ? " is-expanded" : ""}`}
+      aria-label={title}
+    >
       <header>
         <h3>{title}</h3>
         <StatusBadge>{items.length}</StatusBadge>
@@ -179,7 +192,10 @@ function DashboardSection({
                   <span>{formatDate(group.item.occurredAt)}</span>
                   <div className="dashboard-card-actions">
                     {group.item.leadId ? (
-                      <button onClick={() => openDashboardItem(group.item, onOpenLead)} type="button">
+                      <button
+                        onClick={() => openDashboardItem(group.item, onOpenLead)}
+                        type="button"
+                      >
                         <Icon name="briefcase" size={15} />
                         Open workspace
                       </button>
@@ -245,12 +261,19 @@ export function SalesActionDashboard({
 }: SalesActionDashboardProps): React.JSX.Element {
   const toast = useToast();
   const {
-    data: dashboard, loading, error: refreshError, updatedAt: lastUpdatedAt, reload: loadDashboard
+    data: dashboard,
+    loading,
+    error: refreshError,
+    updatedAt: lastUpdatedAt,
+    reload: loadDashboard
   } = usePersistedResource<SalesActionDashboardDto>({
     scope: accessToken,
     load: () => getSalesActionDashboard(accessToken),
-    accepts: (event) => event.type === "realtime:reconnected" ||
-      ["dashboard", "lead", "workspace", "notifications", "domain-event"].includes(event.entityType),
+    accepts: (event) =>
+      event.type === "realtime:reconnected" ||
+      ["dashboard", "lead", "workspace", "notifications", "domain-event"].includes(
+        event.entityType
+      ),
     errorMessage: "Action dashboard could not be loaded"
   });
   const [expandedSections, setExpandedSections] = useState<Set<DashboardExpandableSection>>(
@@ -292,7 +315,10 @@ export function SalesActionDashboard({
       await loadDashboard();
       toast.success({ title: "Job retry requested", detail: item.title });
     } catch (error) {
-      toast.error({ title: "Job retry failed", detail: apiErrorMessage(error, "Retry was not permitted") });
+      toast.error({
+        title: "Job retry failed",
+        detail: apiErrorMessage(error, "Retry was not permitted")
+      });
     }
   }
 
@@ -329,7 +355,11 @@ export function SalesActionDashboard({
 
   return (
     <section className="action-dashboard" aria-label="Sales engineer action dashboard">
-      {error ? <p className="refresh-error" role="alert">{error}. Showing the last loaded data.</p> : null}
+      {error ? (
+        <p className="refresh-error" role="alert">
+          {error}. Showing the last loaded data.
+        </p>
+      ) : null}
       <header className="dashboard-hero">
         <div>
           <p className="eyebrow">Action Dashboard</p>
@@ -451,76 +481,82 @@ export function SalesActionDashboard({
           onOpenOperations={onOpenOperations}
           onToggleExpanded={() => toggleSection("failures")}
         />
-        <section className="dashboard-section" aria-label="Appointments and meetings">
-          <header>
-            <h3>Appointments & Meetings</h3>
-            <StatusBadge>{dashboard.meetings.items.length}</StatusBadge>
-          </header>
-          {dashboard.meetings.items.length === 0 ? (
-            <StateBlock
-              title={
-                dashboard.meetings.status === "AVAILABLE"
-                  ? "No meetings pending"
-                  : "Not yet available"
-              }
-              detail={dashboard.meetings.message}
-            />
-          ) : (
-            <>
-              <div className="dashboard-card-list">
-                {(expandedSections.has("meetings")
-                  ? dashboard.meetings.items
-                  : dashboard.meetings.items.slice(0, DASHBOARD_SECTION_PREVIEW_LIMIT)
-                ).map((item) => (
-                  <article className="dashboard-action-card" key={item.id}>
-                    <div className="dashboard-action-main">
-                      <div>
-                        <strong>{item.title}</strong>
-                        <span>{leadLabel(item)}</span>
+        <section
+          className={`dashboard-section${expandedSections.has("meetings") ? " is-expanded" : ""}`}
+          aria-label="Appointments and meetings"
+        >
+            <header>
+              <h3>Appointments & Meetings</h3>
+              <StatusBadge>{dashboard.meetings.items.length}</StatusBadge>
+            </header>
+            {dashboard.meetings.items.length === 0 ? (
+              <StateBlock
+                title={
+                  dashboard.meetings.status === "AVAILABLE"
+                    ? "No meetings pending"
+                    : "Not yet available"
+                }
+                detail={dashboard.meetings.message}
+              />
+            ) : (
+              <>
+                <div className="dashboard-card-list">
+                  {(expandedSections.has("meetings")
+                    ? dashboard.meetings.items
+                    : dashboard.meetings.items.slice(0, DASHBOARD_SECTION_PREVIEW_LIMIT)
+                  ).map((item) => (
+                    <article className="dashboard-action-card" key={item.id}>
+                      <div className="dashboard-action-main">
+                        <div>
+                          <strong>{item.title}</strong>
+                          <span>{leadLabel(item)}</span>
+                        </div>
+                        <StatusBadge tone={statusTone(item.severity)}>
+                          {item.status.replaceAll("_", " ")}
+                        </StatusBadge>
                       </div>
-                      <StatusBadge tone={statusTone(item.severity)}>
-                        {item.status.replaceAll("_", " ")}
-                      </StatusBadge>
-                    </div>
-                <p>
-                  {item.detail}
-                  {isDomainEventItem(item) ? (
-                    <>
-                      <br />
-                      <small>Retry after correcting the underlying issue.</small>
-                    </>
-                  ) : null}
-                </p>
-                    <footer>
-                      <span>{formatDate(item.occurredAt)}</span>
-                      <div className="dashboard-card-actions">
-                        {item.leadId ? (
-                          <button onClick={() => openDashboardItem(item, onOpenLead)} type="button">
-                            <Icon name="briefcase" size={15} />
-                            Open meeting
-                          </button>
+                      <p>
+                        {item.detail}
+                        {isDomainEventItem(item) ? (
+                          <>
+                            <br />
+                            <small>Retry after correcting the underlying issue.</small>
+                          </>
                         ) : null}
-                      </div>
-                    </footer>
-                  </article>
-                ))}
-              </div>
-              {dashboard.meetings.items.length > DASHBOARD_SECTION_PREVIEW_LIMIT ? (
-                <div className="dashboard-section-more">
-                  <span>
-                    {expandedSections.has("meetings")
-                      ? `Showing all ${String(dashboard.meetings.items.length)} items.`
-                      : `Showing top ${String(DASHBOARD_SECTION_PREVIEW_LIMIT)} of ${String(
-                          dashboard.meetings.items.length
-                        )}.`}
-                  </span>
-                  <button onClick={() => toggleSection("meetings")} type="button">
-                    {expandedSections.has("meetings") ? "Show less" : "View all"}
-                  </button>
+                      </p>
+                      <footer>
+                        <span>{formatDate(item.occurredAt)}</span>
+                        <div className="dashboard-card-actions">
+                          {item.leadId ? (
+                            <button
+                              onClick={() => openDashboardItem(item, onOpenLead)}
+                              type="button"
+                            >
+                              <Icon name="briefcase" size={15} />
+                              Open meeting
+                            </button>
+                          ) : null}
+                        </div>
+                      </footer>
+                    </article>
+                  ))}
                 </div>
-              ) : null}
-            </>
-          )}
+                {dashboard.meetings.items.length > DASHBOARD_SECTION_PREVIEW_LIMIT ? (
+                  <div className="dashboard-section-more">
+                    <span>
+                      {expandedSections.has("meetings")
+                        ? `Showing all ${String(dashboard.meetings.items.length)} items.`
+                        : `Showing top ${String(DASHBOARD_SECTION_PREVIEW_LIMIT)} of ${String(
+                            dashboard.meetings.items.length
+                          )}.`}
+                    </span>
+                    <button onClick={() => toggleSection("meetings")} type="button">
+                      {expandedSections.has("meetings") ? "Show less" : "View all"}
+                    </button>
+                  </div>
+                ) : null}
+              </>
+            )}
         </section>
       </div>
     </section>

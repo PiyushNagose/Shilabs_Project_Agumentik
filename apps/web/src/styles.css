@@ -1,32 +1,32 @@
 :root {
-  --bg-root: #f6f7fb;
-  --bg-base: #f8fafc;
+  --bg-root: #f6f8fc;
+  --bg-base: #f6f8fc;
   --bg-card: #ffffff;
-  --bg-elevated: #f1f5f9;
-  --bg-hover: #e9eef5;
+  --bg-elevated: #f8fafc;
+  --bg-hover: #f3f5f9;
   --bg-input: #ffffff;
-  --bg-well: #f3f6fa;
-  --border: #d7dee8;
-  --border-subtle: #e6ebf2;
-  --border-strong: #aab6c6;
-  --border-accent: #d99a2b;
-  --border-focus: #c47a10;
-  --accent: #b86f0e;
-  --accent-hover: #e49a18;
-  --accent-muted: #7c4a0c;
-  --accent-surface: rgba(184, 111, 14, 0.08);
-  --accent-surface-strong: rgba(184, 111, 14, 0.14);
-  --secondary: #0f766e;
-  --secondary-surface: rgba(15, 118, 110, 0.1);
+  --bg-well: #f8fafc;
+  --border: #dbe2ef;
+  --border-subtle: #e5eaf1;
+  --border-strong: #cfd8e6;
+  --border-accent: #cfd8e6;
+  --border-focus: #64748b;
+  --accent: #111827;
+  --accent-hover: #000000;
+  --accent-muted: #374151;
+  --accent-surface: #f3f5f8;
+  --accent-surface-strong: #e9edf3;
+  --secondary: #64748b;
+  --secondary-surface: #eef2f7;
   --surface-line: rgba(15, 23, 42, 0.06);
   --surface-wash: rgba(15, 23, 42, 0.035);
   --surface-muted: #edf2f7;
-  --panel-glow: rgba(196, 122, 16, 0.1);
-  --text-primary: #18202f;
-  --text-secondary: #3f4b5f;
-  --text-muted: #667085;
-  --text-faint: #8a94a6;
-  --text-on-accent: #161004;
+  --panel-glow: rgba(31, 45, 77, 0.04);
+  --text-primary: #202633;
+  --text-secondary: #475569;
+  --text-muted: #697487;
+  --text-faint: #8792a3;
+  --text-on-accent: #ffffff;
   --danger: #b42318;
   --hot: #c24135;
   --hot-surface: rgba(194, 65, 53, 0.1);
@@ -36,17 +36,17 @@
   --won-surface: rgba(21, 128, 61, 0.1);
   --lost: #64748b;
   --lost-surface: rgba(100, 116, 139, 0.11);
-  --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.07);
-  --shadow-sm: 0 4px 16px rgba(15, 23, 42, 0.06);
-  --shadow-md: 0 14px 36px rgba(15, 23, 42, 0.09);
-  --shadow-lg: 0 24px 70px rgba(15, 23, 42, 0.12);
-  --shadow-hover: 0 18px 46px rgba(15, 23, 42, 0.12);
-  --shadow-press: 0 6px 18px rgba(15, 23, 42, 0.09);
+  --shadow-xs: 0 2px 10px rgba(31, 41, 55, 0.04);
+  --shadow-sm: 0 4px 16px rgba(31, 45, 77, 0.04);
+  --shadow-md: 0 12px 28px rgba(31, 45, 77, 0.08);
+  --shadow-lg: 0 26px 80px rgba(12, 18, 31, 0.18);
+  --shadow-hover: 0 12px 28px rgba(31, 45, 77, 0.08);
+  --shadow-press: 0 2px 8px rgba(31, 41, 55, 0.06);
   --depth-press: translate3d(0, 0, 0) scale(0.992);
-  --r-sm: 4px;
-  --r-md: 8px;
-  --r-lg: 8px;
-  --r-xl: 8px;
+  --r-sm: 8px;
+  --r-md: 10px;
+  --r-lg: 16px;
+  --r-xl: 18px;
   --r-pill: 9999px;
   --sp-1: 4px;
   --sp-2: 8px;
@@ -68,11 +68,11 @@
     "Inter", "Aptos", "Segoe UI Variable Text", "Segoe UI", Roboto, "Helvetica Neue", Arial,
     ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   --font-display:
-    "Inter Display", "Inter", "Aptos Display", "Aptos", "Segoe UI Variable Display",
-    "Segoe UI", Roboto, "Helvetica Neue", Arial, ui-sans-serif, system-ui, sans-serif;
+    "Inter Display", "Inter", "Aptos Display", "Aptos", "Segoe UI Variable Display", "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, ui-sans-serif, system-ui, sans-serif;
   --font-mono:
-    "SFMono-Regular", "Cascadia Code", "Cascadia Mono", Consolas, "Liberation Mono",
-    ui-monospace, monospace;
+    "SFMono-Regular", "Cascadia Code", "Cascadia Mono", Consolas, "Liberation Mono", ui-monospace,
+    monospace;
   --type-micro: 11px;
   --type-small: 12px;
   --type-label: 13px;
@@ -112,17 +112,7 @@ body {
   margin: 0;
   min-height: 100vh;
   overflow-x: hidden;
-  background:
-    linear-gradient(135deg, rgba(196, 122, 16, 0.05), transparent 30%),
-    linear-gradient(315deg, rgba(15, 118, 110, 0.045), transparent 34%),
-    linear-gradient(var(--surface-wash) 1px, transparent 1px),
-    linear-gradient(90deg, var(--surface-wash) 1px, transparent 1px), var(--bg-root);
-  background-size:
-    auto,
-    auto,
-    48px 48px,
-    48px 48px,
-    auto;
+  background: var(--bg-root);
 }
 
 button,
@@ -367,9 +357,7 @@ nav a,
   height: 36px;
   color: var(--accent-muted);
   place-items: center;
-  background:
-    linear-gradient(135deg, rgba(228, 154, 24, 0.18), rgba(15, 118, 110, 0.08)),
-    #fff8ec;
+  background: linear-gradient(135deg, rgba(228, 154, 24, 0.18), rgba(15, 118, 110, 0.08)), #fff8ec;
   border: 1px solid color-mix(in srgb, var(--border-accent) 58%, #ffffff);
   border-radius: var(--r-md);
   box-shadow:
@@ -687,7 +675,13 @@ button:disabled {
   overflow-x: hidden;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.88), transparent 260px),
-    linear-gradient(90deg, rgba(196, 122, 16, 0.045), transparent 26%, transparent 76%, rgba(15, 118, 110, 0.035)),
+    linear-gradient(
+      90deg,
+      rgba(196, 122, 16, 0.045),
+      transparent 26%,
+      transparent 76%,
+      rgba(15, 118, 110, 0.035)
+    ),
     var(--bg-base);
 }
 
@@ -735,9 +729,7 @@ button:disabled {
   color: var(--text-primary);
   font-size: 12px;
   font-weight: 800;
-  background:
-    linear-gradient(135deg, rgba(15, 118, 110, 0.16), rgba(228, 154, 24, 0.2)),
-    #fffaf1;
+  background: linear-gradient(135deg, rgba(15, 118, 110, 0.16), rgba(228, 154, 24, 0.2)), #fffaf1;
   border: 1px solid color-mix(in srgb, var(--border-accent) 42%, var(--border));
   border-radius: 50%;
   box-shadow:
@@ -836,7 +828,8 @@ nav a.active-nav::after,
 
 .access-summary,
 .crm-workspace,
-.action-dashboard {
+.action-dashboard,
+.app-page-content {
   width: min(100%, 1600px);
   min-width: 0;
   margin: 0 auto;
@@ -873,6 +866,10 @@ nav a.active-nav::after,
   padding: var(--sp-5) var(--sp-8) var(--sp-10);
 }
 
+.app-page-content {
+  padding: var(--sp-5) var(--sp-8) var(--sp-10);
+}
+
 .dashboard-hero {
   position: relative;
   display: flex;
@@ -884,8 +881,7 @@ nav a.active-nav::after,
   overflow: hidden;
   background:
     linear-gradient(135deg, rgba(184, 111, 14, 0.075), transparent 42%),
-    linear-gradient(315deg, rgba(15, 118, 110, 0.06), transparent 36%),
-    var(--bg-card);
+    linear-gradient(315deg, rgba(15, 118, 110, 0.06), transparent 36%), var(--bg-card);
   border: 1px solid color-mix(in srgb, var(--border) 88%, var(--accent));
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-md);
@@ -926,9 +922,7 @@ nav a.active-nav::after,
   height: 118px;
   min-width: 118px;
   text-align: center;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent),
-    var(--bg-card);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent), var(--bg-card);
   border: 1px solid color-mix(in srgb, var(--border-strong) 70%, var(--secondary));
   border-radius: 50%;
   box-shadow:
@@ -969,9 +963,7 @@ nav a.active-nav::after,
   color: var(--text-muted);
   font-size: 13px;
   font-weight: 700;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.028), transparent),
-    var(--bg-card);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.028), transparent), var(--bg-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-xs);
@@ -994,7 +986,30 @@ nav a.active-nav::after,
 
 .dashboard-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  align-items: start;
+  align-items: stretch;
+}
+
+.dashboard-grid > .dashboard-section {
+  grid-template-rows: auto auto auto;
+}
+
+.dashboard-grid > .dashboard-section > .dashboard-card-list {
+  padding-right: 4px;
+  align-content: start;
+  grid-auto-rows: max-content;
+}
+
+.dashboard-grid > .dashboard-section.is-expanded {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  height: clamp(620px, 78vh, 820px);
+  overflow: hidden;
+}
+
+.dashboard-grid > .dashboard-section.is-expanded > .dashboard-card-list {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .dashboard-section {
@@ -1003,9 +1018,7 @@ nav a.active-nav::after,
   gap: var(--sp-3);
   min-height: 0;
   padding: var(--sp-4);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.026), transparent),
-    var(--bg-card);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.026), transparent), var(--bg-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-sm);
@@ -1301,9 +1314,7 @@ nav a.active-nav::after,
 .operations-row-card {
   min-width: 0;
   padding: var(--sp-3);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.026), transparent),
-    var(--bg-elevated);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.026), transparent), var(--bg-elevated);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-md);
 }
@@ -1521,7 +1532,7 @@ nav a.active-nav::after,
   position: relative;
   z-index: 30;
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) repeat(3, minmax(140px, 190px));
+  grid-template-columns: minmax(180px, 1.3fr) repeat(4, minmax(110px, 1fr));
   gap: var(--sp-2);
   overflow: visible;
   animation: slideFade 260ms var(--ease-smooth) 60ms both;
@@ -1627,8 +1638,7 @@ nav a.active-nav::after,
   min-height: 220px;
   padding: var(--sp-8);
   background:
-    linear-gradient(135deg, rgba(184, 111, 14, 0.08), rgba(15, 118, 110, 0.045)),
-    var(--bg-card);
+    linear-gradient(135deg, rgba(184, 111, 14, 0.08), rgba(15, 118, 110, 0.045)), var(--bg-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-sm);
@@ -1689,15 +1699,12 @@ nav a.active-nav::after,
 
 .lead-row:not(.lead-row-head):hover {
   background:
-    linear-gradient(90deg, rgba(184, 111, 14, 0.055), transparent 36%),
-    var(--bg-elevated);
+    linear-gradient(90deg, rgba(184, 111, 14, 0.055), transparent 36%), var(--bg-elevated);
   transform: translateX(2px);
 }
 
 .lead-row.selected {
-  background:
-    linear-gradient(90deg, rgba(184, 111, 14, 0.13), rgba(15, 118, 110, 0.045)),
-    #f7f2e7;
+  background: linear-gradient(90deg, rgba(184, 111, 14, 0.13), rgba(15, 118, 110, 0.045)), #f7f2e7;
   transform: translateX(2px);
 }
 
@@ -2044,9 +2051,7 @@ nav a.active-nav::after,
   text-align: left;
   cursor: pointer;
   overflow: hidden;
-  background:
-    linear-gradient(135deg, rgba(184, 111, 14, 0.045), transparent 42%),
-    var(--bg-card);
+  background: linear-gradient(135deg, rgba(184, 111, 14, 0.045), transparent 42%), var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   transition:
@@ -2104,8 +2109,7 @@ nav a.active-nav::after,
   overflow: hidden;
   background:
     linear-gradient(135deg, rgba(196, 122, 16, 0.1), transparent 42%),
-    linear-gradient(315deg, rgba(15, 118, 110, 0.08), transparent 34%),
-    var(--bg-card);
+    linear-gradient(315deg, rgba(15, 118, 110, 0.08), transparent 34%), var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   transition:
@@ -2148,8 +2152,7 @@ nav a.active-nav::after,
   min-width: 98px;
   padding: var(--sp-4);
   background:
-    radial-gradient(circle at 50% 28%, rgba(196, 122, 16, 0.1), transparent 48%),
-    var(--bg-card);
+    radial-gradient(circle at 50% 28%, rgba(196, 122, 16, 0.1), transparent 48%), var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 50%;
   box-shadow:
@@ -2215,9 +2218,7 @@ nav a.active-nav::after,
   font-weight: 650;
   text-overflow: ellipsis;
   overflow-wrap: anywhere;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent),
-    var(--bg-elevated);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent), var(--bg-elevated);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-md);
 }
@@ -2237,8 +2238,7 @@ nav a.active-nav::after,
   border: 1px solid var(--border-accent);
   border-radius: var(--r-md);
   background:
-    linear-gradient(135deg, rgba(184, 111, 14, 0.1), rgba(15, 118, 110, 0.045)),
-    var(--bg-card);
+    linear-gradient(135deg, rgba(184, 111, 14, 0.1), rgba(15, 118, 110, 0.045)), var(--bg-card);
   box-shadow: var(--shadow-sm);
   min-width: 0;
 }
@@ -2516,9 +2516,7 @@ nav a.active-nav::after,
   display: grid;
   gap: var(--sp-1);
   padding: var(--sp-3);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent),
-    var(--bg-card);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent), var(--bg-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-md);
 }
@@ -2688,8 +2686,7 @@ nav a.active-nav::after,
   border: 1px solid var(--border-accent);
   border-radius: var(--r-lg);
   background:
-    linear-gradient(135deg, rgba(184, 111, 14, 0.1), rgba(15, 118, 110, 0.05)),
-    var(--bg-card);
+    linear-gradient(135deg, rgba(184, 111, 14, 0.1), rgba(15, 118, 110, 0.05)), var(--bg-card);
   box-shadow: var(--shadow-sm);
 }
 
@@ -2717,9 +2714,7 @@ nav a.active-nav::after,
 .briefing-grid section {
   min-width: 0;
   padding: var(--sp-3);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent),
-    var(--bg-card);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent), var(--bg-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-md);
 }
@@ -2747,9 +2742,7 @@ nav a.active-nav::after,
   overflow: visible;
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent),
-    var(--bg-elevated);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent), var(--bg-elevated);
 }
 
 .briefing-card.failed {
@@ -2823,9 +2816,7 @@ nav a.active-nav::after,
   align-items: start;
   min-height: 66px;
   padding: var(--sp-3) var(--sp-4);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.022), transparent),
-    var(--bg-card);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.022), transparent), var(--bg-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg);
 }
@@ -2849,9 +2840,7 @@ nav a.active-nav::after,
   gap: var(--sp-2);
   padding: var(--sp-3);
   overflow: visible;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent),
-    var(--bg-well);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent), var(--bg-well);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg);
 }
@@ -2869,9 +2858,7 @@ nav a.active-nav::after,
 
 .message-bubble.inbound {
   justify-self: start;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent),
-    var(--bg-card);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent), var(--bg-card);
 }
 
 .message-bubble.outbound {
@@ -2915,9 +2902,7 @@ nav a.active-nav::after,
   gap: var(--sp-2);
   min-height: 78px;
   padding: var(--sp-3);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent),
-    var(--bg-card);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent), var(--bg-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-md);
 }
@@ -3114,9 +3099,7 @@ nav a.active-nav::after,
   gap: var(--sp-2);
   min-width: 0;
   padding: var(--sp-3);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.022), transparent),
-    var(--bg-elevated);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.022), transparent), var(--bg-elevated);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-md);
 }
@@ -3199,9 +3182,7 @@ nav a.active-nav::after,
   white-space: normal;
   overflow-wrap: anywhere;
   word-break: break-word;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent),
-    var(--bg-elevated);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent), var(--bg-elevated);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-md);
 }
@@ -3259,9 +3240,7 @@ nav a.active-nav::after,
   text-align: left;
   cursor: pointer;
   overflow: hidden;
-  background:
-    linear-gradient(135deg, rgba(184, 111, 14, 0.035), transparent 42%),
-    var(--bg-card);
+  background: linear-gradient(135deg, rgba(184, 111, 14, 0.035), transparent 42%), var(--bg-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-md);
   transition:
@@ -3805,14 +3784,14 @@ nav a.active-nav::after,
 }
 
 :where(
-  button:not(.password-toggle),
-  .workspace-switch button,
-  .detail-tabs button,
-  .themed-select-trigger,
-  .dashboard-section-more button,
-  .meeting-slot-grid button,
-  .meeting-request-card > .secondary-action
-):active:not(:disabled) {
+    button:not(.password-toggle),
+    .workspace-switch button,
+    .detail-tabs button,
+    .themed-select-trigger,
+    .dashboard-section-more button,
+    .meeting-slot-grid button,
+    .meeting-request-card > .secondary-action
+  ):active:not(:disabled) {
   box-shadow: var(--shadow-press);
   transform: var(--depth-press);
 }
@@ -3950,35 +3929,35 @@ body::-webkit-scrollbar {
 }
 
 :where(
-  nav,
-  .lead-list,
-  .lead-detail,
-  .tab-panel,
-  .conversation-thread,
-  .simulator-side,
-  .pipeline-board,
-  .detail-tabs,
-  .themed-select-menu,
-  .proposal-list,
-  .dashboard-card-list
-):is(:hover, :focus-within)::-webkit-scrollbar-thumb {
+    nav,
+    .lead-list,
+    .lead-detail,
+    .tab-panel,
+    .conversation-thread,
+    .simulator-side,
+    .pipeline-board,
+    .detail-tabs,
+    .themed-select-menu,
+    .proposal-list,
+    .dashboard-card-list
+  ):is(:hover, :focus-within)::-webkit-scrollbar-thumb {
   background: var(--border);
   background-clip: padding-box;
 }
 
 :where(
-  nav,
-  .lead-list,
-  .lead-detail,
-  .tab-panel,
-  .conversation-thread,
-  .simulator-side,
-  .pipeline-board,
-  .detail-tabs,
-  .themed-select-menu,
-  .proposal-list,
-  .dashboard-card-list
-)::-webkit-scrollbar-thumb:hover {
+    nav,
+    .lead-list,
+    .lead-detail,
+    .tab-panel,
+    .conversation-thread,
+    .simulator-side,
+    .pipeline-board,
+    .detail-tabs,
+    .themed-select-menu,
+    .proposal-list,
+    .dashboard-card-list
+  )::-webkit-scrollbar-thumb:hover {
   background: var(--border-strong);
   background-clip: padding-box;
 }
@@ -3999,9 +3978,15 @@ body::-webkit-scrollbar {
   background: transparent;
 }
 
+@media (max-width: 1280px) {
+  .workspace-rail {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+}
+
 @media (max-width: 1180px) {
   .dashboard-card-list-compact,
-  .dashboard-grid,
   .dashboard-summary-grid,
   .operations-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));

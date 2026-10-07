@@ -31,75 +31,25 @@ import type {
   ZohoLeadContactSyncDto
 } from "@shilabs/shared-types";
 
-const viteEnv = import.meta.env as Readonly<Record<string, string | undefined>>;
-export const apiBaseUrl = viteEnv.VITE_API_BASE_URL ?? "http://localhost:4000";
-
-export class ApiClientError extends Error {
-  constructor(
-    message: string,
-    public readonly status: number,
-    public readonly code?: string
-  ) {
-    super(message);
-  }
-}
-
-export function apiErrorMessage(error: unknown, fallback: string): string {
-  if (error instanceof ApiClientError && error.message.trim().length > 0) {
-    return error.message;
-  }
-
-  return fallback;
-}
-
-function isErrorPayload(value: unknown): value is { message?: unknown; code?: unknown } {
-  return typeof value === "object" && value !== null;
-}
-
-function notifyAuthInvalid(): void {
-  if (typeof window !== "undefined") {
-    window.dispatchEvent(new Event("shilabs:auth-invalid"));
-  }
-}
-
-async function apiRequest<TResponse>(
-  path: string,
-  accessToken: string,
-  init: RequestInit = {}
-): Promise<TResponse> {
-  const headers = new Headers(init.headers);
-  headers.set("Content-Type", "application/json");
-  headers.set("Authorization", `Bearer ${accessToken}`);
-
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    ...init,
-    headers
-  });
-
-  if (!response.ok) {
-    if (response.status === 401) {
-      notifyAuthInvalid();
-    }
-    let message = "Request failed";
-    let code: string | undefined;
-    try {
-      const payload: unknown = await response.json();
-      if (isErrorPayload(payload)) {
-        if (typeof payload.message === "string" && payload.message.trim().length > 0) {
-          message = payload.message;
-        }
-        if (typeof payload.code === "string" && payload.code.trim().length > 0) {
-          code = payload.code;
-        }
-      }
-    } catch {
-      // Keep the generic safe message when the response body is not JSON.
-    }
-    throw new ApiClientError(message, response.status, code);
-  }
-
-  return (await response.json()) as TResponse;
-}
+export { ApiClientError, apiBaseUrl, apiErrorMessage } from "./api/core.js";
+export { completeTask, listTasks, type TaskListParams } from "./api/tasks.js";
+export { listCompanies } from "./api/companies.js";
+export { listContacts } from "./api/contacts.js";
+export {
+  createDeal,
+  createPipeline,
+  createPipelineStage,
+  getDeal,
+  listDeals,
+  listPipelines,
+  reorderPipelineStages,
+  updateDeal,
+  updatePipeline,
+  updatePipelineStage,
+  type DealBody,
+  type DealListParams
+} from "./api/deals.js";
+import { apiRequest } from "./api/core.js";
 
 export interface LeadListParams {
   search?: string;

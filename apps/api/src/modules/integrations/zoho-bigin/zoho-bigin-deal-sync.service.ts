@@ -234,14 +234,14 @@ async function syncOneDeal(input: {
   if (!mappedLead) throw new AppError(409, "CONFLICT", "Lead mapping crosses workspace boundary");
 
   const defaultStage = await prisma.pipelineStage.findFirst({
-    where: { key: "NEW", workspaceId: input.workspaceId }
+    where: { workspaceId: input.workspaceId, status: "ACTIVE", pipeline: { status: "ACTIVE" }, OR: [{ key: "NEW" }, { semanticKey: "NEW" }] }
   });
   if (!defaultStage) throw new AppError(404, "NOT_FOUND", "Default pipeline stage not found");
 
   const matchedStageKey = stageKey(input.deal.stageName);
   const stage = matchedStageKey
     ? await prisma.pipelineStage.findFirst({
-        where: { key: matchedStageKey, workspaceId: input.workspaceId }
+        where: { workspaceId: input.workspaceId, status: "ACTIVE", pipeline: { status: "ACTIVE" }, OR: [{ key: matchedStageKey }, { semanticKey: matchedStageKey }] }
       })
     : null;
   const targetStage = stage ?? defaultStage;

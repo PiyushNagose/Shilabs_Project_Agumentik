@@ -13,6 +13,7 @@
   "dependencies": {
     "@shilabs/shared-types": "0.0.0",
     "@shilabs/ui": "0.0.0",
+    "lucide-react": "^0.468.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

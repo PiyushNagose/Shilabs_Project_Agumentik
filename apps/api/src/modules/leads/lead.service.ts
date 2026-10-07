@@ -36,6 +36,7 @@ import {
   leadVisibilityWhere
 } from "./lead.permissions.js";
 import { findPipelineStageById as findStageById } from "../pipeline/pipeline.repository.js";
+import { ensureWorkspacePipeline } from "../pipeline/pipeline.service.js";
 import { toPipelineStageDto } from "../pipeline/pipeline.service.js";
 import { publishRealtimeEvent } from "../realtime/realtime.service.js";
 import { autoStartLeadAiAutomation } from "../followups/lead-ai-automation.service.js";
@@ -83,6 +84,7 @@ function requireLead(lead: LeadRecord | null): LeadRecord {
 }
 
 async function ensureLeadInputs(input: {
+  workspaceId: string;
   companyId: string;
   contactId: string;
   ownerId?: string | null;
@@ -94,7 +96,7 @@ async function ensureLeadInputs(input: {
       companyId: input.companyId,
       contactId: input.contactId
     }),
-    input.stageId ? findPipelineStageById(input.stageId) : findDefaultPipelineStage(),
+    input.stageId ? findPipelineStageById(input.stageId, input.workspaceId) : findDefaultPipelineStage(input.workspaceId),
     input.ownerId ? findAssignableUserById(input.ownerId) : Promise.resolve({ id: "unassigned" })
   ]);
 
@@ -224,7 +226,9 @@ export async function createLead(
     throw new AppError(403, "AUTHORIZATION_ERROR", "Insufficient lead assignment permissions");
   }
 
-  const defaultStage = await findDefaultPipelineStage();
+  if (!actor.activeWorkspaceId) throw new AppError(403, "AUTHORIZATION_ERROR", "Active workspace required");
+  await ensureWorkspacePipeline(actor.activeWorkspaceId);
+  const defaultStage = await findDefaultPipelineStage(actor.activeWorkspaceId);
   if (!defaultStage) {
     throw new AppError(404, "NOT_FOUND", "Default pipeline stage not found");
   }
@@ -235,6 +239,7 @@ export async function createLead(
     assertCanAccessContact(actor, input.contactId, { allowUnlinked: true })
   ]);
   await ensureLeadInputs({
+    workspaceId: actor.activeWorkspaceId,
     companyId: input.companyId,
     contactId: input.contactId,
     ownerId,
@@ -395,7 +400,7 @@ export async function updateLeadStage(
 ): Promise<LeadDto> {
   const existing = requireLead(await findLeadById(leadId));
   assertCanMutateLead(actor, existing);
-  const targetStage = await findStageById(input.stageId);
+  const targetStage = await findStageById(input.stageId, actor.activeWorkspaceId);
 
   if (!targetStage) {
     throw new AppError(404, "NOT_FOUND", "Pipeline stage not found");

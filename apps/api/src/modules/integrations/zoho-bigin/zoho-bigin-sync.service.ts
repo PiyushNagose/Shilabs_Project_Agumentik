@@ -221,7 +221,7 @@ async function syncOneContact(input: {
 }): Promise<"SYNCED" | "SKIPPED"> {
   const workspaceId = input.actor.activeWorkspaceId;
   if (!workspaceId) throw new AppError(403, "AUTHORIZATION_ERROR", "Active workspace required");
-  const defaultStage = await prisma.pipelineStage.findFirst({ where: { key: "NEW", workspaceId } });
+  const defaultStage = await prisma.pipelineStage.findFirst({ where: { workspaceId, status: "ACTIVE", pipeline: { status: "ACTIVE" }, OR: [{ key: "NEW" }, { semanticKey: "NEW" }] } });
   if (!defaultStage) {
     throw new AppError(404, "NOT_FOUND", "Default pipeline stage not found");
   }

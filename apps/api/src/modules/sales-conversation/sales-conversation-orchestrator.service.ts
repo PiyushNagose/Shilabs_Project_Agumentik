@@ -103,18 +103,18 @@ async function advanceLeadStageForAI(input: {
   if (!targetKey) return;
 
   const result = await prisma.$transaction(async (tx) => {
-    const [lead, targetStage] = await Promise.all([
-      tx.lead.findUnique({ where: { id: input.leadId }, include: { stage: true } }),
-      tx.pipelineStage.findUnique({ where: { key: targetKey } })
-    ]);
+    const lead = await tx.lead.findUnique({ where: { id: input.leadId }, include: { stage: true } });
+    const targetStage = lead?.workspaceId
+      ? await tx.pipelineStage.findFirst({ where: { workspaceId: lead.workspaceId, status: "ACTIVE", pipeline: { status: "ACTIVE" }, OR: [{ key: targetKey }, { semanticKey: targetKey }] } })
+      : null;
     if (!lead || !targetStage || ["WON", "LOST", "DISQUALIFIED"].includes(lead.status)) {
       return null;
     }
 
     const shouldMove =
-      targetStage.key === "NURTURE"
-        ? lead.stage.key !== "NURTURE"
-        : lead.stage.key === "NURTURE" || targetStage.order > lead.stage.order;
+      (targetStage.semanticKey ?? targetStage.key) === "NURTURE"
+        ? (lead.stage.semanticKey ?? lead.stage.key) !== "NURTURE"
+        : (lead.stage.semanticKey ?? lead.stage.key) === "NURTURE" || targetStage.order > lead.stage.order;
     if (!shouldMove) return null;
 
     const nextStatus = targetStage.key === "NURTURE" ? "NURTURE" : "OPEN";

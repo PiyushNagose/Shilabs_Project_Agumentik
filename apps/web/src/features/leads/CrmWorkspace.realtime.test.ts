@@ -86,6 +86,26 @@ describe("CRM realtime refresh planning", () => {
     });
   });
 
+  it("refreshes task-backed next actions from a targeted task event", () => {
+    const plan = planCrmRealtimeRefresh(
+      {
+        type: "realtime:update",
+        entityType: "task",
+        action: "task-completed",
+        leadId: "lead_1",
+        occurredAt: new Date().toISOString()
+      },
+      "lead_1"
+    );
+
+    expect(plan).toMatchObject({
+      fullWorkspace: false,
+      leadList: true,
+      lead: true,
+      tasks: true
+    });
+  });
+
   it("keeps broad workspace reloads for reconnect only", () => {
     expect(
       planCrmRealtimeRefresh(

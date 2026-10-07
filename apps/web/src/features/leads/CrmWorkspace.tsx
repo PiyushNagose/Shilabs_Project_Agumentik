@@ -21,8 +21,10 @@ import {
   type ProposalDto,
   type ProposalSendResultDto,
   type PublicUser,
+  type TaskDto,
   type ZohoLeadContactSyncDto
 } from "@shilabs/shared-types";
+import { ArrowLeft, Mail, Phone } from "lucide-react";
 import { Icon } from "../../components/Icon.js";
 import { StateBlock } from "../../components/StateBlock.js";
 import { StatusBadge } from "../../components/StatusBadge.js";
@@ -36,6 +38,7 @@ import {
   approveProposal,
   confirmMeetingRequest,
   createProposalAgentCorrection,
+  completeTask,
   createConversation,
   createMeetingRequest,
   generateLeadBriefing,
@@ -54,6 +57,7 @@ import {
   listNotifications,
   listPipelineStages,
   listProposals,
+  listTasks,
   listAgentCorrections,
   listUsers,
   markNotificationRead,
@@ -71,6 +75,14 @@ import {
   type LeadListParams
 } from "../../services/api-client.js";
 import { useRealtime, type RealtimeUpdateEvent } from "../realtime/RealtimeProvider.js";
+import {
+  LeadFactStrip,
+  LeadQuickView,
+  LeadTaskList,
+  LeadTimeline,
+  leadName,
+  leadPriority
+} from "./LeadExperience.js";
 
 function isE2ELocalUi(): boolean {
   const viteEnv = import.meta.env as Readonly<Record<string, string | undefined>>;
@@ -89,6 +101,7 @@ export type DetailTab =
   | "Qualification"
   | "Proposals"
   | "Activities"
+  | "Tasks"
   | "Meetings"
   | "Deal"
   | "AI Insights";
@@ -99,6 +112,7 @@ const detailTabs: DetailTab[] = [
   "Qualification",
   "Proposals",
   "Activities",
+  "Tasks",
   "Meetings",
   "Deal",
   "AI Insights"
@@ -220,6 +234,12 @@ interface ConversationState {
 
 interface QualificationState {
   qualification: LeadQualificationDto | null;
+  loading: boolean;
+  error: string | null;
+}
+
+interface TaskState {
+  tasks: TaskDto[];
   loading: boolean;
   error: string | null;
 }
@@ -360,6 +380,7 @@ export interface CrmRealtimeRefreshPlan {
   meetings: boolean;
   briefings: boolean;
   notifications: boolean;
+  tasks: boolean;
 }
 
 const emptyRealtimeRefreshPlan: CrmRealtimeRefreshPlan = {
@@ -371,7 +392,8 @@ const emptyRealtimeRefreshPlan: CrmRealtimeRefreshPlan = {
   proposals: false,
   meetings: false,
   briefings: false,
-  notifications: false
+  notifications: false,
+  tasks: false
 };
 
 export function mergeCrmRealtimeRefreshPlans(
@@ -387,7 +409,8 @@ export function mergeCrmRealtimeRefreshPlans(
     proposals: current?.proposals === true || next.proposals,
     meetings: current?.meetings === true || next.meetings,
     briefings: current?.briefings === true || next.briefings,
-    notifications: current?.notifications === true || next.notifications
+    notifications: current?.notifications === true || next.notifications,
+    tasks: current?.tasks === true || next.tasks
   };
 }
 
@@ -404,11 +427,12 @@ export function planCrmRealtimeRefresh(
       proposals: Boolean(selectedLeadId),
       meetings: Boolean(selectedLeadId),
       briefings: Boolean(selectedLeadId),
-      notifications: Boolean(selectedLeadId)
+      notifications: Boolean(selectedLeadId),
+      tasks: Boolean(selectedLeadId)
     };
   }
 
-  if (!["workspace", "lead", "notifications", "domain-event"].includes(event.entityType)) {
+  if (!["workspace", "lead", "task", "notifications", "domain-event"].includes(event.entityType)) {
     return null;
   }
 
@@ -450,6 +474,9 @@ export function planCrmRealtimeRefresh(
   if (includesAny(["briefing", "insight"])) {
     plan.briefings = true;
   }
+  if (event.entityType === "task" || includesAny(["task"])) {
+    plan.tasks = true;
+  }
   if (event.entityType === "domain-event" && !event.sourceEventType) {
     plan.conversations = true;
     plan.qualification = true;
@@ -473,7 +500,7 @@ function formatDate(value: string | null): string {
 
 function formatMoney(value: string | null, currency: string): string {
   if (!value) {
-    return "Value unknown";
+    return "Not set";
   }
 
   return new Intl.NumberFormat(undefined, {
@@ -584,6 +611,9 @@ export function CrmWorkspace({
     useState<ConversationState>(initialConversationState);
   const [qualificationState, setQualificationState] =
     useState<QualificationState>(initialQualificationState);
+  const [taskState, setTaskState] = useState<TaskState>({ tasks: [], loading: false, error: null });
+  const [workspaceTasks, setWorkspaceTasks] = useState<TaskDto[]>([]);
+  const [quickViewOpen, setQuickViewOpen] = useState(false);
   const [proposalState, setProposalState] = useState<ProposalState>(initialProposalState);
   const [meetingState, setMeetingState] = useState<MeetingState>(() => createInitialMeetingState());
   const [briefingState, setBriefingState] = useState<BriefingState>(initialBriefingState);
@@ -649,6 +679,14 @@ export function CrmWorkspace({
       const qualification = selectedLead
         ? await getLeadQualification(accessToken, selectedLead.id).catch(() => null)
         : null;
+      const tasks = selectedLead
+        ? await listTasks(accessToken, { leadId: selectedLead.id })
+            .then((items) => Array.isArray(items) ? items : [])
+            .catch(() => [])
+        : [];
+      const allTasks = await listTasks(accessToken, {})
+        .then((items) => Array.isArray(items) ? items : [])
+        .catch(() => []);
 
       if (request !== workspaceRequestRef.current || selection !== selectionRequestRef.current) return;
       setState((current) => ({
@@ -666,6 +704,8 @@ export function CrmWorkspace({
         loading: false,
         error: selectedLead && !qualification ? "Qualification could not be loaded" : null
       });
+      setTaskState({ tasks, loading: false, error: null });
+      setWorkspaceTasks(allTasks);
     } catch {
       if (request !== workspaceRequestRef.current || selection !== selectionRequestRef.current) return;
       setState((current) => ({
@@ -710,6 +750,12 @@ export function CrmWorkspace({
   useEffect(() => {
     if (activeTab === "Meetings" && state.selectedLead) {
       void loadLeadMeetings(state.selectedLead.id);
+    }
+  }, [accessToken, activeTab, state.selectedLead?.id]);
+
+  useEffect(() => {
+    if (activeTab === "Tasks" && state.selectedLead) {
+      void loadLeadTasks(state.selectedLead.id);
     }
   }, [accessToken, activeTab, state.selectedLead?.id]);
 
@@ -761,6 +807,9 @@ export function CrmWorkspace({
       }
       if (plan.notifications && !plan.lead) {
         void loadLeadNotifications(selectedLeadId);
+      }
+      if (plan.tasks) {
+        void loadLeadTasks(selectedLeadId, true);
       }
     };
 
@@ -903,6 +952,28 @@ export function CrmWorkspace({
     }
   }
 
+  async function loadLeadTasks(leadId: string, background = false): Promise<void> {
+    const isCurrent = beginDetailRequest("tasks", leadId);
+    setTaskState((current) => ({ ...current, loading: !background, error: null }));
+    try {
+      const result = await listTasks(accessToken, { leadId });
+      if (!isCurrent()) return;
+      const tasks = Array.isArray(result) ? result : [];
+      setTaskState({ tasks, loading: false, error: null });
+      setWorkspaceTasks((current) => [
+        ...current.filter((task) => task.leadId !== leadId),
+        ...tasks
+      ]);
+    } catch (error) {
+      if (!isCurrent()) return;
+      setTaskState((current) => ({
+        ...current,
+        loading: false,
+        error: apiErrorMessage(error, "Tasks could not be loaded")
+      }));
+    }
+  }
+
   async function loadLeadBriefings(leadId: string, background = false): Promise<void> {
     const isCurrent = beginDetailRequest("briefings", leadId);
     setBriefingState((current) => ({ ...current, loading: !background, error: null }));
@@ -1032,11 +1103,13 @@ export function CrmWorkspace({
       onRouteChange?.(leadId, activeTab);
     }
     try {
-      const [lead, activities, notifications, qualification] = await Promise.all([
+      const [lead, activities, notifications, qualification, tasks, meetings] = await Promise.all([
         getLead(accessToken, leadId),
         listLeadActivities(accessToken, leadId).catch(() => []),
         listNotifications(accessToken, { leadId, limit: 10 }).catch(() => []),
-        getLeadQualification(accessToken, leadId).catch(() => null)
+        getLeadQualification(accessToken, leadId).catch(() => null),
+        listTasks(accessToken, { leadId }).then((items) => Array.isArray(items) ? items : []).catch(() => []),
+        listMeetingRequests(accessToken, { leadId, limit: 50 }).catch(() => [])
       ]);
       if (request !== selectionRequestRef.current) return;
       selectedLeadRef.current = leadId;
@@ -1046,9 +1119,10 @@ export function CrmWorkspace({
         loading: false,
         error: qualification ? null : "Qualification could not be loaded"
       });
+      setTaskState({ tasks, loading: false, error: null });
       setConversationState(initialConversationState);
       setProposalState(initialProposalState);
-      setMeetingState(createInitialMeetingState());
+      setMeetingState({ ...createInitialMeetingState(), requests: meetings });
       setBriefingState(initialBriefingState);
     } catch (error) {
       if (request === selectionRequestRef.current) {
@@ -1056,6 +1130,27 @@ export function CrmWorkspace({
       }
     } finally {
       if (request === selectionRequestRef.current) selectionTargetRef.current = null;
+    }
+  }
+
+  async function openQuickView(leadId: string): Promise<void> {
+    setQuickViewOpen(true);
+    setTaskState({ tasks: [], loading: true, error: null });
+    await selectLead(leadId, false);
+  }
+
+  async function completeLeadTask(taskId: string): Promise<void> {
+    try {
+      const completed = await completeTask(accessToken, taskId);
+      setTaskState((current) => ({
+        ...current,
+        tasks: current.tasks.map((task) => task.id === completed.id ? completed : task)
+      }));
+      setWorkspaceTasks((current) => current.map((task) => task.id === completed.id ? completed : task));
+      if (state.selectedLead) await refreshSelectedLead(state.selectedLead.id);
+      toast.success({ title: "Task completed" });
+    } catch (error) {
+      toast.error({ title: "Task could not be completed", detail: apiErrorMessage(error, "Please retry") });
     }
   }
 
@@ -1999,10 +2094,11 @@ export function CrmWorkspace({
   }
 
   const canSyncZoho = currentUser.role === "ADMIN" || currentUser.role === "SALES_MANAGER";
+  const isProfile = Boolean(initialLeadId);
 
   return (
-    <section className="crm-workspace" aria-label="CRM workspace">
-      <div className="workspace-rail">
+    <section className={`crm-workspace phase4a-workspace${isProfile ? " profile-mode" : " list-mode"}`} aria-label="CRM workspace">
+      {!isProfile ? <div className="workspace-rail">
         <div className="workspace-actions">
           <div className="workspace-switch" aria-label="Workspace view">
             <button
@@ -2049,13 +2145,13 @@ export function CrmWorkspace({
               (zohoSyncState.result ? formatZohoSyncResult(zohoSyncState.result) : null)}
           </div>
         ) : null}
-      </div>
+      </div> : null}
 
       {state.error && state.leadsPage ? (
         <p className="refresh-error" role="alert">{state.error}. Showing the last loaded data.</p>
       ) : null}
-      <div className="workspace-grid">
-        <div className="workspace-panel">
+      <div className={`workspace-grid${isProfile ? " profile-grid" : " list-grid"}`}>
+        {!isProfile ? <div className="workspace-panel phase4a-list-panel">
           {state.loading ? (
             <StateBlock title="Loading CRM" detail="Fetching real sales records from the API." />
           ) : state.error && !state.leadsPage ? (
@@ -2075,13 +2171,30 @@ export function CrmWorkspace({
               detail="Create leads through the API or lead intake flow."
             />
           ) : view === "leads" ? (
-            <LeadList leads={leads} selectedLeadId={state.selectedLead?.id} onSelect={selectLead} />
+            <LeadList
+              leads={leads}
+              selectedLeadId={quickViewOpen ? state.selectedLead?.id : undefined}
+              tasks={workspaceTasks}
+              onSelect={openQuickView}
+            />
           ) : (
-            <PipelineBoard groupedLeads={groupedLeads} onSelect={selectLead} />
+            <PipelineBoard groupedLeads={groupedLeads} onSelect={openQuickView} />
           )}
-        </div>
+          {state.leadsPage && state.leadsPage.totalPages > 1 ? (
+            <nav className="lead-pagination" aria-label="Lead pages">
+              <span>
+                Showing {(state.leadsPage.page - 1) * state.leadsPage.pageSize + 1} - {Math.min(state.leadsPage.page * state.leadsPage.pageSize, state.leadsPage.total)} of {state.leadsPage.total}
+              </span>
+              <div>
+                <button disabled={state.leadsPage.page <= 1} onClick={() => void applyFilters({ page: (state.leadsPage?.page ?? 2) - 1 })} type="button">Previous</button>
+                <strong>{state.leadsPage.page}</strong>
+                <button disabled={state.leadsPage.page >= state.leadsPage.totalPages} onClick={() => void applyFilters({ page: (state.leadsPage?.page ?? 0) + 1 })} type="button">Next</button>
+              </div>
+            </nav>
+          ) : null}
+        </div> : null}
 
-        <LeadDetail
+        {isProfile ? <LeadDetail
           activeTab={activeTab}
           activities={state.activities}
           notifications={state.notifications}
@@ -2136,8 +2249,28 @@ export function CrmWorkspace({
           onStartHumanTakeover={startSelectedHumanTakeover}
           onTabChange={changeDetailTab}
           proposalState={proposalState}
-        />
+          taskState={taskState}
+          onCompleteTask={completeLeadTask}
+          onBack={() => onRouteChange?.(null)}
+        /> : null}
       </div>
+      {!isProfile ? (
+        <LeadQuickView
+          activities={state.activities}
+          lead={state.selectedLead}
+          qualification={qualificationState.qualification}
+          tasks={taskState.tasks}
+          tasksLoading={taskState.loading}
+          tasksError={taskState.error}
+          meetings={meetingState.requests}
+          open={quickViewOpen}
+          onClose={() => setQuickViewOpen(false)}
+          onCompleteTask={completeLeadTask}
+          onOpenProfile={() => {
+            if (state.selectedLead) onRouteChange?.(state.selectedLead.id, "Overview");
+          }}
+        />
+      ) : null}
     </section>
   );
 }
@@ -2165,6 +2298,14 @@ function LeadFilters({
     { label: "Latest activity", value: "lastActivityAt" },
     { label: "Created date", value: "createdAt" }
   ];
+  const statusOptions = [
+    { label: "All statuses", value: "" },
+    { label: "Open", value: "OPEN" },
+    { label: "Nurture", value: "NURTURE" },
+    { label: "Won", value: "WON" },
+    { label: "Lost", value: "LOST" },
+    { label: "Disqualified", value: "DISQUALIFIED" }
+  ];
 
   return (
     <form className="lead-filters" onSubmit={(event) => event.preventDefault()}>
@@ -2178,6 +2319,12 @@ function LeadFilters({
           value={filters.search ?? ""}
         />
       </div>
+      <ThemedSelect
+        ariaLabel="Filter by status"
+        onChange={(status) => void onChange({ status })}
+        options={statusOptions}
+        value={filters.status ?? ""}
+      />
       <ThemedSelect
         ariaLabel="Filter by stage"
         onChange={(stageId) => void onChange({ stageId })}
@@ -2205,48 +2352,76 @@ function LeadFilters({
 function LeadList({
   leads,
   selectedLeadId,
+  tasks,
   onSelect
 }: {
   leads: LeadDto[];
   selectedLeadId?: string;
+  tasks: TaskDto[];
   onSelect: (leadId: string) => Promise<void>;
 }): React.JSX.Element {
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const allSelected = leads.length > 0 && leads.every((lead) => selectedIds.has(lead.id));
+  const toggle = (leadId: string): void => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(leadId)) next.delete(leadId);
+      else next.add(leadId);
+      return next;
+    });
+  };
+
   return (
-    <div className="lead-list" role="table" aria-label="Leads list">
+    <div className="phase4a-lead-list">
+      <header className="lead-list-heading">
+        <div>
+          <p className="eyebrow">CRM / Leads</p>
+          <h2>All Leads</h2>
+        </div>
+        <div className="lead-list-counts" aria-label="Lead counts">
+          <span className="active">All <strong>{leads.length}</strong></span>
+          <span>Open <strong>{leads.filter((lead) => lead.status === "OPEN").length}</strong></span>
+          <span>Nurture <strong>{leads.filter((lead) => lead.status === "NURTURE").length}</strong></span>
+        </div>
+      </header>
+      {selectedIds.size > 0 ? (
+        <div className="lead-selection-bar" role="status">
+          <strong>{selectedIds.size} selected</strong>
+          <button onClick={() => setSelectedIds(new Set())} type="button">Clear selection</button>
+        </div>
+      ) : null}
+      <div className="lead-list" role="table" aria-label="Leads list">
       <div className="lead-row lead-row-head" role="row">
-        <span>Company / Contact</span>
-        <span>Source</span>
-        <span>Score</span>
-        <span>Stage</span>
+        <span><input aria-label="Select all leads" checked={allSelected} onChange={() => setSelectedIds(allSelected ? new Set() : new Set(leads.map((lead) => lead.id)))} type="checkbox" /></span>
+        <span>Name</span>
+        <span>Company</span>
         <span>Owner</span>
-        <span>Next Action</span>
+        <span>Status</span>
+        <span>Deal stage</span>
+        <span>Priority</span>
+        <span>Score</span>
+        <span>Next action</span>
       </div>
-      {leads.map((lead) => (
-        <button
-          className={`lead-row ${lead.id === selectedLeadId ? "selected" : ""}`}
-          key={lead.id}
-          onClick={() => void onSelect(lead.id)}
-          role="row"
-          type="button"
-        >
-          <span>
-            <strong>{lead.company.name}</strong>
-            <small>
-              {lead.contact.firstName} {lead.contact.lastName}
-            </small>
-          </span>
-          <span>{lead.source}</span>
-          <span>
-            {lead.score}
-            <StatusBadge tone={temperatureTone(lead.temperature)}>{lead.temperature}</StatusBadge>
-          </span>
-          <span>{lead.stage.label}</span>
-          <span>
-            {lead.owner ? `${lead.owner.firstName} ${lead.owner.lastName}` : "Unassigned"}
-          </span>
-          <span>{lead.nextAction ?? "No next action"}</span>
-        </button>
-      ))}
+      {leads.map((lead) => {
+        const priority = leadPriority(tasks.filter((task) => task.leadId === lead.id));
+        return (
+          <div className={`lead-row ${lead.id === selectedLeadId ? "selected" : ""}`} key={lead.id} role="row">
+            <span><input aria-label={`Select ${leadName(lead)}`} checked={selectedIds.has(lead.id)} onChange={() => toggle(lead.id)} type="checkbox" /></span>
+            <button className="lead-primary-cell" onClick={() => void onSelect(lead.id)} type="button">
+              <span className="lead-avatar" aria-hidden="true">{lead.contact.firstName.slice(0, 1)}{lead.contact.lastName.slice(0, 1)}</span>
+              <span><strong>{leadName(lead)}</strong><small>{lead.contact.email ?? "No email"}</small></span>
+            </button>
+            <span>{lead.company.name}</span>
+            <span>{lead.owner ? `${lead.owner.firstName} ${lead.owner.lastName}` : "Unassigned"}</span>
+            <span><StatusBadge tone="neutral">{lead.status.replaceAll("_", " ")}</StatusBadge></span>
+            <span>{lead.stage.label}</span>
+            <span>{priority === "NONE" ? "-" : priority}</span>
+            <span><strong>{lead.score}</strong><small>{lead.temperature}</small></span>
+            <span>{lead.nextAction ?? "No next action"}</span>
+          </div>
+        );
+      })}
+      </div>
     </div>
   );
 }
@@ -2299,6 +2474,7 @@ function LeadDetail({
   notifications,
   proposalState,
   qualificationState,
+  taskState,
   stages,
   users,
   onAssignOwner,
@@ -2332,7 +2508,9 @@ function LeadDetail({
   onStartFollowUp,
   onStartConversation,
   onStartHumanTakeover,
-  onTabChange
+  onTabChange,
+  onCompleteTask,
+  onBack
 }: {
   activeTab: DetailTab;
   activities: ActivityDto[];
@@ -2344,6 +2522,7 @@ function LeadDetail({
   notifications: InternalNotificationDto[];
   proposalState: ProposalState;
   qualificationState: QualificationState;
+  taskState: TaskState;
   stages: PipelineStageDto[];
   users: PublicUser[];
   onAssignOwner: (ownerId: string) => Promise<void>;
@@ -2380,6 +2559,8 @@ function LeadDetail({
   onStartConversation: () => Promise<void>;
   onStartHumanTakeover: () => Promise<void>;
   onTabChange: (tab: DetailTab) => void;
+  onCompleteTask: (taskId: string) => Promise<void>;
+  onBack: () => void;
 }): React.JSX.Element {
   if (!lead) {
     return (
@@ -2402,21 +2583,31 @@ function LeadDetail({
   const nextActionAt = lead.nextActionAt ?? followUpAction?.nextActionAt ?? null;
 
   return (
-    <aside className="lead-detail" aria-label="Lead detail">
+    <main className="lead-detail lead-profile" aria-label="Lead profile">
+      <div className="lead-profile-breadcrumb">
+        <button onClick={onBack} type="button"><ArrowLeft size={16} /> All leads</button>
+        <span>Lead profile</span>
+      </div>
       <header className="detail-hero">
-        <div>
+        <span className="lead-avatar profile-avatar" aria-hidden="true">{lead.contact.firstName.slice(0, 1)}{lead.contact.lastName.slice(0, 1)}</span>
+        <div className="profile-identity">
           <p className="eyebrow">{lead.source}</p>
-          <h2>{lead.company.name}</h2>
+          <h2>{leadName(lead)}</h2>
           <p>
-            {lead.contact.firstName} {lead.contact.lastName}
-            {lead.contact.title ? `, ${lead.contact.title}` : ""}
+            {lead.contact.title ? `${lead.contact.title} at ` : ""}{lead.company.name}
           </p>
+        </div>
+        <div className="profile-quick-actions">
+          {lead.contact.email ? <a href={`mailto:${lead.contact.email}`}><Mail size={16} /> Email</a> : null}
+          {lead.contact.phone ? <a href={`tel:${lead.contact.phone}`}><Phone size={16} /> Call</a> : null}
         </div>
         <div className="score-orbit" aria-label={`Lead score ${String(lead.score)}`}>
           <span>{lead.score}</span>
           <StatusBadge tone={temperatureTone(lead.temperature)}>{lead.temperature}</StatusBadge>
         </div>
       </header>
+
+      <LeadFactStrip lead={lead} qualification={qualificationState.qualification} tasks={taskState.tasks} />
 
       <div className="detail-controls">
         <label>
@@ -2440,9 +2631,9 @@ function LeadDetail({
       </div>
 
       <div className="detail-metrics">
-        <span>{formatMoney(lead.estimatedValue, lead.currency)}</span>
-        <span>{formatDate(lead.lastActivityAt)}</span>
-        <span>{nextAction}</span>
+        <span><small>Estimated value</small><strong>{formatMoney(lead.estimatedValue, lead.currency)}</strong></span>
+        <span><small>Last activity</small><strong>{formatDate(lead.lastActivityAt)}</strong></span>
+        <span><small>Next action</small><strong>{nextAction}</strong></span>
       </div>
 
       <NotificationAlerts
@@ -2461,7 +2652,7 @@ function LeadDetail({
             role="tab"
             type="button"
           >
-            {tab}
+            {tab === "Activities" ? "Sessions" : tab}
           </button>
         ))}
       </div>
@@ -2477,6 +2668,7 @@ function LeadDetail({
         nextActionAt={nextActionAt}
         proposalState={proposalState}
         qualificationState={qualificationState}
+        taskState={taskState}
         tab={activeTab}
         onConversationChange={onConversationChange}
         onConversationInputChange={onConversationInputChange}
@@ -2505,8 +2697,9 @@ function LeadDetail({
         onStartFollowUp={onStartFollowUp}
         onStartConversation={onStartConversation}
         onStartHumanTakeover={onStartHumanTakeover}
+        onCompleteTask={onCompleteTask}
       />
-    </aside>
+    </main>
   );
 }
 
@@ -2572,6 +2765,7 @@ function DetailTabPanel({
   nextActionAt,
   proposalState,
   qualificationState,
+  taskState,
   tab,
   onConversationChange,
   onConversationInputChange,
@@ -2599,7 +2793,8 @@ function DetailTabPanel({
   onRunCallingAttemptNowForE2E,
   onStartFollowUp,
   onStartConversation,
-  onStartHumanTakeover
+  onStartHumanTakeover,
+  onCompleteTask
 }: {
   activities: ActivityDto[];
   conversationState: ConversationState;
@@ -2611,6 +2806,7 @@ function DetailTabPanel({
   nextActionAt: string | null;
   proposalState: ProposalState;
   qualificationState: QualificationState;
+  taskState: TaskState;
   tab: DetailTab;
   onConversationChange: (conversationId: string) => Promise<void>;
   onConversationInputChange: (input: string) => void;
@@ -2641,6 +2837,7 @@ function DetailTabPanel({
   onStartFollowUp: () => Promise<void>;
   onStartConversation: () => Promise<void>;
   onStartHumanTakeover: () => Promise<void>;
+  onCompleteTask: (taskId: string) => Promise<void>;
 }): React.JSX.Element {
   if (tab === "Conversation") {
     return (
@@ -2720,18 +2917,23 @@ function DetailTabPanel({
           {activities.length === 0 ? (
             <StateBlock title="No activities yet" />
           ) : (
-            <div className="activity-stack">
-              {activities.map((activity) => (
-                <article className="activity-item" key={activity.id}>
-                  <div>
-                    <strong>{activity.type.replaceAll("_", " ")}</strong>
-                    <small>{formatDate(activity.createdAt)}</small>
-                  </div>
-                  <span>{activity.description}</span>
-                </article>
-              ))}
-            </div>
+            <LeadTimeline activities={activities} />
           )}
+        </TabSection>
+      </div>
+    );
+  }
+
+  if (tab === "Tasks") {
+    return (
+      <div className="tab-panel tab-panel-structured">
+        <TabSection eyebrow="Tasks" title="Lead work" meta={`${String(taskState.tasks.length)} tasks`}>
+          <LeadTaskList
+            tasks={taskState.tasks}
+            loading={taskState.loading}
+            error={taskState.error}
+            onComplete={onCompleteTask}
+          />
         </TabSection>
       </div>
     );

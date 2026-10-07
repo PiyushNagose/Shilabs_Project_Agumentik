@@ -77,13 +77,28 @@ export type LeadTemperatureName = (typeof LEAD_TEMPERATURES)[number];
 
 export interface PipelineStageDto {
   id: string;
+  pipelineId?: string | null;
   key: string;
   label: string;
   order: number;
+  position?: number;
   probability: number;
+  color?: string | null;
+  status?: "ACTIVE" | "ARCHIVED";
   isClosed: boolean;
   isWon: boolean;
   isLost: boolean;
+}
+
+export interface PipelineDto {
+  id: string;
+  name: string;
+  type: string;
+  isDefault: boolean;
+  status: "ACTIVE" | "ARCHIVED";
+  createdAt: string;
+  updatedAt: string;
+  stages: PipelineStageDto[];
 }
 
 export interface LeadDto {
@@ -194,6 +209,7 @@ export type ActivityActorTypeName = "USER" | "SYSTEM" | "AGENT" | "WORKFLOW" | "
 
 export interface DealDto {
   id: string;
+  pipelineId: string | null;
   leadId: string;
   stageId: string;
   ownerId: string | null;
@@ -204,6 +220,7 @@ export interface DealDto {
   proposalStatus: ProposalStatusName | null;
   wonReason: string | null;
   lostReason: string | null;
+  closeDate: string | null;
   createdAt: string;
   updatedAt: string;
   lead: LeadDto;

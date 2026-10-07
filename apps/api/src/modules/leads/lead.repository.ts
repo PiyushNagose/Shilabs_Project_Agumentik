@@ -26,16 +26,16 @@ export async function findContactForCompany(input: {
   });
 }
 
-export async function findDefaultPipelineStage(): Promise<{ id: string } | null> {
-  return prisma.pipelineStage.findUnique({
-    where: { key: "NEW" },
+export async function findDefaultPipelineStage(workspaceId: string): Promise<{ id: string } | null> {
+  return prisma.pipelineStage.findFirst({
+    where: { workspaceId, status: "ACTIVE", pipeline: { status: "ACTIVE" }, OR: [{ key: "NEW" }, { semanticKey: "NEW" }] },
     select: { id: true }
   });
 }
 
-export async function findPipelineStageById(stageId: string): Promise<{ id: string } | null> {
-  return prisma.pipelineStage.findUnique({
-    where: { id: stageId },
+export async function findPipelineStageById(stageId: string, workspaceId: string): Promise<{ id: string } | null> {
+  return prisma.pipelineStage.findFirst({
+    where: { id: stageId, workspaceId, status: "ACTIVE", pipeline: { status: "ACTIVE" } },
     select: { id: true }
   });
 }

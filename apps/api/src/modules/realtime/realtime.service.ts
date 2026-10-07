@@ -10,6 +10,8 @@ import { resolveWorkspaceContext } from "../workspaces/workspace.service.js";
 export type RealtimeEntityType =
   | "workspace"
   | "lead"
+  | "deal"
+  | "pipeline"
   | "task"
   | "activity"
   | "dashboard"
@@ -26,6 +28,7 @@ export interface RealtimeEvent {
   domainEventId?: string | null;
   sourceEventType?: string | null;
   taskId?: string | null;
+  workspaceId?: string | null;
   occurredAt: string;
 }
 
@@ -51,6 +54,7 @@ export async function resolveRealtimeEventScope(input: {
   conversationId?: string | null;
   domainEventId?: string | null;
   taskId?: string | null;
+  workspaceId?: string | null;
 }): Promise<{ workspaceId: string; ownerId: string | null } | null> {
   const [lead, conversation, domainEvent, task] = await Promise.all([
     input.leadId
@@ -79,6 +83,7 @@ export async function resolveRealtimeEventScope(input: {
       : null
   ]);
   const scopes = [
+    input.workspaceId,
     lead?.workspaceId,
     conversation?.workspaceId ?? conversation?.lead.workspaceId,
     domainEvent?.workspaceId,

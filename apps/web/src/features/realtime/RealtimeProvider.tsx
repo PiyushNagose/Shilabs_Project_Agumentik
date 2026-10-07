@@ -1,11 +1,15 @@
 import type React from "react";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { apiBaseUrl } from "../../services/api-client.js";
+import { apiBaseUrl } from "../../services/api/core.js";
 import { useAuth } from "../auth/AuthProvider.js";
 
 export type RealtimeEntityType =
   | "workspace"
   | "lead"
+  | "deal"
+  | "pipeline"
+  | "task"
+  | "activity"
   | "dashboard"
   | "operations"
   | "notifications"
@@ -47,7 +51,7 @@ function isRealtimeUpdate(value: unknown): value is RealtimeUpdateEvent {
     (value as { type?: unknown }).type === "realtime:update" &&
     typeof (value as { action?: unknown }).action === "string" &&
     typeof (value as { occurredAt?: unknown }).occurredAt === "string" &&
-    ["workspace", "lead", "dashboard", "operations", "notifications", "domain-event"].includes(
+    ["workspace", "lead", "deal", "pipeline", "task", "activity", "dashboard", "operations", "notifications", "domain-event"].includes(
       String((value as { entityType?: unknown }).entityType)
     )
   );
@@ -161,4 +165,3 @@ export function useRealtime(): RealtimeContextValue {
   }
   return value;
 }
-

@@ -2,7 +2,7 @@
  * @vitest-environment happy-dom
  */
 import React from "react";
-import { render, waitFor } from "@testing-library/react";
+import { act, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthProvider } from "../auth/AuthProvider.js";
 import { RealtimeProvider, useRealtime, type RealtimeUpdateEvent } from "./RealtimeProvider.js";
@@ -83,18 +83,33 @@ describe("RealtimeProvider", () => {
     await waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
     const socket = MockWebSocket.instances[0];
     expect(socket?.url).toContain("/realtime?token=access-token");
-    socket?.emitOpen();
-    socket?.emitMessage({
-      type: "realtime:update",
-      entityType: "lead",
-      action: "domain-event-processed",
-      leadId: "lead_1",
-      occurredAt: new Date().toISOString()
+    act(() => {
+      socket?.emitOpen();
+      socket?.emitMessage({
+        type: "realtime:update",
+        entityType: "lead",
+        action: "domain-event-processed",
+        leadId: "lead_1",
+        occurredAt: new Date().toISOString()
+      });
     });
 
     await waitFor(() =>
       expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ entityType: "lead", leadId: "lead_1" }))
     );
+
+    act(() => {
+      socket?.emitMessage({
+        type: "realtime:update",
+        entityType: "activity",
+        action: "created",
+        leadId: "lead_1",
+        occurredAt: new Date().toISOString()
+      });
+    });
+
+    await waitFor(() =>
+      expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ entityType: "activity", leadId: "lead_1" }))
+    );
   });
 });
-
