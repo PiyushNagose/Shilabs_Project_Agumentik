@@ -8,7 +8,9 @@ export async function listDomainEventsController(
   request: Request,
   response: Response<DomainEventOutboxDto[]>
 ): Promise<void> {
-  response.status(200).json(await listDomainEvents(request.validatedQuery as ListDomainEventsQuery));
+  response.status(200).json(
+    await listDomainEvents(getRequiredUser(request), request.validatedQuery as ListDomainEventsQuery)
+  );
 }
 
 export async function retryDomainEventController(

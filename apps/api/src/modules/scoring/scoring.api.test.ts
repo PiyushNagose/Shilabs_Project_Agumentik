@@ -120,12 +120,14 @@ async function cleanup(): Promise<void> {
 
 async function createQualifiedLead(): Promise<string> {
   const admin = await prisma.user.findUniqueOrThrow({ where: { email: adminEmail } });
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
   const uniqueSlug = `m11-${randomUUID()}`;
   const company = await prisma.company.create({
-    data: { name: `${companyNamePrefix} ${uniqueSlug}` }
+    data: { workspaceId: workspace.id, name: `${companyNamePrefix} ${uniqueSlug}` }
   });
   const contact = await prisma.contact.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       firstName: "Score",
       lastName: "Prospect",
@@ -135,6 +137,7 @@ async function createQualifiedLead(): Promise<string> {
   const stage = await prisma.pipelineStage.findUniqueOrThrow({ where: { key: "NEW" } });
   const lead = await prisma.lead.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       contactId: contact.id,
       ownerId: admin.id,

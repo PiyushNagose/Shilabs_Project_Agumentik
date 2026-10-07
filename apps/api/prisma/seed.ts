@@ -1,6 +1,7 @@
 import { PrismaClient, UserRole, UserStatus } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { defaultScoringConfig, pipelineStages } from "./seed-data.js";
+import { bootstrapDefaultWorkspace } from "../src/modules/workspaces/workspace.service.js";
 
 const prisma = new PrismaClient();
 
@@ -59,6 +60,7 @@ async function seedScoringConfig(): Promise<void> {
 async function main(): Promise<void> {
   await seedPipelineStages();
   await seedDevelopmentAdmin();
+  await bootstrapDefaultWorkspace();
   await seedScoringConfig();
 }
 

@@ -105,6 +105,7 @@ async function seedLead(): Promise<{
   adminId: string;
   repId: string;
 }> {
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
   const passwordHash = await hashPassword(password);
   const [admin, rep] = await Promise.all([
     prisma.user.create({
@@ -130,10 +131,11 @@ async function seedLead(): Promise<{
   ]);
   const stage = await prisma.pipelineStage.findUniqueOrThrow({ where: { key: "NEW" } });
   const company = await prisma.company.create({
-    data: { name: `${companyPrefix} Primary`, website: "https://r21-meeting.example" }
+    data: { workspaceId: workspace.id, name: `${companyPrefix} Primary`, website: "https://r21-meeting.example" }
   });
   const contact = await prisma.contact.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       firstName: "R21",
       lastName: "Customer",
@@ -142,6 +144,7 @@ async function seedLead(): Promise<{
   });
   const lead = await prisma.lead.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       contactId: contact.id,
       ownerId: rep.id,
@@ -316,8 +319,10 @@ describe("R21 meeting scheduling API", () => {
 
     const seeded = await seedLead();
     const adminToken = await login(adminEmail);
+    const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
     const existing = await prisma.meetingRequest.create({
       data: {
+        workspaceId: workspace.id,
         leadId: seeded.leadId,
         contactId: seeded.contactId,
         conversationId: null,

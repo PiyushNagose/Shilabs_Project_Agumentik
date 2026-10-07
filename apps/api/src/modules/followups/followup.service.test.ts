@@ -101,6 +101,7 @@ async function cleanup(): Promise<void> {
     where: { conversation: { lead: { source: "r13-followup-test" } } }
   });
   await prisma.conversation.deleteMany({ where: { lead: { source: "r13-followup-test" } } });
+  await prisma.activity.deleteMany({ where: { lead: { source: "r13-followup-test" } } });
   await prisma.auditEvent.deleteMany({
     where: { entityType: { in: ["FollowUpSequence", "FollowUpAttempt", "Lead"] } }
   });
@@ -125,12 +126,14 @@ async function seedActor() {
 }
 
 async function seedLead(input?: { doNotContact?: boolean }) {
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
   const stage = await prisma.pipelineStage.findFirstOrThrow({ where: { key: "NEW" } });
   const company = await prisma.company.create({
-    data: { name: `R13 Followup ${crypto.randomUUID()}` }
+    data: { workspaceId: workspace.id, name: `R13 Followup ${crypto.randomUUID()}` }
   });
   const contact = await prisma.contact.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       firstName: "R13",
       lastName: "Lead",
@@ -142,6 +145,7 @@ async function seedLead(input?: { doNotContact?: boolean }) {
   });
   return prisma.lead.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       contactId: contact.id,
       stageId: stage.id,

@@ -101,9 +101,21 @@ function toActivityDto(
   return {
     id: activity.id,
     leadId: activity.leadId,
+    entityType: activity.entityType,
+    entityId: activity.entityId ?? activity.leadId,
+    actorType: activity.actorType,
     actorUserId: activity.actorUserId,
+    actorAgentId: activity.actorAgentId,
+    sourceType: activity.sourceType,
+    sourceId: activity.sourceId,
     type: activity.type,
+    title: activity.title ?? activity.type.replaceAll("_", " ").toLowerCase(),
+    summary: activity.description,
     description: activity.description,
+    metadata: activity.metadata,
+    occurredAt: activity.occurredAt.toISOString(),
+    correlationId: activity.correlationId,
+    visibility: activity.visibility,
     createdAt: activity.createdAt.toISOString(),
     actorUser: activity.actorUser ? toPublicUser(activity.actorUser) : null
   };

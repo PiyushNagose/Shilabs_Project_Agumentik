@@ -22,10 +22,15 @@ export async function appendActivityToZohoTimeline(input: {
     include: { lead: true }
   });
   if (!activity) throw new AppError(404, "NOT_FOUND", "Activity not found");
+  if (!activity.workspaceId) {
+    throw new AppError(409, "CONFLICT", "Activity has no persisted workspace");
+  }
+  const workspaceId = activity.workspaceId;
 
   const existingMapping = await prisma.externalRecordMapping.findUnique({
     where: {
-      provider_entityType_localEntityId: {
+      workspaceId_provider_entityType_localEntityId: {
+        workspaceId,
         provider: "ZOHO_BIGIN",
         entityType: "ACTIVITY",
         localEntityId: activity.id
@@ -46,6 +51,7 @@ export async function appendActivityToZohoTimeline(input: {
   const config = getZohoBiginConfig(input.env);
   if (config.status === "NOT_CONFIGURED") {
     await upsertIntegrationAccount({
+      workspaceId,
       provider: "ZOHO_BIGIN",
       key: "default",
       displayName: "Zoho Bigin",
@@ -71,7 +77,8 @@ export async function appendActivityToZohoTimeline(input: {
 
   const leadMapping = await prisma.externalRecordMapping.findUnique({
     where: {
-      provider_entityType_localEntityId: {
+      workspaceId_provider_entityType_localEntityId: {
+        workspaceId,
         provider: "ZOHO_BIGIN",
         entityType: "LEAD",
         localEntityId: activity.leadId
@@ -83,6 +90,7 @@ export async function appendActivityToZohoTimeline(input: {
   }
 
   const account = await upsertIntegrationAccount({
+    workspaceId,
     provider: "ZOHO_BIGIN",
     key: "default",
     displayName: "Zoho Bigin",
@@ -111,13 +119,15 @@ export async function appendActivityToZohoTimeline(input: {
 
     const mapping = await prisma.externalRecordMapping.upsert({
       where: {
-        provider_entityType_localEntityId: {
+        workspaceId_provider_entityType_localEntityId: {
+          workspaceId,
           provider: "ZOHO_BIGIN",
           entityType: "ACTIVITY",
           localEntityId: activity.id
         }
       },
       create: {
+        workspaceId,
         integrationAccountId: account.id,
         provider: "ZOHO_BIGIN",
         entityType: "ACTIVITY",

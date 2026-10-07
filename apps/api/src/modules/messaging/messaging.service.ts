@@ -117,7 +117,7 @@ function publicProvider(provider: PersistedWhatsAppProvider): PublicWhatsAppProv
 async function findLeadForInboundWhatsApp(
   waId: string
 ): Promise<
-  | { ok: true; leadId: string; contactId: string; conversationId: string | null }
+  | { ok: true; workspaceId: string; leadId: string; contactId: string; conversationId: string | null }
   | { ok: false; code: string; message: string }
 > {
   const normalized = normalizePhone(waId);
@@ -158,8 +158,16 @@ async function findLeadForInboundWhatsApp(
       message: "No eligible lead matched WhatsApp sender"
     };
   }
+  if (!lead.workspaceId) {
+    return {
+      ok: false,
+      code: "WORKSPACE_CONTEXT_MISSING",
+      message: "Matched lead has no persisted workspace"
+    };
+  }
   return {
     ok: true,
+    workspaceId: lead.workspaceId,
     leadId: lead.id,
     contactId: lead.contactId,
     conversationId: lead.conversations[0]?.id ?? null
@@ -168,11 +176,12 @@ async function findLeadForInboundWhatsApp(
 
 async function stopIncompatibleAutomation(
   tx: Prisma.TransactionClient,
-  leadId: string
+  leadId: string,
+  workspaceId: string
 ): Promise<void> {
   const stoppedAt = new Date();
   const activeFollowUps = await tx.followUpSequence.findMany({
-    where: { leadId, status: "ACTIVE" },
+    where: { leadId, workspaceId, status: "ACTIVE" },
     include: { attempts: { where: { status: "SCHEDULED" } } }
   });
   for (const sequence of activeFollowUps) {
@@ -190,7 +199,7 @@ async function stopIncompatibleAutomation(
       }
     });
     await tx.domainEventOutbox.updateMany({
-      where: { correlationId: sequence.id, status: { in: ["PENDING", "QUEUED", "PROCESSING"] } },
+      where: { workspaceId, correlationId: sequence.id, status: { in: ["PENDING", "QUEUED", "PROCESSING"] } },
       data: {
         status: "ATTENTION_REQUIRED",
         deadLetteredAt: stoppedAt,
@@ -201,7 +210,7 @@ async function stopIncompatibleAutomation(
   }
 
   const activeCallingSequences = await tx.callingSequence.findMany({
-    where: { leadId, status: "ACTIVE" },
+    where: { leadId, workspaceId, status: "ACTIVE" },
     include: { attempts: { where: { status: "SCHEDULED" } } }
   });
   for (const sequence of activeCallingSequences) {
@@ -219,7 +228,7 @@ async function stopIncompatibleAutomation(
       }
     });
     await tx.domainEventOutbox.updateMany({
-      where: { correlationId: sequence.id, status: { in: ["PENDING", "QUEUED", "PROCESSING"] } },
+      where: { workspaceId, correlationId: sequence.id, status: { in: ["PENDING", "QUEUED", "PROCESSING"] } },
       data: {
         status: "ATTENTION_REQUIRED",
         deadLetteredAt: stoppedAt,
@@ -279,6 +288,7 @@ async function processStatus(
   await prisma.$transaction(async (tx) => {
     await tx.whatsAppProviderEvent.create({
       data: {
+        workspaceId: outbound?.workspaceId,
         provider: "META_WHATSAPP",
         providerEventId,
         providerMessageId: status.id,
@@ -302,6 +312,7 @@ async function processStatus(
     });
     await tx.activity.create({
       data: {
+        workspaceId: outbound.workspaceId,
         leadId: outbound.leadId,
         type: mapped.status === "FAILED" ? "WHATSAPP_FAILED" : "WHATSAPP_STATUS_UPDATED",
         description:
@@ -312,6 +323,7 @@ async function processStatus(
     });
     await tx.auditEvent.create({
       data: {
+        workspaceId: outbound.workspaceId,
         actorType: "SYSTEM",
         entityType: "OutboundWhatsAppMessage",
         entityId: outbound.id,
@@ -322,6 +334,7 @@ async function processStatus(
     await tx.domainEventOutbox.upsert({
       where: { idempotencyKey: `domain-event:whatsapp-status:${providerEventId}` },
       create: {
+        workspaceId: outbound.workspaceId,
         eventType:
           mapped.status === "FAILED" ? "WHATSAPP_DELIVERY_FAILED" : "WHATSAPP_STATUS_UPDATED",
         aggregateType: "OutboundWhatsAppMessage",
@@ -388,11 +401,18 @@ async function processInboundMessage(input: {
         match.conversationId ??
         (
           await tx.conversation.create({
-            data: { leadId: match.leadId, channel: "WHATSAPP", mode: "AUTO", status: "OPEN" }
+            data: {
+              workspaceId: match.workspaceId,
+              leadId: match.leadId,
+              channel: "WHATSAPP",
+              mode: "AUTO",
+              status: "OPEN"
+            }
           })
         ).id;
       const persistedMessage = await tx.message.create({
         data: {
+          workspaceId: match.workspaceId,
           conversationId,
           providerMessageId: message.id,
           direction: "INBOUND",
@@ -405,6 +425,7 @@ async function processInboundMessage(input: {
       });
       await tx.whatsAppProviderEvent.create({
         data: {
+          workspaceId: match.workspaceId,
           provider,
           providerEventId,
           providerMessageId: message.id,
@@ -423,6 +444,7 @@ async function processInboundMessage(input: {
       });
       await tx.activity.create({
         data: {
+          workspaceId: match.workspaceId,
           leadId: match.leadId,
           type: "WHATSAPP_RECEIVED",
           description: "Inbound WhatsApp reply received"
@@ -431,6 +453,7 @@ async function processInboundMessage(input: {
       await tx.auditEvent.createMany({
         data: [
           {
+            workspaceId: match.workspaceId,
             actorType: "SYSTEM",
             entityType: "Message",
             entityId: persistedMessage.id,
@@ -438,6 +461,7 @@ async function processInboundMessage(input: {
             after: { provider: publicProvider(provider), conversationId }
           },
           {
+            workspaceId: match.workspaceId,
             actorType: "SYSTEM",
             entityType: "Conversation",
             entityId: conversationId,
@@ -449,6 +473,7 @@ async function processInboundMessage(input: {
       await tx.domainEventOutbox.upsert({
         where: { idempotencyKey: `domain-event:whatsapp-reply:${persistedMessage.id}` },
         create: {
+          workspaceId: match.workspaceId,
           eventType: "MESSAGE_RECEIVED",
           aggregateType: "Message",
           aggregateId: persistedMessage.id,
@@ -463,7 +488,7 @@ async function processInboundMessage(input: {
         },
         update: {}
       });
-      await stopIncompatibleAutomation(tx, match.leadId);
+      await stopIncompatibleAutomation(tx, match.leadId, match.workspaceId);
       return { conversationId, messageId: persistedMessage.id };
     },
     { maxWait: 10000, timeout: 30000 }

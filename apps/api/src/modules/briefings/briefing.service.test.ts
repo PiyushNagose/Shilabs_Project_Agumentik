@@ -77,6 +77,7 @@ async function cleanup(): Promise<void> {
 }
 
 async function seedBase(): Promise<{ actor: Awaited<ReturnType<typeof prisma.user.create>>; leadId: string; kbVersionId: string }> {
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
   await prisma.pipelineStage.upsert({
     where: { key: "R26_BRIEFING_NEW" },
     update: {},
@@ -93,9 +94,12 @@ async function seedBase(): Promise<{ actor: Awaited<ReturnType<typeof prisma.use
       status: UserStatus.ACTIVE
     }
   });
-  const company = await prisma.company.create({ data: { name: "R26 Briefing Company" } });
+  const company = await prisma.company.create({
+    data: { workspaceId: workspace.id, name: "R26 Briefing Company" }
+  });
   const contact = await prisma.contact.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       firstName: "R26",
       lastName: "Prospect",
@@ -106,6 +110,7 @@ async function seedBase(): Promise<{ actor: Awaited<ReturnType<typeof prisma.use
   });
   const lead = await prisma.lead.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       contactId: contact.id,
       ownerId: actor.id,
@@ -127,10 +132,11 @@ async function seedBase(): Promise<{ actor: Awaited<ReturnType<typeof prisma.use
     }
   });
   const conversation = await prisma.conversation.create({
-    data: { leadId: lead.id, channel: "EMAIL", mode: "HUMAN" }
+    data: { workspaceId: workspace.id, leadId: lead.id, channel: "EMAIL", mode: "HUMAN" }
   });
   await prisma.message.create({
     data: {
+      workspaceId: workspace.id,
       conversationId: conversation.id,
       direction: "INBOUND",
       senderType: "PROSPECT",
@@ -172,6 +178,7 @@ async function seedMeeting(leadId: string, actorId: string): Promise<MeetingRequ
   const lead = await prisma.lead.findUniqueOrThrow({ where: { id: leadId } });
   const request = await prisma.meetingRequest.create({
     data: {
+      workspaceId: lead.workspaceId,
       leadId,
       contactId: lead.contactId,
       ownerId: actorId,
@@ -254,6 +261,7 @@ describe("R26 briefing service", () => {
     const conversation = await prisma.conversation.findFirstOrThrow({ where: { leadId } });
     const message = await prisma.message.create({
       data: {
+        workspaceId: conversation.workspaceId,
         conversationId: conversation.id,
         direction: "INBOUND",
         senderType: "PROSPECT",

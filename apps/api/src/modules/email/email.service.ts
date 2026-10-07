@@ -259,9 +259,12 @@ interface EmailSendEligibility {
   suppression: EmailSuppression | null;
 }
 
-async function assessLeadEmailSendEligibility(leadId: string): Promise<EmailSendEligibility> {
-  const lead = await prisma.lead.findUnique({
-    where: { id: leadId },
+async function assessLeadEmailSendEligibility(
+  leadId: string,
+  workspaceId: string | undefined
+): Promise<EmailSendEligibility> {
+  const lead = await prisma.lead.findFirst({
+    where: { id: leadId, workspaceId },
     include: { contact: true }
   });
   if (!lead) throw new AppError(404, "NOT_FOUND", "Lead not found");
@@ -522,7 +525,7 @@ export async function sendOutboundEmail(
   });
   if (existing) return toOutboundEmailDto(existing);
 
-  const eligibility = await assessLeadEmailSendEligibility(input.leadId);
+  const eligibility = await assessLeadEmailSendEligibility(input.leadId, actor.activeWorkspaceId);
   if (!eligibility.normalizedEmail || eligibility.code === "CONTACT_EMAIL_MISSING") {
     throw new AppError(409, "CONFLICT", eligibility.message ?? "Lead contact email is not usable");
   }
@@ -530,6 +533,7 @@ export async function sendOutboundEmail(
   const config = getSelectedEmailProviderConfig(options?.env);
   const created = await prisma.outboundEmail.create({
     data: {
+      workspaceId: eligibility.lead.workspaceId,
       leadId: eligibility.lead.id,
       contactId: eligibility.lead.contactId,
       actorUserId: actor.id,
@@ -594,6 +598,7 @@ export async function sendOutboundEmail(
 
       await tx.activity.create({
         data: {
+          workspaceId: eligibility.lead.workspaceId,
           leadId: eligibility.lead.id,
           actorUserId: actor.id,
           type: "MESSAGE_SENT",
@@ -602,6 +607,7 @@ export async function sendOutboundEmail(
       });
       await tx.auditEvent.create({
         data: {
+          workspaceId: eligibility.lead.workspaceId,
           actorType: "USER",
           actorId: actor.id,
           entityType: "OutboundEmail",
@@ -635,7 +641,9 @@ export async function validateOutboundEmailPreSend(
   input: ValidatePreSendEmailInput
 ): Promise<EmailPreSendValidationDto> {
   assertActiveEmailActor(actor);
-  return toPreSendValidationDto(await assessLeadEmailSendEligibility(input.leadId));
+  return toPreSendValidationDto(
+    await assessLeadEmailSendEligibility(input.leadId, actor.activeWorkspaceId)
+  );
 }
 
 export async function listEmailSuppressions(
@@ -962,6 +970,7 @@ export async function ingestSesFeedbackEvent(input: {
   const event = await prisma.$transaction(async (tx) => {
     const createdEvent = await tx.emailProviderEvent.create({
       data: {
+        workspaceId: outboundEmail?.workspaceId,
         provider: "AWS_SES",
         providerEventId: eventId,
         providerMessageId,
@@ -985,6 +994,7 @@ export async function ingestSesFeedbackEvent(input: {
 
       await tx.auditEvent.create({
         data: {
+          workspaceId: outboundEmail.workspaceId,
           actorType: "SYSTEM",
           entityType: "OutboundEmail",
           entityId: outboundEmail.id,
@@ -1131,8 +1141,8 @@ async function findLeadForInboundEmail(input: {
   headers: Map<string, string>;
   notification: SesInboundNotification;
 }): Promise<
-  | { ok: true; leadId: string; contactId: string; conversationId: string | null }
-  | { ok: false; code: string; message: string; leadId?: string; contactId?: string }
+  | { ok: true; workspaceId: string; leadId: string; contactId: string; conversationId: string | null }
+  | { ok: false; code: string; message: string; workspaceId?: string; leadId?: string; contactId?: string }
 > {
   const explicitLeadId =
     input.headers.get("x-shilabs-lead-id") ??
@@ -1148,6 +1158,7 @@ async function findLeadForInboundEmail(input: {
         ok: false,
         code: "CONTACT_EMAIL_MISMATCH",
         message: "Inbound sender does not match the referenced lead contact",
+        workspaceId: lead.workspaceId ?? undefined,
         leadId: lead.id,
         contactId: lead.contactId
       };
@@ -1157,12 +1168,17 @@ async function findLeadForInboundEmail(input: {
         ok: false,
         code: "LEAD_STATUS_FORBIDS_REPLY_PROCESSING",
         message: `Lead status ${lead.status} forbids automated reply processing`,
+        workspaceId: lead.workspaceId ?? undefined,
         leadId: lead.id,
         contactId: lead.contactId
       };
     }
+    if (!lead.workspaceId) {
+      return { ok: false, code: "WORKSPACE_CONTEXT_MISSING", message: "Referenced lead has no persisted workspace" };
+    }
     return {
       ok: true,
+      workspaceId: lead.workspaceId,
       leadId: lead.id,
       contactId: lead.contactId,
       conversationId: lead.conversations[0]?.id ?? null
@@ -1193,6 +1209,7 @@ async function findLeadForInboundEmail(input: {
           ok: false,
           code: "CONTACT_EMAIL_MISMATCH",
           message: "Inbound sender does not match the referenced outbound email contact",
+          workspaceId: outbound.lead.workspaceId ?? undefined,
           leadId: outbound.leadId,
           contactId: outbound.contactId
         };
@@ -1202,12 +1219,17 @@ async function findLeadForInboundEmail(input: {
           ok: false,
           code: "LEAD_STATUS_FORBIDS_REPLY_PROCESSING",
           message: `Lead status ${outbound.lead.status} forbids automated reply processing`,
+          workspaceId: outbound.lead.workspaceId ?? undefined,
           leadId: outbound.leadId,
           contactId: outbound.contactId
         };
       }
+      if (!outbound.lead.workspaceId) {
+        return { ok: false, code: "WORKSPACE_CONTEXT_MISSING", message: "Referenced lead has no persisted workspace" };
+      }
       return {
         ok: true,
+        workspaceId: outbound.lead.workspaceId,
         leadId: outbound.leadId,
         contactId: outbound.contactId,
         conversationId: outbound.lead.conversations[0]?.id ?? null
@@ -1234,12 +1256,17 @@ async function findLeadForInboundEmail(input: {
           ok: false,
           code: "CONTACT_EMAIL_MISMATCH",
           message: "Inbound sender does not match the referenced outbound email contact",
+          workspaceId: outbound.lead.workspaceId ?? undefined,
           leadId: outbound.leadId,
           contactId: outbound.contactId
         };
       }
+      if (!outbound.lead.workspaceId) {
+        return { ok: false, code: "WORKSPACE_CONTEXT_MISSING", message: "Referenced lead has no persisted workspace" };
+      }
       return {
         ok: true,
+        workspaceId: outbound.lead.workspaceId,
         leadId: outbound.leadId,
         contactId: outbound.contactId,
         conversationId: outbound.lead.conversations[0]?.id ?? null
@@ -1279,8 +1306,12 @@ async function findLeadForInboundEmail(input: {
       message: "No eligible lead matched the inbound sender"
     };
   }
+  if (!lead.workspaceId) {
+    return { ok: false, code: "WORKSPACE_CONTEXT_MISSING", message: "Matched lead has no persisted workspace" };
+  }
   return {
     ok: true,
+    workspaceId: lead.workspaceId,
     leadId: lead.id,
     contactId: lead.contactId,
     conversationId: lead.conversations[0]?.id ?? null
@@ -1367,6 +1398,7 @@ export async function ingestSesInboundEmail(input: {
   if (!match.ok) {
     const failed = await prisma.inboundEmail.create({
       data: {
+        workspaceId: match.workspaceId,
         provider: "AWS_SES",
         providerMessageId: notification.mail.messageId,
         providerEventId: eventId,
@@ -1397,6 +1429,7 @@ export async function ingestSesInboundEmail(input: {
         (
           await tx.conversation.create({
             data: {
+              workspaceId: match.workspaceId,
               leadId: match.leadId,
               channel: "EMAIL",
               mode: "AUTO",
@@ -1408,6 +1441,7 @@ export async function ingestSesInboundEmail(input: {
 
       const message = await tx.message.create({
         data: {
+          workspaceId: match.workspaceId,
           conversationId: conversation,
           providerMessageId: notification.mail.messageId,
           direction: "INBOUND",
@@ -1428,6 +1462,7 @@ export async function ingestSesInboundEmail(input: {
 
       const inbound = await tx.inboundEmail.create({
         data: {
+          workspaceId: match.workspaceId,
           provider: "AWS_SES",
           providerMessageId: notification.mail.messageId,
           providerEventId: eventId,
@@ -1459,6 +1494,7 @@ export async function ingestSesInboundEmail(input: {
       });
       await tx.activity.create({
         data: {
+          workspaceId: match.workspaceId,
           leadId: match.leadId,
           type: "MESSAGE_RECEIVED",
           description: `Inbound email received from ${fromEmail}: ${subject ?? "No subject"}`
@@ -1466,6 +1502,7 @@ export async function ingestSesInboundEmail(input: {
       });
       await tx.emailProviderEvent.create({
         data: {
+          workspaceId: match.workspaceId,
           provider: "AWS_SES",
           providerEventId: eventId,
           providerMessageId: notification.mail.messageId,
@@ -1477,6 +1514,7 @@ export async function ingestSesInboundEmail(input: {
       await tx.auditEvent.createMany({
         data: [
           {
+            workspaceId: match.workspaceId,
             actorType: "SYSTEM",
             entityType: "InboundEmail",
             entityId: inbound.id,
@@ -1489,6 +1527,7 @@ export async function ingestSesInboundEmail(input: {
             }
           },
           {
+            workspaceId: match.workspaceId,
             actorType: "SYSTEM",
             entityType: "Message",
             entityId: message.id,
@@ -1501,7 +1540,7 @@ export async function ingestSesInboundEmail(input: {
         ]
       });
       const activeFollowUps = await tx.followUpSequence.findMany({
-        where: { leadId: match.leadId, status: "ACTIVE" },
+        where: { leadId: match.leadId, workspaceId: match.workspaceId, status: "ACTIVE" },
         include: { attempts: { where: { status: "SCHEDULED" } } }
       });
       const stoppedAt = new Date();
@@ -1525,6 +1564,7 @@ export async function ingestSesInboundEmail(input: {
         });
         await tx.domainEventOutbox.updateMany({
           where: {
+            workspaceId: match.workspaceId,
             id: {
               in: sequence.attempts
                 .map((attempt) => attempt.domainEventId)
@@ -1541,6 +1581,7 @@ export async function ingestSesInboundEmail(input: {
         });
         await tx.auditEvent.create({
           data: {
+            workspaceId: match.workspaceId,
             actorType: "SYSTEM",
             entityType: "FollowUpSequence",
             entityId: sequence.id,
@@ -1551,7 +1592,7 @@ export async function ingestSesInboundEmail(input: {
       }
 
       const activeCallingSequences = await tx.callingSequence.findMany({
-        where: { leadId: match.leadId, status: "ACTIVE" },
+        where: { leadId: match.leadId, workspaceId: match.workspaceId, status: "ACTIVE" },
         include: { attempts: { where: { status: "SCHEDULED" } } }
       });
       for (const sequence of activeCallingSequences) {
@@ -1574,6 +1615,7 @@ export async function ingestSesInboundEmail(input: {
         });
         await tx.domainEventOutbox.updateMany({
           where: {
+            workspaceId: match.workspaceId,
             OR: [
               {
                 id: {
@@ -1595,6 +1637,7 @@ export async function ingestSesInboundEmail(input: {
         });
         await tx.auditEvent.create({
           data: {
+            workspaceId: match.workspaceId,
             actorType: "SYSTEM",
             entityType: "CallingSequence",
             entityId: sequence.id,

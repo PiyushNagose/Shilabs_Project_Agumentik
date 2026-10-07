@@ -138,6 +138,7 @@ async function seedActor() {
 }
 
 async function seedLeadAndDeal() {
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
   const stage = await prisma.pipelineStage.upsert({
     where: { key: "PROPOSAL" },
     create: {
@@ -160,12 +161,14 @@ async function seedLeadAndDeal() {
   });
   const company = await prisma.company.create({
     data: {
+      workspaceId: workspace.id,
       name: `R15 Proposal ${randomUUID()}`,
       website: "https://client.example"
     }
   });
   const contact = await prisma.contact.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       firstName: "Proposal",
       lastName: "Lead",
@@ -176,6 +179,7 @@ async function seedLeadAndDeal() {
   });
   const lead = await prisma.lead.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       contactId: contact.id,
       stageId: stage.id,
@@ -186,6 +190,7 @@ async function seedLeadAndDeal() {
   });
   const deal = await prisma.deal.create({
     data: {
+      workspaceId: workspace.id,
       leadId: lead.id,
       stageId: stage.id,
       probability: stage.probability,
@@ -322,8 +327,8 @@ describe("R15 proposal generation service", () => {
     expect(result.run.status).toBe("FAILED");
     expect(result.run.failureMessage).toContain("SEMrush is not configured");
     await expect(
-      prisma.integrationAccount.findUnique({
-        where: { provider_key: { provider: "SEMRUSH", key: "default" } }
+      prisma.integrationAccount.findFirst({
+        where: { provider: "SEMRUSH", key: "default" }
       })
     ).resolves.toMatchObject({ status: "NOT_CONFIGURED" });
   });

@@ -2,18 +2,25 @@ import { Router } from "express";
 import { z } from "zod";
 import { asyncHandler } from "../../middleware/async-handler.js";
 import { AppError } from "../../shared/errors.js";
-import {
-  isInternalRealtimePublishAuthorized,
-  publishRealtimeEvent
-} from "./realtime.service.js";
+import { isInternalRealtimePublishAuthorized, publishRealtimeEvent } from "./realtime.service.js";
 
 const realtimeEventSchema = z.object({
-  entityType: z.enum(["workspace", "lead", "dashboard", "operations", "notifications", "domain-event"]),
+  entityType: z.enum([
+    "workspace",
+    "lead",
+    "task",
+    "activity",
+    "dashboard",
+    "operations",
+    "notifications",
+    "domain-event"
+  ]),
   action: z.string().trim().min(1),
   leadId: z.string().trim().min(1).nullable().optional(),
   conversationId: z.string().trim().min(1).nullable().optional(),
   domainEventId: z.string().trim().min(1).nullable().optional(),
-  sourceEventType: z.string().trim().min(1).nullable().optional()
+  sourceEventType: z.string().trim().min(1).nullable().optional(),
+  taskId: z.string().trim().min(1).nullable().optional()
 });
 
 export const realtimeRoutes = Router();
@@ -32,9 +39,9 @@ realtimeRoutes.post(
       leadId: parsed.leadId ?? null,
       conversationId: parsed.conversationId ?? null,
       domainEventId: parsed.domainEventId ?? null,
-      sourceEventType: parsed.sourceEventType ?? null
+      sourceEventType: parsed.sourceEventType ?? null,
+      taskId: parsed.taskId ?? null
     });
     response.status(202).json({ accepted: true });
   })
 );
-

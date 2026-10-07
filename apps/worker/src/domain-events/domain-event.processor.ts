@@ -103,8 +103,8 @@ async function hydrateCommunicationContext(event: DomainEventOutbox): Promise<Do
   if (typeof payload.leadId === "string") return event;
 
   if (event.aggregateType === "CallingAttempt") {
-    const attempt = await workerPrisma.callingAttempt.findUnique({
-      where: { id: event.aggregateId },
+    const attempt = await workerPrisma.callingAttempt.findFirst({
+      where: { id: event.aggregateId, sequence: { workspaceId: event.workspaceId } },
       select: { id: true, leadId: true, contactId: true, sequenceId: true }
     });
     if (!attempt) return event;
@@ -122,8 +122,8 @@ async function hydrateCommunicationContext(event: DomainEventOutbox): Promise<Do
   }
 
   if (event.aggregateType === "FollowUpAttempt") {
-    const attempt = await workerPrisma.followUpAttempt.findUnique({
-      where: { id: event.aggregateId },
+    const attempt = await workerPrisma.followUpAttempt.findFirst({
+      where: { id: event.aggregateId, sequence: { workspaceId: event.workspaceId } },
       select: {
         id: true,
         leadId: true,
@@ -148,8 +148,8 @@ async function hydrateCommunicationContext(event: DomainEventOutbox): Promise<Do
   }
 
   if (event.aggregateType === "OutboundWhatsAppMessage") {
-    const message = await workerPrisma.outboundWhatsAppMessage.findUnique({
-      where: { id: event.aggregateId },
+    const message = await workerPrisma.outboundWhatsAppMessage.findFirst({
+      where: { id: event.aggregateId, workspaceId: event.workspaceId },
       select: { leadId: true, contactId: true, conversationId: true, callingAttemptId: true }
     });
     if (!message) return event;
@@ -169,6 +169,12 @@ async function hydrateCommunicationContext(event: DomainEventOutbox): Promise<Do
 }
 
 async function processEvent(event: DomainEventOutbox, handlers: DomainEventHandlerMap): Promise<void> {
+  if (!event.workspaceId) {
+    throw new PermanentDomainEventError(
+      "WORKSPACE_CONTEXT_MISSING",
+      "Domain event cannot execute without a persisted workspace"
+    );
+  }
   const hydratedEvent = await hydrateCommunicationContext(event);
   await assertExecutionEligible(hydratedEvent);
   const handler = handlers[hydratedEvent.eventType];

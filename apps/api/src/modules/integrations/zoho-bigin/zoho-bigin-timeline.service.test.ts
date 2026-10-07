@@ -69,6 +69,7 @@ async function cleanup(): Promise<void> {
 }
 
 async function createMappedActivity(): Promise<string> {
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
   const user = await prisma.user.upsert({
     where: { email: actorEmail },
     create: {
@@ -82,9 +83,10 @@ async function createMappedActivity(): Promise<string> {
     update: {}
   });
   const stage = await prisma.pipelineStage.findUniqueOrThrow({ where: { key: "NEW" } });
-  const company = await prisma.company.create({ data: { name: "R4 Timeline Company" } });
+  const company = await prisma.company.create({ data: { workspaceId: workspace.id, name: "R4 Timeline Company" } });
   const contact = await prisma.contact.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       firstName: "Timeline",
       lastName: "Contact",
@@ -94,6 +96,7 @@ async function createMappedActivity(): Promise<string> {
   });
   const lead = await prisma.lead.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       contactId: contact.id,
       stageId: stage.id,
@@ -102,6 +105,7 @@ async function createMappedActivity(): Promise<string> {
   });
   const activity = await prisma.activity.create({
     data: {
+      workspaceId: workspace.id,
       leadId: lead.id,
       actorUserId: user.id,
       type: "NOTE_ADDED",
@@ -110,6 +114,7 @@ async function createMappedActivity(): Promise<string> {
   });
   await prisma.externalRecordMapping.create({
     data: {
+      workspaceId: workspace.id,
       provider: "ZOHO_BIGIN",
       entityType: "LEAD",
       localEntityId: lead.id,
@@ -159,13 +164,11 @@ describe("Zoho timeline append", () => {
 
     expect(result.status).toBe("FAILED");
     await expect(
-      prisma.externalRecordMapping.findUnique({
+      prisma.externalRecordMapping.findFirst({
         where: {
-          provider_entityType_localEntityId: {
-            provider: "ZOHO_BIGIN",
-            entityType: "ACTIVITY",
-            localEntityId: activityId
-          }
+          provider: "ZOHO_BIGIN",
+          entityType: "ACTIVITY",
+          localEntityId: activityId
         }
       })
     ).resolves.toBeNull();

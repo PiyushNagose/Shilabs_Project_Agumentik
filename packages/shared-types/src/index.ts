@@ -181,9 +181,16 @@ export const ACTIVITY_TYPES = [
   "WHATSAPP_RECEIVED",
   "WHATSAPP_FAILED",
   "AGENT_CORRECTION_RECORDED",
-  "BRIEFING_GENERATED"
+  "BRIEFING_GENERATED",
+  "TASK_CREATED",
+  "TASK_UPDATED",
+  "TASK_COMPLETED"
 ] as const;
 export type ActivityTypeName = (typeof ACTIVITY_TYPES)[number];
+
+export const ACTIVITY_VISIBILITIES = ["BUSINESS", "INTERNAL"] as const;
+export type ActivityVisibilityName = (typeof ACTIVITY_VISIBILITIES)[number];
+export type ActivityActorTypeName = "USER" | "SYSTEM" | "AGENT" | "WORKFLOW" | "PROVIDER";
 
 export interface DealDto {
   id: string;
@@ -355,11 +362,60 @@ export interface ProposalSendResultDto {
 export interface ActivityDto {
   id: string;
   leadId: string;
+  entityType: string;
+  entityId: string;
+  actorType: ActivityActorTypeName;
   actorUserId: string | null;
+  actorAgentId: string | null;
+  sourceType: string | null;
+  sourceId: string | null;
   type: ActivityTypeName;
+  title: string;
+  summary: string;
   description: string;
+  metadata: unknown;
+  occurredAt: string;
+  correlationId: string | null;
+  visibility: ActivityVisibilityName;
   createdAt: string;
   actorUser: PublicUser | null;
+}
+
+export const TASK_STATUSES = ["OPEN", "IN_PROGRESS", "COMPLETED", "CANCELED"] as const;
+export type TaskStatusName = (typeof TASK_STATUSES)[number];
+export const TASK_PRIORITIES = ["LOW", "NORMAL", "HIGH", "URGENT"] as const;
+export type TaskPriorityName = (typeof TASK_PRIORITIES)[number];
+export const TASK_CREATOR_TYPES = ["USER", "SYSTEM", "AGENT", "WORKFLOW"] as const;
+export type TaskCreatorTypeName = (typeof TASK_CREATOR_TYPES)[number];
+
+export interface TaskDto {
+  id: string;
+  workspaceId: string;
+  title: string;
+  description: string | null;
+  status: TaskStatusName;
+  priority: TaskPriorityName;
+  dueAt: string | null;
+  reminderAt: string | null;
+  assignedToUserId: string | null;
+  createdByType: TaskCreatorTypeName;
+  createdByUserId: string | null;
+  createdByAgentId: string | null;
+  sourceType: string | null;
+  sourceId: string | null;
+  leadId: string | null;
+  contactId: string | null;
+  companyId: string | null;
+  dealId: string | null;
+  isNextAction: boolean;
+  completedAt: string | null;
+  completedByType: TaskCreatorTypeName | null;
+  completedByUserId: string | null;
+  metadata: unknown;
+  correlationId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  assignedToUser: PublicUser | null;
 }
 
 export const CONVERSATION_CHANNELS = ["WEBSITE", "WHATSAPP", "EMAIL", "INTERNAL"] as const;

@@ -5,9 +5,17 @@ import { UserRole } from "@prisma/client";
 import { verifyAccessToken } from "../auth/auth.service.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
 import { prisma } from "../../shared/prisma.js";
+import { resolveWorkspaceContext } from "../workspaces/workspace.service.js";
 
 export type RealtimeEntityType =
-  "workspace" | "lead" | "dashboard" | "operations" | "notifications" | "domain-event";
+  | "workspace"
+  | "lead"
+  | "task"
+  | "activity"
+  | "dashboard"
+  | "operations"
+  | "notifications"
+  | "domain-event";
 
 export interface RealtimeEvent {
   type: "realtime:update";
@@ -17,12 +25,14 @@ export interface RealtimeEvent {
   conversationId?: string | null;
   domainEventId?: string | null;
   sourceEventType?: string | null;
+  taskId?: string | null;
   occurredAt: string;
 }
 
 interface RealtimeClient {
   socket: WebSocket;
   user: AuthenticatedUser;
+  workspaceId: string;
 }
 
 const clients = new Map<WebSocket, RealtimeClient>();
@@ -36,10 +46,64 @@ function canReceiveLeadEvent(user: AuthenticatedUser, ownerId: string | null | u
   return ownerId === null || ownerId === user.id;
 }
 
-async function ownerIdForLead(leadId: string | null | undefined): Promise<string | null> {
-  if (!leadId) return null;
-  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { ownerId: true } });
-  return lead?.ownerId ?? null;
+export async function resolveRealtimeEventScope(input: {
+  leadId?: string | null;
+  conversationId?: string | null;
+  domainEventId?: string | null;
+  taskId?: string | null;
+}): Promise<{ workspaceId: string; ownerId: string | null } | null> {
+  const [lead, conversation, domainEvent, task] = await Promise.all([
+    input.leadId
+      ? prisma.lead.findUnique({
+          where: { id: input.leadId },
+          select: { workspaceId: true, ownerId: true }
+        })
+      : null,
+    input.conversationId
+      ? prisma.conversation.findUnique({
+          where: { id: input.conversationId },
+          select: { workspaceId: true, lead: { select: { workspaceId: true, ownerId: true } } }
+        })
+      : null,
+    input.domainEventId
+      ? prisma.domainEventOutbox.findUnique({
+          where: { id: input.domainEventId },
+          select: { workspaceId: true }
+        })
+      : null,
+    input.taskId
+      ? prisma.task.findUnique({
+          where: { id: input.taskId },
+          select: { workspaceId: true, lead: { select: { workspaceId: true, ownerId: true } } }
+        })
+      : null
+  ]);
+  const scopes = [
+    lead?.workspaceId,
+    conversation?.workspaceId ?? conversation?.lead.workspaceId,
+    domainEvent?.workspaceId,
+    task?.workspaceId,
+    task?.lead?.workspaceId
+  ].filter((value): value is string => Boolean(value));
+  if (scopes.length === 0) return null;
+  if (new Set(scopes).size !== 1) return null;
+  const workspaceId = scopes[0];
+  if (!workspaceId) return null;
+  return {
+    workspaceId,
+    ownerId: lead?.ownerId ?? conversation?.lead.ownerId ?? task?.lead?.ownerId ?? null
+  };
+}
+
+export function canDeliverRealtimeEvent(input: {
+  clientWorkspaceId: string;
+  eventWorkspaceId: string;
+  user: AuthenticatedUser;
+  ownerId: string | null;
+  hasLeadScope: boolean;
+}): boolean {
+  if (input.clientWorkspaceId !== input.eventWorkspaceId) return false;
+  return !input.hasLeadScope || canReceiveLeadEvent(input.user, input.ownerId);
 }
 
 export async function publishRealtimeEvent(
@@ -50,11 +114,21 @@ export async function publishRealtimeEvent(
     occurredAt: new Date().toISOString(),
     ...input
   };
-  const ownerId = await ownerIdForLead(event.leadId);
+  const scope = await resolveRealtimeEventScope(event);
+  if (!scope) return;
   const message = jsonMessage(event);
   for (const client of clients.values()) {
     if (client.socket.readyState !== WebSocket.OPEN) continue;
-    if (event.leadId && !canReceiveLeadEvent(client.user, ownerId)) continue;
+    if (
+      !canDeliverRealtimeEvent({
+        clientWorkspaceId: client.workspaceId,
+        eventWorkspaceId: scope.workspaceId,
+        user: client.user,
+        ownerId: scope.ownerId,
+        hasLeadScope: Boolean(event.leadId ?? event.conversationId ?? event.taskId)
+      })
+    )
+      continue;
     client.socket.send(message);
   }
 }
@@ -75,8 +149,17 @@ export function installRealtimeWebSocketServer(server: Server): () => Promise<vo
     }
 
     void verifyAccessToken(token)
-      .then((user) => {
-        (request as IncomingMessage & { realtimeUser?: AuthenticatedUser }).realtimeUser = user;
+      .then(async (user) => {
+        const workspace = await resolveWorkspaceContext(
+          user.id,
+          url.searchParams.get("workspaceId") ?? undefined
+        );
+        const realtimeRequest = request as IncomingMessage & {
+          realtimeUser?: AuthenticatedUser;
+          realtimeWorkspaceId?: string;
+        };
+        realtimeRequest.realtimeUser = user;
+        realtimeRequest.realtimeWorkspaceId = workspace.workspaceId;
         wss.handleUpgrade(request, socket, head, (ws) => {
           wss.emit("connection", ws, request);
         });
@@ -88,16 +171,22 @@ export function installRealtimeWebSocketServer(server: Server): () => Promise<vo
   });
 
   wss.on("connection", (socket: WebSocket, request: IncomingMessage) => {
-    const user = (request as IncomingMessage & { realtimeUser?: AuthenticatedUser }).realtimeUser;
-    if (!user) {
+    const realtimeRequest = request as IncomingMessage & {
+      realtimeUser?: AuthenticatedUser;
+      realtimeWorkspaceId?: string;
+    };
+    const user = realtimeRequest.realtimeUser;
+    const workspaceId = realtimeRequest.realtimeWorkspaceId;
+    if (!user || !workspaceId) {
       socket.close(1008, "Authentication required");
       return;
     }
-    clients.set(socket, { socket, user });
+    clients.set(socket, { socket, user, workspaceId });
     socket.send(
       JSON.stringify({
         type: "realtime:connected",
         userId: user.id,
+        workspaceId,
         occurredAt: new Date().toISOString()
       })
     );

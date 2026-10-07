@@ -30,6 +30,57 @@ export interface PublishDomainEventInput {
   client?: TransactionClient;
 }
 
+async function trustedWorkspaceIdForEvent(input: PublishDomainEventInput): Promise<string> {
+  const client = input.client ?? prisma;
+  const onlyActiveWorkspaceId = async (): Promise<string> => {
+    const workspaces = await client.workspace.findMany({
+      where: { status: "ACTIVE" },
+      select: { id: true },
+      take: 2
+    });
+    if (workspaces.length !== 1 || !workspaces[0]) {
+      throw new AppError(409, "CONFLICT", "Domain event workspace could not be derived safely");
+    }
+    return workspaces[0].id;
+  };
+  const payload = input.payload as Prisma.JsonObject;
+  const leadId = typeof payload.leadId === "string" ? payload.leadId : null;
+  if (leadId) {
+    const lead = await client.lead.findUnique({ where: { id: leadId }, select: { workspaceId: true } });
+    if (!lead) throw new AppError(409, "CONFLICT", "Domain event lead is not persisted");
+    if (!lead.workspaceId) {
+      throw new AppError(409, "CONFLICT", "Domain event lead has no persisted workspace");
+    }
+    return lead.workspaceId;
+  }
+
+  const aggregateWorkspace =
+    input.aggregateType === "VoiceCallAttempt"
+      ? await client.voiceCallAttempt.findUnique({
+          where: { id: input.aggregateId },
+          select: { lead: { select: { workspaceId: true } } }
+        }).then((record) => record?.lead.workspaceId ?? null)
+      : input.aggregateType === "MeetingRequest"
+        ? await client.meetingRequest.findUnique({
+            where: { id: input.aggregateId },
+            select: { workspaceId: true }
+          }).then((record) => record?.workspaceId ?? null)
+        : input.aggregateType === "Proposal"
+          ? await client.proposal.findUnique({
+              where: { id: input.aggregateId },
+              select: { workspaceId: true }
+            }).then((record) => record?.workspaceId ?? null)
+          : input.aggregateType === "InternalNotification"
+            ? await client.internalNotification.findUnique({
+                where: { id: input.aggregateId },
+                select: { workspaceId: true }
+              }).then((record) => record?.workspaceId ?? null)
+          : null;
+  if (aggregateWorkspace) return aggregateWorkspace;
+
+  return onlyActiveWorkspaceId();
+}
+
 export function canPublishDomainEventRealtimeImmediately(
   client: TransactionClient | undefined
 ): boolean {
@@ -72,9 +123,17 @@ export async function publishDomainEvent(
     throw new AppError(400, "VALIDATION_ERROR", "maxAttempts must be at least 1");
   }
 
+  const client = input.client ?? prisma;
+  const existing = await client.domainEventOutbox.findUnique({
+    where: { idempotencyKey: input.idempotencyKey }
+  });
+  if (existing) return toDomainEventDto(existing);
+
+  const workspaceId = await trustedWorkspaceIdForEvent(input);
   const event = await upsertDomainEvent({
     client: input.client,
     data: {
+      workspaceId,
       eventType: input.eventType,
       aggregateType: input.aggregateType,
       aggregateId: input.aggregateId,
@@ -104,10 +163,12 @@ export async function publishDomainEvent(
 }
 
 export async function listDomainEvents(
+  actor: AuthenticatedUser,
   query: ListDomainEventsQuery
 ): Promise<DomainEventOutboxDto[]> {
   const events = await listDomainEventRecords({
     where: {
+      workspaceId: actor.activeWorkspaceId,
       status: query.status,
       eventType: query.eventType,
       aggregateType: query.aggregateType,
@@ -148,7 +209,9 @@ export async function retryDomainEvent(
   id: string
 ): Promise<DomainEventOutboxDto> {
   return prisma.$transaction(async (tx) => {
-    const existing = await tx.domainEventOutbox.findUnique({ where: { id } });
+    const existing = await tx.domainEventOutbox.findFirst({
+      where: { id, workspaceId: actor.activeWorkspaceId }
+    });
     if (!existing) {
       throw new AppError(404, "NOT_FOUND", "Domain event not found");
     }
@@ -160,7 +223,7 @@ export async function retryDomainEvent(
       );
     }
     const updated = await tx.domainEventOutbox.updateMany({
-      where: { id, status: existing.status },
+      where: { id, workspaceId: actor.activeWorkspaceId, status: existing.status },
       data: {
         status: "PENDING",
         attempts: 0,
@@ -181,9 +244,12 @@ export async function retryDomainEvent(
     if (updated.count !== 1) {
       throw new AppError(409, "CONFLICT", "Domain event state changed before retry was accepted");
     }
-    const event = await tx.domainEventOutbox.findUniqueOrThrow({ where: { id } });
+    const event = await tx.domainEventOutbox.findFirstOrThrow({
+      where: { id, workspaceId: actor.activeWorkspaceId }
+    });
     await tx.auditEvent.create({
       data: {
+        workspaceId: actor.activeWorkspaceId,
         actorType: "USER",
         actorId: actor.id,
         entityType: "DomainEventOutbox",

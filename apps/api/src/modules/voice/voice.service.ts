@@ -402,6 +402,7 @@ async function markCallBlocked(input: {
     });
     await tx.activity.create({
       data: {
+        workspaceId: updated.workspaceId,
         leadId: input.leadId,
         actorUserId: input.actorId,
         type: "CALL_FAILED",
@@ -410,6 +411,7 @@ async function markCallBlocked(input: {
     });
     await tx.auditEvent.create({
       data: {
+        workspaceId: updated.workspaceId,
         actorType: "USER",
         actorId: input.actorId,
         entityType: "VoiceCallAttempt",
@@ -459,6 +461,7 @@ export async function createManualVoiceCall(
   const providerName = providerDisplayName(config);
   const created = await prisma.voiceCallAttempt.create({
     data: {
+      workspaceId: lead.workspaceId,
       leadId: lead.id,
       contactId: lead.contactId,
       actorUserId: actor.id,
@@ -599,6 +602,7 @@ export async function createManualVoiceCall(
     });
     await tx.activity.create({
       data: {
+        workspaceId: lead.workspaceId,
         leadId: lead.id,
         actorUserId: actor.id,
         type: "CALL_REQUESTED",
@@ -607,6 +611,7 @@ export async function createManualVoiceCall(
     });
     await tx.auditEvent.create({
       data: {
+        workspaceId: lead.workspaceId,
         actorType: "USER",
         actorId: actor.id,
         entityType: "VoiceCallAttempt",
@@ -633,6 +638,7 @@ export async function createManualVoiceCall(
   }, voiceTransactionOptions);
 
   await upsertExternalRecordMapping({
+    workspaceId: lead.workspaceId,
     provider,
     entityType: "CALL",
     localEntityId: accepted.id,
@@ -702,6 +708,7 @@ export async function ingestTwilioStatusWebhook(input: {
   const event = await prisma.$transaction(async (tx) => {
     const createdEvent = await tx.voiceProviderEvent.create({
       data: {
+        workspaceId: call?.workspaceId,
         provider: "TWILIO",
         providerEventId: eventId,
         providerCallId: input.body.CallSid,
@@ -741,6 +748,7 @@ export async function ingestTwilioStatusWebhook(input: {
       }
       await tx.activity.create({
         data: {
+          workspaceId: call.workspaceId,
           leadId: call.leadId,
           type: status === "FAILED" ? "CALL_FAILED" : "CALL_STATUS_UPDATED",
           description: `Twilio call status: ${input.body.CallStatus}`
@@ -748,6 +756,7 @@ export async function ingestTwilioStatusWebhook(input: {
       });
       await tx.auditEvent.create({
         data: {
+          workspaceId: call.workspaceId,
           actorType: "SYSTEM",
           entityType: "VoiceCallAttempt",
           entityId: call.id,
@@ -824,6 +833,7 @@ export async function ingestTwilioRecordingWebhook(input: {
   const event = await prisma.$transaction(async (tx) => {
     const createdEvent = await tx.voiceProviderEvent.create({
       data: {
+        workspaceId: call?.workspaceId,
         provider: "TWILIO",
         providerEventId: eventId,
         providerCallId: input.body.CallSid,
@@ -899,6 +909,7 @@ export async function ingestExotelStatusWebhook(input: {
   const event = await prisma.$transaction(async (tx) => {
     const createdEvent = await tx.voiceProviderEvent.create({
       data: {
+        workspaceId: call?.workspaceId,
         provider: "EXOTEL",
         providerEventId: eventId,
         providerCallId,
@@ -944,6 +955,7 @@ export async function ingestExotelStatusWebhook(input: {
       }
       await tx.activity.create({
         data: {
+          workspaceId: call.workspaceId,
           leadId: call.leadId,
           type: status === "COMPLETED" ? "CALL_STATUS_UPDATED" : "CALL_FAILED",
           description:
@@ -954,6 +966,7 @@ export async function ingestExotelStatusWebhook(input: {
       });
       await tx.auditEvent.create({
         data: {
+          workspaceId: call.workspaceId,
           actorType: "SYSTEM",
           entityType: "VoiceCallAttempt",
           entityId: call.id,

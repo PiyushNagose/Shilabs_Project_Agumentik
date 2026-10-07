@@ -36,6 +36,11 @@ async function cleanup(): Promise<void> {
   await workerPrisma.contact.deleteMany({ where: { source: "r12-worker-test" } });
   await workerPrisma.company.deleteMany({ where: { name: { startsWith: "R12 " } } });
   await workerPrisma.user.deleteMany({ where: { email: "r12-worker-owner@example.local" } });
+  await workerPrisma.workspace.deleteMany({ where: { slug: "r12-isolation" } });
+}
+
+async function defaultWorkspaceId(): Promise<string> {
+  return (await workerPrisma.workspace.findUniqueOrThrow({ where: { slug: "default" } })).id;
 }
 
 async function createEvent(input?: {
@@ -45,9 +50,12 @@ async function createEvent(input?: {
   payload?: Prisma.InputJsonValue;
   attempts?: number;
   maxAttempts?: number;
+  workspaceId?: string;
 }) {
+  const workspaceId = input?.workspaceId ?? await defaultWorkspaceId();
   return workerPrisma.domainEventOutbox.create({
     data: {
+      workspaceId,
       eventType: input?.eventType ?? "REPLY_UNDERSTOOD",
       aggregateType: input?.aggregateType ?? "ReplyProcessingRun",
       aggregateId: input?.aggregateId ?? `r12-run-${crypto.randomUUID()}`,
@@ -63,12 +71,18 @@ async function createEvent(input?: {
 }
 
 async function createBlockedLeadFixture() {
-  const stage = await workerPrisma.pipelineStage.findFirstOrThrow({ where: { key: "NEW" } });
+  const workspaceId = await defaultWorkspaceId();
+  const stage = await workerPrisma.pipelineStage.upsert({
+    where: { key: "NEW" },
+    create: { workspaceId, key: "NEW", label: "New", order: 0, probability: 0 },
+    update: { workspaceId }
+  });
   const company = await workerPrisma.company.create({
-    data: { name: `R12 Company ${crypto.randomUUID()}` }
+    data: { workspaceId, name: `R12 Company ${crypto.randomUUID()}` }
   });
   const contact = await workerPrisma.contact.create({
     data: {
+      workspaceId,
       companyId: company.id,
       firstName: "R12",
       lastName: "Blocked",
@@ -80,6 +94,7 @@ async function createBlockedLeadFixture() {
   });
   const lead = await workerPrisma.lead.create({
     data: {
+      workspaceId,
       companyId: company.id,
       contactId: contact.id,
       stageId: stage.id,
@@ -88,7 +103,7 @@ async function createBlockedLeadFixture() {
     }
   });
   const conversation = await workerPrisma.conversation.create({
-    data: { leadId: lead.id, channel: "EMAIL", mode: "AUTO" }
+    data: { workspaceId, leadId: lead.id, channel: "EMAIL", mode: "AUTO" }
   });
   return { lead, conversation };
 }
@@ -277,6 +292,7 @@ describe("R12 domain event worker", () => {
     });
     const sequence = await workerPrisma.callingSequence.create({
       data: {
+        workspaceId: lead.workspaceId,
         leadId: lead.id,
         contactId: lead.contactId,
         cadenceOffsets: [0],
@@ -323,6 +339,33 @@ describe("R12 domain event worker", () => {
     ).resolves.toBe("PROCESSED");
 
     expect(handledPayload).toMatchObject({ leadId: lead.id, contactId: lead.contactId });
+  });
+
+  it("rejects a worker event whose persisted workspace differs from its lead", async () => {
+    const { lead, conversation } = await createBlockedLeadFixture();
+    const otherWorkspace = await workerPrisma.workspace.create({
+      data: { name: "R12 Isolation", slug: "r12-isolation" }
+    });
+    const event = await createEvent({
+      workspaceId: otherWorkspace.id,
+      eventType: "EMAIL_SEND_REQUESTED",
+      payload: { leadId: lead.id, conversationId: conversation.id }
+    });
+    const queue = new FakeQueue();
+    await dispatchDueDomainEvents({ queue, limit: 10, now: new Date() });
+    const jobId = queue.added.find((job) => job.jobId.startsWith(`${event.id}:`))?.jobId;
+    if (!jobId) throw new Error("Expected queued process job");
+
+    await expect(processDomainEventJob({
+      eventId: event.id,
+      queueJobId: jobId,
+      workerId: "r12-isolation-worker"
+    })).rejects.toThrow("current lead context");
+    await expect(workerPrisma.domainEventOutbox.findUniqueOrThrow({ where: { id: event.id } }))
+      .resolves.toMatchObject({
+        status: "ATTENTION_REQUIRED",
+        lastErrorCode: "LEAD_CONTEXT_MISSING"
+      });
   });
 
   it("recovers stale queued events and dispatches a fresh BullMQ job id", async () => {

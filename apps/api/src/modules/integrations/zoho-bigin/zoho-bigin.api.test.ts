@@ -76,8 +76,8 @@ describe("Zoho Bigin health API", () => {
     expect(health.lastError).not.toContain("client-secret");
 
     await expect(
-      prisma.integrationAccount.findUnique({
-        where: { provider_key: { provider: "ZOHO_BIGIN", key: "default" } }
+      prisma.integrationAccount.findFirst({
+        where: { provider: "ZOHO_BIGIN", key: "default" }
       })
     ).resolves.toMatchObject({
       provider: "ZOHO_BIGIN",

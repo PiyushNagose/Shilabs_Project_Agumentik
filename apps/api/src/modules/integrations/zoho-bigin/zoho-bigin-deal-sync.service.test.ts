@@ -92,10 +92,13 @@ async function cleanup(): Promise<void> {
 }
 
 async function createMappedLead(): Promise<string> {
+  const workspaceId = actor.activeWorkspaceId;
+  if (!workspaceId) throw new Error("Test actor workspace is missing");
   const stage = await prisma.pipelineStage.findUniqueOrThrow({ where: { key: "NEW" } });
-  const company = await prisma.company.create({ data: { name: "R4 Deal Company" } });
+  const company = await prisma.company.create({ data: { workspaceId, name: "R4 Deal Company" } });
   const contact = await prisma.contact.create({
     data: {
+      workspaceId,
       companyId: company.id,
       firstName: "Priya",
       lastName: "Nair",
@@ -105,6 +108,7 @@ async function createMappedLead(): Promise<string> {
   });
   const lead = await prisma.lead.create({
     data: {
+      workspaceId,
       companyId: company.id,
       contactId: contact.id,
       stageId: stage.id,
@@ -116,6 +120,7 @@ async function createMappedLead(): Promise<string> {
   await prisma.externalRecordMapping.createMany({
     data: [
       {
+        workspaceId,
         provider: "ZOHO_BIGIN",
         entityType: "COMPANY",
         localEntityId: company.id,
@@ -124,6 +129,7 @@ async function createMappedLead(): Promise<string> {
         syncDirection: "INBOUND"
       },
       {
+        workspaceId,
         provider: "ZOHO_BIGIN",
         entityType: "CONTACT",
         localEntityId: contact.id,
@@ -132,6 +138,7 @@ async function createMappedLead(): Promise<string> {
         syncDirection: "INBOUND"
       },
       {
+        workspaceId,
         provider: "ZOHO_BIGIN",
         entityType: "LEAD",
         localEntityId: lead.id,
@@ -146,6 +153,7 @@ async function createMappedLead(): Promise<string> {
 
 describe("Zoho deal sync", () => {
   beforeAll(async () => {
+    const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
     await prisma.user.deleteMany({ where: { email: actorEmail } });
     const user = await prisma.user.create({
       data: {
@@ -165,7 +173,8 @@ describe("Zoho deal sync", () => {
       role: user.role,
       status: user.status,
       createdAt: user.createdAt,
-      updatedAt: user.updatedAt
+      updatedAt: user.updatedAt,
+      activeWorkspaceId: workspace.id
     };
   });
 
@@ -197,13 +206,11 @@ describe("Zoho deal sync", () => {
     expect(first.status).toBe("COMPLETED");
     expect(first.succeededRecords).toBe(1);
 
-    const dealMapping = await prisma.externalRecordMapping.findUniqueOrThrow({
+    const dealMapping = await prisma.externalRecordMapping.findFirstOrThrow({
       where: {
-        provider_entityType_externalRecordId: {
-          provider: "ZOHO_BIGIN",
-          entityType: "DEAL",
-          externalRecordId: "r4-zoho-deal-1"
-        }
+        provider: "ZOHO_BIGIN",
+        entityType: "DEAL",
+        externalRecordId: "r4-zoho-deal-1"
       }
     });
     await prisma.deal.update({

@@ -297,6 +297,7 @@ export async function createMeetingRequestForReply(input: {
     include: { company: true, contact: true, owner: true }
   });
   if (!lead) throw new AppError(404, "NOT_FOUND", "Lead not found");
+  if (!lead.workspaceId) throw new AppError(409, "CONFLICT", "Lead has no persisted workspace");
 
   const activeOwner = lead.owner?.status === UserStatus.ACTIVE ? lead.owner : null;
   const requester =
@@ -439,6 +440,7 @@ export async function createMeetingRequest(
         });
         await tx.activity.create({
           data: {
+            workspaceId: lead.workspaceId,
             leadId: lead.id,
             actorUserId: actor.id,
             type: "MEETING_REQUESTED",
@@ -449,6 +451,7 @@ export async function createMeetingRequest(
         });
         await tx.auditEvent.create({
           data: {
+            workspaceId: lead.workspaceId,
             actorType: "USER",
             actorId: actor.id,
             entityType: "MeetingRequest",
@@ -505,6 +508,7 @@ export async function createMeetingRequest(
       const hasSlots = availability.status === "AVAILABLE" && availability.slots.length > 0;
       const created = await tx.meetingRequest.create({
         data: {
+          workspaceId: lead.workspaceId,
           leadId: lead.id,
           contactId: lead.contactId,
           conversationId: input.conversationId,
@@ -551,6 +555,7 @@ export async function createMeetingRequest(
       });
       await tx.activity.create({
         data: {
+          workspaceId: lead.workspaceId,
           leadId: lead.id,
           actorUserId: actor.id,
           type: "MEETING_REQUESTED",
@@ -561,6 +566,7 @@ export async function createMeetingRequest(
       });
       await tx.auditEvent.create({
         data: {
+          workspaceId: lead.workspaceId,
           actorType: "USER",
           actorId: actor.id,
           entityType: "MeetingRequest",
@@ -752,15 +758,20 @@ export async function confirmMeetingRequest(
             : "No contact email is available for an external invitation."
         }
       });
+      if (!request.workspaceId) {
+        throw new AppError(409, "CONFLICT", "Meeting request has no persisted workspace");
+      }
       await tx.externalRecordMapping.upsert({
         where: {
-          provider_entityType_localEntityId: {
+          workspaceId_provider_entityType_localEntityId: {
+            workspaceId: request.workspaceId,
             provider: "GOOGLE_CALENDAR",
             entityType: "MEETING",
             localEntityId: request.id
           }
         },
         create: {
+          workspaceId: request.workspaceId,
           provider: "GOOGLE_CALENDAR",
           entityType: "MEETING",
           localEntityId: request.id,
@@ -788,6 +799,7 @@ export async function confirmMeetingRequest(
       });
       const activity = await tx.activity.create({
         data: {
+          workspaceId: request.workspaceId,
           leadId: request.leadId,
           actorUserId: actor.id,
           type: "MEETING_CONFIRMED",
@@ -796,6 +808,7 @@ export async function confirmMeetingRequest(
       });
       await tx.auditEvent.create({
         data: {
+          workspaceId: request.workspaceId,
           actorType: "USER",
           actorId: actor.id,
           entityType: "MeetingRequest",

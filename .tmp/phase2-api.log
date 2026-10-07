@@ -1,0 +1,9 @@
+
+> shilabs-ai-sales-engine@0.0.0 dev:e2e:api
+> dotenv -o -e .env -e .env.e2e.local -- npm run dev -w @shilabs/api
+
+
+> @shilabs/api@0.0.0 dev
+> tsx src/server.ts
+
+API listening on http://0.0.0.0:4010

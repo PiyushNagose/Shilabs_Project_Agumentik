@@ -8,12 +8,22 @@ function hasGlobalCrmAccess(actor: AuthenticatedUser): boolean {
   return actor.role === UserRole.ADMIN || actor.role === UserRole.SALES_MANAGER;
 }
 
+function workspaceScope(actor: AuthenticatedUser): Prisma.StringNullableFilter | undefined {
+  return actor.activeWorkspaceId
+    ? { equals: actor.activeWorkspaceId }
+    : undefined;
+}
+
 export function companyVisibilityWhere(actor: AuthenticatedUser): Prisma.CompanyWhereInput {
-  return hasGlobalCrmAccess(actor) ? {} : { leads: { some: leadVisibilityWhere(actor) } };
+  return hasGlobalCrmAccess(actor)
+    ? { workspaceId: workspaceScope(actor) }
+    : { AND: [{ workspaceId: workspaceScope(actor) }, { leads: { some: leadVisibilityWhere(actor) } }] };
 }
 
 export function contactVisibilityWhere(actor: AuthenticatedUser): Prisma.ContactWhereInput {
-  return hasGlobalCrmAccess(actor) ? {} : { leads: { some: leadVisibilityWhere(actor) } };
+  return hasGlobalCrmAccess(actor)
+    ? { workspaceId: workspaceScope(actor) }
+    : { AND: [{ workspaceId: workspaceScope(actor) }, { leads: { some: leadVisibilityWhere(actor) } }] };
 }
 
 export async function assertCanAccessCompany(
@@ -21,14 +31,19 @@ export async function assertCanAccessCompany(
   companyId: string,
   options: { allowUnlinked?: boolean } = {}
 ): Promise<void> {
-  if (hasGlobalCrmAccess(actor)) return;
+  const accessWhere: Prisma.CompanyWhereInput = hasGlobalCrmAccess(actor)
+    ? {}
+    : {
+        OR: [
+          { leads: { some: leadVisibilityWhere(actor) } },
+          ...(options.allowUnlinked ? [{ leads: { none: {} } }] : [])
+        ]
+      };
   const allowed = await prisma.company.findFirst({
     where: {
       id: companyId,
-      OR: [
-        { leads: { some: leadVisibilityWhere(actor) } },
-        ...(options.allowUnlinked ? [{ leads: { none: {} } }] : [])
-      ]
+      workspaceId: workspaceScope(actor),
+      ...accessWhere
     },
     select: { id: true }
   });
@@ -40,14 +55,19 @@ export async function assertCanAccessContact(
   contactId: string,
   options: { allowUnlinked?: boolean } = {}
 ): Promise<void> {
-  if (hasGlobalCrmAccess(actor)) return;
+  const accessWhere: Prisma.ContactWhereInput = hasGlobalCrmAccess(actor)
+    ? {}
+    : {
+        OR: [
+          { leads: { some: leadVisibilityWhere(actor) } },
+          ...(options.allowUnlinked ? [{ leads: { none: {} } }] : [])
+        ]
+      };
   const allowed = await prisma.contact.findFirst({
     where: {
       id: contactId,
-      OR: [
-        { leads: { some: leadVisibilityWhere(actor) } },
-        ...(options.allowUnlinked ? [{ leads: { none: {} } }] : [])
-      ]
+      workspaceId: workspaceScope(actor),
+      ...accessWhere
     },
     select: { id: true }
   });

@@ -7,10 +7,13 @@ const activityInclude = {
 
 export type ActivityRecord = Prisma.ActivityGetPayload<{ include: typeof activityInclude }>;
 
-export async function listLeadActivities(leadId: string): Promise<ActivityRecord[]> {
+export async function listLeadActivities(input: {
+  leadId: string;
+  workspaceId: string;
+}): Promise<ActivityRecord[]> {
   return prisma.activity.findMany({
-    where: { leadId },
+    where: { leadId: input.leadId, workspaceId: input.workspaceId, visibility: "BUSINESS" },
     include: activityInclude,
-    orderBy: { createdAt: "desc" }
+    orderBy: [{ occurredAt: "desc" }, { createdAt: "desc" }]
   });
 }

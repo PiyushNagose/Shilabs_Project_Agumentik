@@ -69,6 +69,7 @@ async function cleanup(): Promise<void> {
 }
 
 async function createLead(): Promise<string> {
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
   const user = await prisma.user.create({
     data: {
       email: adminEmail,
@@ -80,9 +81,10 @@ async function createLead(): Promise<string> {
     }
   });
   const stage = await prisma.pipelineStage.findFirstOrThrow({ where: { key: "NEW" } });
-  const company = await prisma.company.create({ data: { name: "R6 API Company" } });
+  const company = await prisma.company.create({ data: { workspaceId: workspace.id, name: "R6 API Company" } });
   const contact = await prisma.contact.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       firstName: "API",
       lastName: "Reply",
@@ -93,6 +95,7 @@ async function createLead(): Promise<string> {
   });
   const lead = await prisma.lead.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       contactId: contact.id,
       ownerId: user.id,

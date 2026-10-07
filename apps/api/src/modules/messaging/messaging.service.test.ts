@@ -16,6 +16,7 @@ import {
 const companyPrefix = "R24 Messaging Company";
 const webhookSecret = "r24-test-webhook-secret";
 const verifyToken = "r24-test-verify-token";
+const isolationWorkspaceSlug = "r24-messaging-isolation";
 
 class MessagingReplyTestProvider implements AIProvider {
   public constructor(private readonly output: ReplyUnderstandingResult) {}
@@ -155,35 +156,42 @@ async function cleanup(): Promise<void> {
   await prisma.lead.deleteMany({ where: { id: { in: leadIds } } });
   await prisma.contact.deleteMany({ where: { company: { name: { startsWith: companyPrefix } } } });
   await prisma.company.deleteMany({ where: { name: { startsWith: companyPrefix } } });
+  await prisma.workspace.deleteMany({ where: { slug: isolationWorkspaceSlug } });
 }
 
-async function createLeadFixture() {
+async function createLeadFixture(input?: { workspaceId?: string; phone?: string }) {
+  const workspaceId = input?.workspaceId ??
+    (await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } })).id;
+  const phone = input?.phone ?? "+919999000001";
   const stage = await prisma.pipelineStage.upsert({
     where: { key: "R24_MSG_NEW" },
     create: {
+      workspaceId,
       key: "R24_MSG_NEW",
       label: "R24 Messaging New",
       order: 9240,
       probability: 10
     },
-    update: {}
+    update: { workspaceId }
   });
   const company = await prisma.company.create({
-    data: { name: `${companyPrefix} ${crypto.randomUUID()}` }
+    data: { workspaceId, name: `${companyPrefix} ${crypto.randomUUID()}` }
   });
   const contact = await prisma.contact.create({
     data: {
+      workspaceId,
       companyId: company.id,
       firstName: "R24",
       lastName: "Prospect",
-      phone: "+919999000001",
-      normalizedPhone: "+919999000001",
-      whatsappId: "919999000001",
+      phone,
+      normalizedPhone: phone,
+      whatsappId: phone.replace(/^\+/u, ""),
       doNotContact: false
     }
   });
   const lead = await prisma.lead.create({
     data: {
+      workspaceId,
       companyId: company.id,
       contactId: contact.id,
       source: "R24_TEST",
@@ -193,6 +201,7 @@ async function createLeadFixture() {
   });
   const followUp = await prisma.followUpSequence.create({
     data: {
+      workspaceId,
       leadId: lead.id,
       contactId: contact.id,
       cadenceDays: [0, 1],
@@ -201,6 +210,7 @@ async function createLeadFixture() {
   });
   const calling = await prisma.callingSequence.create({
     data: {
+      workspaceId,
       leadId: lead.id,
       contactId: contact.id,
       followUpSequenceId: followUp.id,
@@ -221,6 +231,7 @@ async function createLeadFixture() {
   });
   await prisma.domainEventOutbox.create({
     data: {
+      workspaceId,
       eventType: "WHATSAPP_SEND_REQUESTED",
       aggregateType: "CallingSequence",
       aggregateId: calling.id,
@@ -411,5 +422,54 @@ describe("R24 messaging service", () => {
         }
       })
     ).resolves.toBe(1);
+  });
+
+  it("does not route an inbound provider callback across ambiguous workspaces", async () => {
+    const defaultWorkspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
+    const otherWorkspace = await prisma.workspace.create({
+      data: { name: "R24 Messaging Isolation", slug: isolationWorkspaceSlug }
+    });
+    const phone = "+919999000099";
+    const [first, second] = await Promise.all([
+      createLeadFixture({ workspaceId: defaultWorkspace.id, phone }),
+      createLeadFixture({ workspaceId: otherWorkspace.id, phone })
+    ]);
+    const body = {
+      object: "whatsapp_business_account",
+      entry: [{
+        id: "r24-isolation-entry",
+        changes: [{
+          value: {
+            messaging_product: "whatsapp",
+            messages: [{
+              id: "r24-test-cross-workspace-inbound",
+              from: phone.replace(/^\+/u, ""),
+              timestamp: "1790200100",
+              type: "text",
+              text: { body: "This must not select a workspace." }
+            }]
+          }
+        }]
+      }]
+    };
+    const rawBody = JSON.stringify(body);
+
+    await expect(ingestMetaWhatsAppWebhook({
+      body,
+      rawBody,
+      signature: signature(rawBody),
+      env: testEnv()
+    })).resolves.toMatchObject({ processed: 1 });
+    await expect(prisma.message.count({
+      where: { providerMessageId: "r24-test-cross-workspace-inbound" }
+    })).resolves.toBe(0);
+    await expect(prisma.whatsAppProviderEvent.findFirstOrThrow({
+      where: { providerMessageId: "r24-test-cross-workspace-inbound" }
+    })).resolves.toMatchObject({
+      failureCode: "AMBIGUOUS_LEAD_MATCH"
+    });
+    await expect(prisma.callingSequence.count({
+      where: { id: { in: [first.calling.id, second.calling.id] }, status: "ACTIVE" }
+    })).resolves.toBe(2);
   });
 });

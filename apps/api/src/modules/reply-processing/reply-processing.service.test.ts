@@ -314,16 +314,18 @@ async function createInboundFixture(input?: {
   leadStatus?: "OPEN" | "WON" | "LOST" | "NURTURE" | "DISQUALIFIED";
   assignOwner?: boolean;
 }) {
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
   const stage = await prisma.pipelineStage.findFirstOrThrow({ where: { key: "NEW" } });
   const owner =
     input?.assignOwner === false
       ? null
       : await prisma.user.findUniqueOrThrow({ where: { email: actorEmail } });
   const company = await prisma.company.create({
-    data: { name: `R10 Company ${crypto.randomUUID()}` }
+    data: { workspaceId: workspace.id, name: `R10 Company ${crypto.randomUUID()}` }
   });
   const contact = await prisma.contact.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       firstName: "R10",
       lastName: "Prospect",
@@ -334,6 +336,7 @@ async function createInboundFixture(input?: {
   });
   const lead = await prisma.lead.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       contactId: contact.id,
       ownerId: owner?.id,
@@ -347,11 +350,12 @@ async function createInboundFixture(input?: {
     data: { leadId: lead.id, requirement: "Website redesign", businessFit: "Strong fit" }
   });
   const conversation = await prisma.conversation.create({
-    data: { leadId: lead.id, channel: "EMAIL", mode: "AUTO" }
+    data: { workspaceId: workspace.id, leadId: lead.id, channel: "EMAIL", mode: "AUTO" }
   });
   const body = input?.body ?? "Yes, please share more details about web design.";
   const message = await prisma.message.create({
     data: {
+      workspaceId: workspace.id,
       conversationId: conversation.id,
       providerMessageId: `ses-r10-${crypto.randomUUID()}`,
       direction: "INBOUND",
@@ -363,6 +367,7 @@ async function createInboundFixture(input?: {
   });
   const inbound = await prisma.inboundEmail.create({
     data: {
+      workspaceId: workspace.id,
       provider: "AWS_SES",
       providerMessageId: message.providerMessageId ?? `ses-r10-${crypto.randomUUID()}`,
       leadId: lead.id,

@@ -117,15 +117,20 @@ async function loadProposal(id: string): Promise<ProposalRecord> {
 async function ensureLeadAndDeal(input: {
   leadId: string;
   dealId?: string;
-}): Promise<void> {
+}): Promise<string> {
   const lead = await findLeadById(input.leadId);
   if (!lead) throw new AppError(404, "NOT_FOUND", "Lead not found");
-  if (!input.dealId) return;
-  const deal = await prisma.deal.findUnique({ where: { id: input.dealId }, select: { leadId: true } });
+  if (!lead.workspaceId) throw new AppError(409, "CONFLICT", "Lead has no persisted workspace");
+  if (!input.dealId) return lead.workspaceId;
+  const deal = await prisma.deal.findUnique({
+    where: { id: input.dealId },
+    select: { leadId: true, workspaceId: true }
+  });
   if (!deal) throw new AppError(404, "NOT_FOUND", "Deal not found");
-  if (deal.leadId !== input.leadId) {
+  if (deal.leadId !== input.leadId || deal.workspaceId !== lead.workspaceId) {
     throw new AppError(400, "VALIDATION_ERROR", "Deal must belong to the proposal lead");
   }
+  return lead.workspaceId;
 }
 
 function nextVersionNumber(proposal: ProposalRecord): number {
@@ -156,12 +161,13 @@ export async function createProposal(
     const existing = await findProposalByIdempotencyKey(input.idempotencyKey);
     if (existing) return toProposalDto(existing);
   }
-  await ensureLeadAndDeal(input);
+  const workspaceId = await ensureLeadAndDeal(input);
 
   const proposal = await prisma.$transaction(
     async (tx) => {
       const created = await tx.proposal.create({
         data: {
+          workspaceId,
           leadId: input.leadId,
           dealId: input.dealId ?? null,
           title: input.title,
@@ -196,6 +202,7 @@ export async function createProposal(
       });
       await tx.activity.create({
         data: {
+          workspaceId,
           leadId: input.leadId,
           actorUserId: actor.id,
           type: "PROPOSAL_CREATED",
@@ -204,6 +211,7 @@ export async function createProposal(
       });
       await tx.auditEvent.create({
         data: {
+          workspaceId,
           actorType: "USER",
           actorId: actor.id,
           entityType: "Proposal",
@@ -255,6 +263,7 @@ export async function updateProposalDraft(
       });
       await tx.activity.create({
         data: {
+          workspaceId: existing.workspaceId,
           leadId: existing.leadId,
           actorUserId: actor.id,
           type: "PROPOSAL_UPDATED",
@@ -312,6 +321,7 @@ export async function submitProposalForApproval(
       });
       await tx.activity.create({
         data: {
+          workspaceId: existing.workspaceId,
           leadId: existing.leadId,
           actorUserId: actor.id,
           type: "PROPOSAL_SUBMITTED",
@@ -464,6 +474,7 @@ export async function recordProposalSentAfterProviderConfirmation(
       });
       await tx.activity.create({
         data: {
+          workspaceId: existing.workspaceId,
           leadId: existing.leadId,
           actorUserId: actor.id,
           type: "PROPOSAL_SENT",

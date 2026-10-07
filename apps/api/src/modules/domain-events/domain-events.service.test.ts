@@ -20,10 +20,46 @@ async function cleanup(): Promise<void> {
     where: { idempotencyKey: { startsWith: "r11-domain-event:" } }
   });
   await prisma.authSession.deleteMany({ where: { user: { email: actorEmail } } });
+  await prisma.lead.deleteMany({ where: { source: "r11-domain-event-test" } });
+  await prisma.contact.deleteMany({ where: { source: "r11-domain-event-test" } });
+  await prisma.company.deleteMany({ where: { name: "R11 Domain Event Company" } });
   await prisma.user.deleteMany({ where: { email: actorEmail } });
 }
 
+async function seedLead(): Promise<string> {
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
+  const stage = await prisma.pipelineStage.upsert({
+    where: { key: "NEW" },
+    create: { workspaceId: workspace.id, key: "NEW", label: "New", order: 0, probability: 0 },
+    update: { workspaceId: workspace.id }
+  });
+  const company = await prisma.company.create({
+    data: { workspaceId: workspace.id, name: "R11 Domain Event Company" }
+  });
+  const contact = await prisma.contact.create({
+    data: {
+      workspaceId: workspace.id,
+      companyId: company.id,
+      firstName: "R11",
+      lastName: "Lead",
+      source: "r11-domain-event-test"
+    }
+  });
+  await prisma.lead.create({
+    data: {
+      id: "lead-r11",
+      workspaceId: workspace.id,
+      companyId: company.id,
+      contactId: contact.id,
+      stageId: stage.id,
+      source: "r11-domain-event-test"
+    }
+  });
+  return workspace.id;
+}
+
 async function seedActor(): Promise<AuthenticatedUser> {
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
   const user = await prisma.user.create({
     data: {
       email: actorEmail,
@@ -34,12 +70,13 @@ async function seedActor(): Promise<AuthenticatedUser> {
       status: UserStatus.ACTIVE
     }
   });
-  return user;
+  return { ...user, activeWorkspaceId: workspace.id };
 }
 
 describe("R11 domain event outbox", () => {
   beforeEach(async () => {
     await cleanup();
+    await seedLead();
   }, 45000);
 
   afterAll(async () => {

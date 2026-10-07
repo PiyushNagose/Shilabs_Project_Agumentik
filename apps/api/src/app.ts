@@ -29,6 +29,8 @@ import { zohoBiginRoutes } from "./modules/integrations/zoho-bigin/zoho-bigin.ro
 import { userRoutes } from "./modules/users/user.routes.js";
 import { voiceRoutes } from "./modules/voice/voice.routes.js";
 import { realtimeRoutes } from "./modules/realtime/realtime.routes.js";
+import { workspaceRoutes } from "./modules/workspaces/workspace.routes.js";
+import { taskRoutes } from "./modules/tasks/task.routes.js";
 import { errorHandler, notFoundHandler } from "./middleware/error.middleware.js";
 import { createGlobalRateLimiter, securityHeaders } from "./middleware/security.middleware.js";
 import { checkReadiness, type ReadinessResult } from "./shared/readiness.js";
@@ -110,6 +112,7 @@ export function createApp(
   });
 
   app.use("/api/auth", authRoutes);
+  app.use("/api/workspaces", workspaceRoutes);
   app.use("/api/agent-feedback", agentFeedbackRoutes);
   app.use("/api/action-dashboard", actionDashboardRoutes);
   app.use("/api/briefings", briefingRoutes);
@@ -135,6 +138,7 @@ export function createApp(
   app.use("/api/integrations/zoho-bigin", zohoBiginRoutes);
   app.use("/api/voice", voiceRoutes);
   app.use("/api/realtime", realtimeRoutes);
+  app.use("/api/tasks", taskRoutes);
   app.use(notFoundHandler);
   app.use(errorHandler);
 

@@ -137,6 +137,9 @@ export async function scheduleCallingSequenceAfterFailedEmailSequence(input: {
     include: { attempts: true, lead: { include: { contact: true } } }
   });
   if (!sequence) return;
+  if (!sequence.workspaceId) {
+    throw new Error("Follow-up sequence has no persisted workspace");
+  }
   if (sequence.status !== "COMPLETED") return;
   if (sequence.attempts.some((attempt) => attempt.status !== "SENT")) return;
 
@@ -152,6 +155,7 @@ export async function scheduleCallingSequenceAfterFailedEmailSequence(input: {
     async (tx) => {
       const callingSequence = await tx.callingSequence.create({
         data: {
+          workspaceId: sequence.workspaceId,
           leadId: sequence.leadId,
           contactId: sequence.contactId,
           followUpSequenceId: sequence.id,
@@ -176,6 +180,7 @@ export async function scheduleCallingSequenceAfterFailedEmailSequence(input: {
         const event = await tx.domainEventOutbox.upsert({
           where: { idempotencyKey: `domain-event:calling-attempt:${attempt.id}` },
           create: {
+            workspaceId: sequence.workspaceId,
             eventType: "CALL_AUTOMATION_ATTEMPT_DUE",
             aggregateType: "CallingAttempt",
             aggregateId: attempt.id,
@@ -200,6 +205,7 @@ export async function scheduleCallingSequenceAfterFailedEmailSequence(input: {
         await tx.domainEventOutbox.upsert({
           where: { idempotencyKey: `domain-event:whatsapp-send:${attempt.id}` },
           create: {
+            workspaceId: sequence.workspaceId,
             eventType: "WHATSAPP_SEND_REQUESTED",
             aggregateType: "CallingAttempt",
             aggregateId: attempt.id,
@@ -221,6 +227,7 @@ export async function scheduleCallingSequenceAfterFailedEmailSequence(input: {
 
       await tx.activity.create({
         data: {
+          workspaceId: sequence.workspaceId,
           leadId: sequence.leadId,
           type: "CALL_REQUESTED",
           description: "Calling automation scheduled after completed email follow-up sequence"
@@ -228,6 +235,7 @@ export async function scheduleCallingSequenceAfterFailedEmailSequence(input: {
       });
       await tx.auditEvent.create({
         data: {
+          workspaceId: sequence.workspaceId,
           actorType: "SYSTEM",
           entityType: "CallingSequence",
           entityId: callingSequence.id,
@@ -253,6 +261,7 @@ export async function scheduleCallingSequenceAfterFailedEmailSequence(input: {
 }
 
 async function markAttemptBlocked(input: {
+  workspaceId: string;
   attemptId: string;
   sequenceId: string;
   leadId: string;
@@ -284,6 +293,7 @@ async function markAttemptBlocked(input: {
     });
     await tx.activity.create({
       data: {
+        workspaceId: input.workspaceId,
         leadId: input.leadId,
         type: "CALL_FAILED",
         description: `Calling automation blocked: ${input.message}`
@@ -291,6 +301,7 @@ async function markAttemptBlocked(input: {
     });
     await tx.auditEvent.create({
       data: {
+        workspaceId: input.workspaceId,
         actorType: "SYSTEM",
         entityType: "CallingAttempt",
         entityId: input.attemptId,
@@ -340,13 +351,17 @@ export async function executeCallingAutomationAttempt(input: {
   provider?: WorkerVoiceProvider;
   timelineSyncer?: TimelineSyncer;
 }): Promise<void> {
+  const eventWorkspaceId = input.event.workspaceId;
+  if (!eventWorkspaceId) {
+    throw new PermanentDomainEventError("WORKSPACE_CONTEXT_MISSING", "Calling event has no persisted workspace");
+  }
   const attemptId = payloadString(input.event, "callingAttemptId");
   if (!attemptId) {
     throw new PermanentDomainEventError("CALLING_ATTEMPT_MISSING", "Calling attempt id missing");
   }
 
-  const attempt = await workerPrisma.callingAttempt.findUnique({
-    where: { id: attemptId },
+  const attempt = await workerPrisma.callingAttempt.findFirst({
+    where: { id: attemptId, sequence: { workspaceId: eventWorkspaceId } },
     include: {
       sequence: true,
       lead: { include: { contact: true, conversations: { where: { channel: "EMAIL" }, take: 1 } } },
@@ -359,6 +374,7 @@ export async function executeCallingAutomationAttempt(input: {
   if (attempt.status === "COMPLETED" || attempt.status === "SKIPPED") return;
   if (attempt.sequence.status !== "ACTIVE") {
     await markAttemptBlocked({
+      workspaceId: eventWorkspaceId,
       attemptId,
       sequenceId: attempt.sequenceId,
       leadId: attempt.leadId,
@@ -445,6 +461,7 @@ export async function executeCallingAutomationAttempt(input: {
 
   if (block) {
     await markAttemptBlocked({
+      workspaceId: eventWorkspaceId,
       attemptId,
       sequenceId: attempt.sequenceId,
       leadId: lead.id,
@@ -465,6 +482,7 @@ export async function executeCallingAutomationAttempt(input: {
   if (!voiceCall) {
     voiceCall = await workerPrisma.voiceCallAttempt.create({
       data: {
+        workspaceId: attempt.sequence.workspaceId,
         leadId: lead.id,
         contactId: lead.contactId,
         provider: providerName(voiceConfig),
@@ -517,6 +535,7 @@ export async function executeCallingAutomationAttempt(input: {
         }
       });
       await markAttemptBlocked({
+        workspaceId: eventWorkspaceId,
         attemptId,
         sequenceId: attempt.sequenceId,
         leadId: lead.id,
@@ -547,6 +566,7 @@ export async function executeCallingAutomationAttempt(input: {
       });
       const activity = await tx.activity.create({
         data: {
+          workspaceId: attempt.sequence.workspaceId,
           leadId: lead.id,
           type: "CALL_REQUESTED",
           description: `Calling automation attempt ${String(attempt.attemptIndex + 1)} accepted by ${providerDisplayName(voiceConfig)}`
@@ -554,6 +574,7 @@ export async function executeCallingAutomationAttempt(input: {
       });
       await tx.auditEvent.create({
         data: {
+          workspaceId: attempt.sequence.workspaceId,
           actorType: "SYSTEM",
           entityType: "CallingAttempt",
           entityId: attempt.id,
@@ -569,13 +590,15 @@ export async function executeCallingAutomationAttempt(input: {
       });
       await tx.externalRecordMapping.upsert({
         where: {
-          provider_entityType_localEntityId: {
+          workspaceId_provider_entityType_localEntityId: {
+            workspaceId: eventWorkspaceId,
             provider: providerName(voiceConfig),
             entityType: "CALL",
             localEntityId: updatedCall.id
           }
         },
         create: {
+          workspaceId: eventWorkspaceId,
           provider: providerName(voiceConfig),
           entityType: "CALL",
           localEntityId: updatedCall.id,

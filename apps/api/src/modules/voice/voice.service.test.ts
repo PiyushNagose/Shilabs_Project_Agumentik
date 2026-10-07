@@ -103,6 +103,7 @@ async function cleanup(): Promise<void> {
 }
 
 async function seedLead(input: { doNotContact?: boolean; status?: "OPEN" | "LOST" } = {}) {
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
   const user = await prisma.user.create({
     data: {
       email: `${crypto.randomUUID()}@r22-voice.example.local`,
@@ -115,10 +116,11 @@ async function seedLead(input: { doNotContact?: boolean; status?: "OPEN" | "LOST
   });
   const stage = await prisma.pipelineStage.findUniqueOrThrow({ where: { key: "NEW" } });
   const company = await prisma.company.create({
-    data: { name: `${companyPrefix} ${crypto.randomUUID()}` }
+    data: { workspaceId: workspace.id, name: `${companyPrefix} ${crypto.randomUUID()}` }
   });
   const contact = await prisma.contact.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       firstName: "R22",
       lastName: "Caller",
@@ -130,6 +132,7 @@ async function seedLead(input: { doNotContact?: boolean; status?: "OPEN" | "LOST
   });
   const lead = await prisma.lead.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       contactId: contact.id,
       ownerId: user.id,
@@ -146,7 +149,8 @@ async function seedLead(input: { doNotContact?: boolean; status?: "OPEN" | "LOST
     role: user.role,
     status: user.status,
     createdAt: user.createdAt,
-    updatedAt: user.updatedAt
+    updatedAt: user.updatedAt,
+    activeWorkspaceId: workspace.id
   };
   return { actor, lead };
 }

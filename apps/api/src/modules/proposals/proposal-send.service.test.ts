@@ -114,7 +114,9 @@ async function seedActor() {
 }
 
 async function seedApprovedProposal() {
-  const actor = await seedActor();
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
+  const seededActor = await seedActor();
+  const actor = { ...seededActor, activeWorkspaceId: workspace.id };
   const stage = await prisma.pipelineStage.upsert({
     where: { key: "PROPOSAL" },
     create: {
@@ -129,10 +131,11 @@ async function seedApprovedProposal() {
     update: {}
   });
   const company = await prisma.company.create({
-    data: { name: `R16 Proposal ${randomUUID()}`, website: "https://client.example" }
+    data: { workspaceId: workspace.id, name: `R16 Proposal ${randomUUID()}`, website: "https://client.example" }
   });
   const contact = await prisma.contact.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       firstName: "Proposal",
       lastName: "Buyer",
@@ -143,6 +146,7 @@ async function seedApprovedProposal() {
   });
   const lead = await prisma.lead.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       contactId: contact.id,
       stageId: stage.id,
@@ -152,7 +156,7 @@ async function seedApprovedProposal() {
     }
   });
   const deal = await prisma.deal.create({
-    data: { leadId: lead.id, stageId: stage.id, probability: 70, status: "OPEN" }
+    data: { workspaceId: workspace.id, leadId: lead.id, stageId: stage.id, probability: 70, status: "OPEN" }
   });
   const proposal = await createProposal(actor, {
     leadId: lead.id,
@@ -167,9 +171,18 @@ async function seedApprovedProposal() {
 }
 
 async function mapLeadToZoho(leadId: string): Promise<void> {
+  const lead = await prisma.lead.findUniqueOrThrow({ where: { id: leadId } });
+  if (!lead.workspaceId) throw new Error("Test lead workspace is missing");
   const account = await prisma.integrationAccount.upsert({
-    where: { provider_key: { provider: "ZOHO_BIGIN", key: "default" } },
+    where: {
+      workspaceId_provider_key: {
+        workspaceId: lead.workspaceId,
+        provider: "ZOHO_BIGIN",
+        key: "default"
+      }
+    },
     create: {
+      workspaceId: lead.workspaceId,
       provider: "ZOHO_BIGIN",
       key: "default",
       displayName: "Zoho Bigin",
@@ -180,6 +193,7 @@ async function mapLeadToZoho(leadId: string): Promise<void> {
   });
   await prisma.externalRecordMapping.create({
     data: {
+      workspaceId: lead.workspaceId,
       integrationAccountId: account.id,
       provider: "ZOHO_BIGIN",
       entityType: "LEAD",

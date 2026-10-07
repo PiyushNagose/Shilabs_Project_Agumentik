@@ -69,14 +69,17 @@ async function cleanup(): Promise<void> {
 let actorId: string | undefined;
 
 async function createLead(email: string, suffix: string = crypto.randomUUID()) {
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
   const stage = await prisma.pipelineStage.findFirstOrThrow({ where: { key: "NEW" } });
   const company = await prisma.company.create({
     data: {
+      workspaceId: workspace.id,
       name: `R6 Company ${suffix}`
     }
   });
   const contact = await prisma.contact.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       firstName: "R6",
       lastName: "Reply",
@@ -87,6 +90,7 @@ async function createLead(email: string, suffix: string = crypto.randomUUID()) {
   });
   return prisma.lead.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       contactId: contact.id,
       ownerId: actorId,

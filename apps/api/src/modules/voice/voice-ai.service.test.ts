@@ -138,6 +138,7 @@ async function cleanup(): Promise<void> {
 }
 
 async function seedCall(): Promise<{ leadId: string; callSid: string }> {
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
   await prisma.scoringConfig.upsert({
     where: { key: "default" },
     create: {
@@ -164,10 +165,11 @@ async function seedCall(): Promise<{ leadId: string; callSid: string }> {
   });
   const stage = await prisma.pipelineStage.findUniqueOrThrow({ where: { key: "NEW" } });
   const company = await prisma.company.create({
-    data: { name: `${companyPrefix} ${crypto.randomUUID()}` }
+    data: { workspaceId: workspace.id, name: `${companyPrefix} ${crypto.randomUUID()}` }
   });
   const contact = await prisma.contact.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       firstName: "Voice",
       lastName: "Customer",
@@ -177,6 +179,7 @@ async function seedCall(): Promise<{ leadId: string; callSid: string }> {
   });
   const lead = await prisma.lead.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       contactId: contact.id,
       ownerId: user.id,
@@ -189,6 +192,7 @@ async function seedCall(): Promise<{ leadId: string; callSid: string }> {
   const callSid = `exotel-call-${crypto.randomUUID()}`;
   await prisma.voiceCallAttempt.create({
     data: {
+      workspaceId: workspace.id,
       leadId: lead.id,
       contactId: contact.id,
       actorUserId: user.id,

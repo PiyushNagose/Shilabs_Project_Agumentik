@@ -18,6 +18,22 @@ enum UserRole {
   SALES_REP
 }
 
+enum WorkspaceRole {
+  OWNER
+  ADMIN
+  SALES_MANAGER
+  SALES_REP
+  OPERATIONS
+  VIEWER
+}
+
+enum WorkspaceMemberStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+  REMOVED
+}
+
 enum UserStatus {
   ACTIVE
   INACTIVE
@@ -108,11 +124,43 @@ enum ActivityType {
   WHATSAPP_FAILED
   AGENT_CORRECTION_RECORDED
   BRIEFING_GENERATED
+  TASK_CREATED
+  TASK_UPDATED
+  TASK_COMPLETED
 }
 
 enum AuditActorType {
   USER
   SYSTEM
+  AGENT
+  WORKFLOW
+  PROVIDER
+}
+
+enum ActivityVisibility {
+  BUSINESS
+  INTERNAL
+}
+
+enum TaskStatus {
+  OPEN
+  IN_PROGRESS
+  COMPLETED
+  CANCELED
+}
+
+enum TaskPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum TaskCreatorType {
+  USER
+  SYSTEM
+  AGENT
+  WORKFLOW
 }
 
 enum ConversationChannel {
@@ -546,12 +594,51 @@ model User {
   confirmedMeetingRequests    MeetingRequest[]          @relation("MeetingRequestConfirmedBy")
   voiceCallAttempts           VoiceCallAttempt[]        @relation("VoiceCallActor")
   briefingRuns                BriefingRun[]             @relation("BriefingRunActor")
+  workspaceMemberships        WorkspaceMember[]
+  assignedTasks               Task[]                    @relation("TaskAssignee")
+  createdTasks                Task[]                    @relation("TaskCreatedByUser")
+  completedTasks              Task[]                    @relation("TaskCompletedByUser")
 
   @@index([role])
   @@index([status])
 }
 
+model Workspace {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  status      String   @default("ACTIVE")
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members WorkspaceMember[]
+  tasks   Task[]
+
+  @@index([status])
+}
+
+model WorkspaceMember {
+  id          String                @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        WorkspaceRole
+  status      WorkspaceMemberStatus @default(ACTIVE)
+  joinedAt    DateTime              @default(now())
+  invitedById String?
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([userId, status])
+  @@index([workspaceId, role, status])
+}
+
 model DomainEventOutbox {
+  workspaceId            String?
   id                     String              @id @default(cuid())
   eventType              String
   aggregateType          String
@@ -682,6 +769,7 @@ model AuthSession {
 
 model Company {
   id                String   @id @default(cuid())
+  workspaceId       String?
   name              String
   website           String?
   normalizedWebsite String?  @unique
@@ -698,10 +786,12 @@ model Company {
   @@index([name])
   @@index([website])
   @@index([normalizedWebsite])
+  @@index([workspaceId, name])
 }
 
 model Contact {
   id               String   @id @default(cuid())
+  workspaceId      String?
   companyId        String
   firstName        String
   lastName         String
@@ -736,10 +826,12 @@ model Contact {
   @@index([normalizedPhone])
   @@index([whatsappId])
   @@index([doNotContact])
+  @@index([workspaceId, companyId])
 }
 
 model PipelineStage {
   id          String   @id @default(cuid())
+  workspaceId String?
   key         String   @unique
   label       String
   order       Int      @unique
@@ -754,10 +846,12 @@ model PipelineStage {
   deals Deal[]
 
   @@index([isClosed])
+  @@index([workspaceId, order])
 }
 
 model Lead {
   id                    String          @id @default(cuid())
+  workspaceId           String?
   companyId             String
   contactId             String
   ownerId               String?
@@ -807,6 +901,7 @@ model Lead {
   voiceConversationRuns    VoiceConversationRun[]
   outboundWhatsAppMessages OutboundWhatsAppMessage[]
   briefingRuns             BriefingRun[]
+  tasks                    Task[]
 
   @@index([companyId])
   @@index([contactId])
@@ -818,6 +913,7 @@ model Lead {
   @@index([source])
   @@index([lastActivityAt])
   @@index([createdAt])
+  @@index([workspaceId, ownerId])
 }
 
 model LeadScoreRun {
@@ -887,6 +983,7 @@ model LeadQualificationEvidence {
 
 model Deal {
   id             String          @id @default(cuid())
+  workspaceId    String?
   leadId         String          @unique
   stageId        String
   ownerId        String?
@@ -913,6 +1010,7 @@ model Deal {
 
 model Proposal {
   id                     String                 @id @default(cuid())
+  workspaceId            String?
   leadId                 String
   dealId                 String?
   title                  String
@@ -1033,25 +1131,25 @@ model ProposalStatusChange {
 }
 
 model BriefingRun {
-  id                  String            @id @default(cuid())
-  kind                BriefingKind
-  leadId              String
-  meetingRequestId    String?
-  actorUserId         String
-  status              BriefingRunStatus
-  provider            String?
-  model               String?
-  inputContext        Json
-  evidence            Json
-  approvedKnowledge   Json?
-  output              Json?
-  summary             String?
+  id                    String            @id @default(cuid())
+  kind                  BriefingKind
+  leadId                String
+  meetingRequestId      String?
+  actorUserId           String
+  status                BriefingRunStatus
+  provider              String?
+  model                 String?
+  inputContext          Json
+  evidence              Json
+  approvedKnowledge     Json?
+  output                Json?
+  summary               String?
   recommendedNextAction String?
-  failureCode         String?
-  failureMessage      String?
-  idempotencyKey      String            @unique
-  createdAt           DateTime          @default(now())
-  updatedAt           DateTime          @updatedAt
+  failureCode           String?
+  failureMessage        String?
+  idempotencyKey        String            @unique
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
 
   lead           Lead            @relation(fields: [leadId], references: [id], onDelete: Restrict)
   meetingRequest MeetingRequest? @relation(fields: [meetingRequestId], references: [id], onDelete: SetNull)
@@ -1066,12 +1164,24 @@ model BriefingRun {
 }
 
 model Activity {
-  id          String       @id @default(cuid())
-  leadId      String
-  actorUserId String?
-  type        ActivityType
-  description String
-  createdAt   DateTime     @default(now())
+  id            String             @id @default(cuid())
+  workspaceId   String?
+  leadId        String
+  entityType    String             @default("LEAD")
+  entityId      String?
+  actorType     AuditActorType     @default(SYSTEM)
+  actorUserId   String?
+  actorAgentId  String?
+  sourceType    String?
+  sourceId      String?
+  type          ActivityType
+  title         String?
+  description   String
+  metadata      Json?
+  occurredAt    DateTime           @default(now())
+  correlationId String?
+  visibility    ActivityVisibility @default(BUSINESS)
+  createdAt     DateTime           @default(now())
 
   lead      Lead  @relation(fields: [leadId], references: [id], onDelete: Restrict)
   actorUser User? @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
@@ -1079,29 +1189,92 @@ model Activity {
   @@index([leadId])
   @@index([actorUserId])
   @@index([type])
+  @@index([entityType, entityId, occurredAt])
+  @@index([sourceType, sourceId])
+  @@index([correlationId])
+  @@index([visibility, occurredAt])
   @@index([createdAt])
+  @@index([workspaceId, createdAt])
 }
 
 model AuditEvent {
-  id         String         @id @default(cuid())
-  actorType  AuditActorType
-  actorId    String?
-  entityType String
-  entityId   String
-  action     String
-  before     Json?
-  after      Json?
-  createdAt  DateTime       @default(now())
+  id            String             @id @default(cuid())
+  workspaceId   String?
+  actorType     AuditActorType
+  actorId       String?
+  actorUserId   String?
+  actorAgentId  String?
+  sourceType    String?
+  sourceId      String?
+  entityType    String
+  entityId      String
+  action        String
+  before        Json?
+  after         Json?
+  metadata      Json?
+  correlationId String?
+  visibility    ActivityVisibility @default(INTERNAL)
+  occurredAt    DateTime           @default(now())
+  createdAt     DateTime           @default(now())
 
   @@index([actorType])
   @@index([actorId])
   @@index([entityType, entityId])
+  @@index([sourceType, sourceId])
+  @@index([correlationId])
   @@index([action])
   @@index([createdAt])
+  @@index([workspaceId, createdAt])
+}
+
+model Task {
+  id                String           @id @default(cuid())
+  workspaceId       String
+  title             String
+  description       String?
+  status            TaskStatus       @default(OPEN)
+  priority          TaskPriority     @default(NORMAL)
+  dueAt             DateTime?
+  reminderAt        DateTime?
+  assignedToUserId  String?
+  createdByType     TaskCreatorType
+  createdByUserId   String?
+  createdByAgentId  String?
+  sourceType        String?
+  sourceId          String?
+  leadId            String?
+  contactId         String?
+  companyId         String?
+  dealId            String?
+  isNextAction      Boolean          @default(false)
+  projectionKey     String?          @unique
+  completedAt       DateTime?
+  completedByType   TaskCreatorType?
+  completedByUserId String?
+  metadata          Json?
+  correlationId     String?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  lead            Lead?     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  assignedToUser  User?     @relation("TaskAssignee", fields: [assignedToUserId], references: [id], onDelete: SetNull)
+  createdByUser   User?     @relation("TaskCreatedByUser", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  completedByUser User?     @relation("TaskCompletedByUser", fields: [completedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, status, dueAt])
+  @@index([workspaceId, assignedToUserId, status])
+  @@index([leadId, status, dueAt])
+  @@index([contactId])
+  @@index([companyId])
+  @@index([dealId])
+  @@index([sourceType, sourceId])
+  @@index([correlationId])
 }
 
 model Conversation {
   id            String              @id @default(cuid())
+  workspaceId   String?
   leadId        String
   channel       ConversationChannel
   mode          ConversationMode    @default(AUTO)
@@ -1129,6 +1302,7 @@ model Conversation {
   @@index([status])
   @@index([lastMessageAt])
   @@index([createdAt])
+  @@index([workspaceId, leadId])
 }
 
 model HumanTakeover {
@@ -1181,10 +1355,11 @@ model NegotiationHandoff {
 }
 
 model InternalNotification {
-  id                   String                       @id @default(cuid())
+  id                   String                               @id @default(cuid())
+  workspaceId          String?
   type                 InternalNotificationType
-  status               InternalNotificationStatus   @default(UNREAD)
-  severity             InternalNotificationSeverity @default(INFO)
+  status               InternalNotificationStatus           @default(UNREAD)
+  severity             InternalNotificationSeverity         @default(INFO)
   escalationStatus     InternalNotificationEscalationStatus @default(NONE)
   title                String
   body                 String
@@ -1204,9 +1379,9 @@ model InternalNotification {
   escalationDueAt      DateTime?
   escalationReason     String?
   escalationEvidence   Json?
-  idempotencyKey       String                       @unique
-  createdAt            DateTime                     @default(now())
-  updatedAt            DateTime                     @updatedAt
+  idempotencyKey       String                               @unique
+  createdAt            DateTime                             @default(now())
+  updatedAt            DateTime                             @updatedAt
 
   assignedTo         User?               @relation("InternalNotificationAssignee", fields: [assignedToUserId], references: [id], onDelete: SetNull)
   readBy             User?               @relation("InternalNotificationReadBy", fields: [readByUserId], references: [id], onDelete: SetNull)
@@ -1232,10 +1407,12 @@ model InternalNotification {
   @@index([sourceEntityType, sourceEntityId])
   @@index([escalationDueAt])
   @@index([createdAt])
+  @@index([workspaceId, createdAt])
 }
 
 model MeetingRequest {
   id                      String               @id @default(cuid())
+  workspaceId             String?
   leadId                  String
   contactId               String
   conversationId          String?
@@ -1289,6 +1466,7 @@ model MeetingRequest {
   @@index([windowStart])
   @@index([confirmedAt])
   @@index([createdAt])
+  @@index([workspaceId, leadId])
 }
 
 model MeetingSlot {
@@ -1310,6 +1488,7 @@ model MeetingSlot {
 }
 
 model VoiceCallAttempt {
+  workspaceId          String?
   id                   String                @id @default(cuid())
   leadId               String
   contactId            String
@@ -1343,14 +1522,15 @@ model VoiceCallAttempt {
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @updatedAt
 
-  lead           Lead                 @relation(fields: [leadId], references: [id], onDelete: Restrict)
-  contact        Contact              @relation(fields: [contactId], references: [id], onDelete: Restrict)
-  actor          User?                @relation("VoiceCallActor", fields: [actorUserId], references: [id], onDelete: SetNull)
-  events         VoiceProviderEvent[]
+  lead            Lead                  @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  contact         Contact               @relation(fields: [contactId], references: [id], onDelete: Restrict)
+  actor           User?                 @relation("VoiceCallActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  events          VoiceProviderEvent[]
   callingAttempt  CallingAttempt?
   conversationRun VoiceConversationRun?
 
   @@index([leadId])
+  @@index([workspaceId, leadId])
   @@index([contactId])
   @@index([actorUserId])
   @@index([provider, status])
@@ -1361,6 +1541,7 @@ model VoiceCallAttempt {
 }
 
 model VoiceProviderEvent {
+  workspaceId     String?
   id              String                 @id @default(cuid())
   provider        IntegrationProvider
   providerEventId String
@@ -1376,6 +1557,7 @@ model VoiceProviderEvent {
 
   @@unique([provider, providerEventId])
   @@index([provider, type])
+  @@index([workspaceId, receivedAt])
   @@index([providerCallId])
   @@index([callAttemptId])
   @@index([receivedAt])
@@ -1405,10 +1587,10 @@ model VoiceConversationRun {
   createdAt            DateTime                   @default(now())
   updatedAt            DateTime                   @updatedAt
 
-  voiceCallAttempt  VoiceCallAttempt   @relation(fields: [voiceCallAttemptId], references: [id], onDelete: Cascade)
-  lead              Lead               @relation(fields: [leadId], references: [id], onDelete: Restrict)
-  conversation      Conversation?      @relation(fields: [conversationId], references: [id], onDelete: SetNull)
-  message           Message?           @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  voiceCallAttempt   VoiceCallAttempt    @relation(fields: [voiceCallAttemptId], references: [id], onDelete: Cascade)
+  lead               Lead                @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  conversation       Conversation?       @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  message            Message?            @relation(fields: [messageId], references: [id], onDelete: SetNull)
   replyProcessingRun ReplyProcessingRun? @relation(fields: [replyProcessingRunId], references: [id], onDelete: SetNull)
 
   @@index([leadId])
@@ -1422,23 +1604,24 @@ model VoiceConversationRun {
 }
 
 model FollowUpSequence {
-  id               String                 @id @default(cuid())
-  leadId           String
-  contactId        String
-  conversationId   String?
-  status           FollowUpSequenceStatus @default(ACTIVE)
-  cadenceDays      Int[]
-  currentStep      Int                    @default(0)
-  stopReason       String?
-  stoppedAt        DateTime?
-  completedAt      DateTime?
-  lastErrorCode    String?
-  lastErrorMessage String?
-  idempotencyKey   String                 @unique
+  id                    String                 @id @default(cuid())
+  workspaceId           String?
+  leadId                String
+  contactId             String
+  conversationId        String?
+  status                FollowUpSequenceStatus @default(ACTIVE)
+  cadenceDays           Int[]
+  currentStep           Int                    @default(0)
+  stopReason            String?
+  stoppedAt             DateTime?
+  completedAt           DateTime?
+  lastErrorCode         String?
+  lastErrorMessage      String?
+  idempotencyKey        String                 @unique
   cadenceMode           String                 @default("PRODUCTION_DAYS")
-  cadenceOffsetsMinutes Int[]             @default([])
-  createdAt        DateTime               @default(now())
-  updatedAt        DateTime               @updatedAt
+  cadenceOffsetsMinutes Int[]                  @default([])
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
 
   lead             Lead              @relation(fields: [leadId], references: [id], onDelete: Restrict)
   contact          Contact           @relation(fields: [contactId], references: [id], onDelete: Restrict)
@@ -1489,6 +1672,7 @@ model FollowUpAttempt {
 
 model CallingSequence {
   id                 String                @id @default(cuid())
+  workspaceId        String?
   leadId             String
   contactId          String
   followUpSequenceId String?
@@ -1556,6 +1740,7 @@ model CallingAttempt {
 
 model OutboundWhatsAppMessage {
   id                String                 @id @default(cuid())
+  workspaceId       String?
   leadId            String
   contactId         String
   callingAttemptId  String?
@@ -1599,6 +1784,7 @@ model OutboundWhatsAppMessage {
 }
 
 model WhatsAppProviderEvent {
+  workspaceId       String?
   id                String                    @id @default(cuid())
   provider          IntegrationProvider
   providerEventId   String
@@ -1616,6 +1802,7 @@ model WhatsAppProviderEvent {
 
   @@unique([provider, providerEventId])
   @@index([provider, type])
+  @@index([workspaceId, receivedAt])
   @@index([providerMessageId])
   @@index([outboundMessageId])
   @@index([receivedAt])
@@ -1623,6 +1810,7 @@ model WhatsAppProviderEvent {
 
 model Message {
   id                String                @id @default(cuid())
+  workspaceId       String?
   conversationId    String
   providerMessageId String?               @unique
   direction         MessageDirection
@@ -1654,6 +1842,7 @@ model Message {
 
 model IntegrationAccount {
   id            String                   @id @default(cuid())
+  workspaceId   String?
   provider      IntegrationProvider
   key           String                   @default("default")
   displayName   String
@@ -1668,13 +1857,14 @@ model IntegrationAccount {
   externalRecordMappings ExternalRecordMapping[]
   syncRuns               IntegrationSyncRun[]
 
-  @@unique([provider, key])
+  @@unique([workspaceId, provider, key])
   @@index([provider])
   @@index([status])
 }
 
 model ExternalRecordMapping {
   id                   String                   @id @default(cuid())
+  workspaceId          String?
   integrationAccountId String?
   provider             IntegrationProvider
   entityType           ExternalRecordEntityType
@@ -1694,9 +1884,9 @@ model ExternalRecordMapping {
 
   integrationAccount IntegrationAccount? @relation(fields: [integrationAccountId], references: [id], onDelete: SetNull)
 
-  @@unique([provider, entityType, localEntityId])
-  @@unique([provider, entityType, externalRecordId])
-  @@unique([provider, idempotencyKey])
+  @@unique([workspaceId, provider, entityType, localEntityId], map: "ExternalRecordMapping_workspaceId_provider_entityType_localEnti")
+  @@unique([workspaceId, provider, entityType, externalRecordId], map: "ExternalRecordMapping_workspaceId_provider_entityType_externalR")
+  @@unique([workspaceId, provider, idempotencyKey])
   @@index([integrationAccountId])
   @@index([provider, entityType])
   @@index([syncStatus])
@@ -1706,6 +1896,7 @@ model ExternalRecordMapping {
 
 model IntegrationSyncRun {
   id                   String                   @id @default(cuid())
+  workspaceId          String?
   integrationAccountId String?
   provider             IntegrationProvider
   operation            String
@@ -1732,6 +1923,7 @@ model IntegrationSyncRun {
 }
 
 model OutboundEmail {
+  workspaceId       String?
   id                String              @id @default(cuid())
   leadId            String
   contactId         String
@@ -1764,6 +1956,7 @@ model OutboundEmail {
   proposal         Proposal?
 
   @@index([leadId])
+  @@index([workspaceId, leadId])
   @@index([contactId])
   @@index([actorUserId])
   @@index([normalizedToEmail])
@@ -1816,6 +2009,7 @@ model EmailDeliverabilityScan {
 }
 
 model EmailProviderEvent {
+  workspaceId       String?
   id                String                 @id @default(cuid())
   provider          IntegrationProvider
   providerEventId   String
@@ -1831,12 +2025,14 @@ model EmailProviderEvent {
 
   @@unique([provider, providerEventId])
   @@index([provider, type])
+  @@index([workspaceId, receivedAt])
   @@index([providerMessageId])
   @@index([outboundEmailId])
   @@index([receivedAt])
 }
 
 model InboundEmail {
+  workspaceId           String?
   id                    String                 @id @default(cuid())
   provider              IntegrationProvider
   providerMessageId     String                 @unique
@@ -1869,6 +2065,7 @@ model InboundEmail {
 
   @@unique([provider, providerEventId])
   @@index([leadId])
+  @@index([workspaceId, receivedAt])
   @@index([contactId])
   @@index([conversationId])
   @@index([normalizedFromEmail])
@@ -1901,12 +2098,12 @@ model ReplyProcessingRun {
   createdAt            DateTime                 @default(now())
   updatedAt            DateTime                 @updatedAt
 
-  lead               Lead                @relation(fields: [leadId], references: [id], onDelete: Restrict)
-  conversation       Conversation        @relation(fields: [conversationId], references: [id], onDelete: Restrict)
-  message            Message             @relation(fields: [messageId], references: [id], onDelete: Restrict)
-  inboundEmail       InboundEmail?       @relation(fields: [inboundEmailId], references: [id], onDelete: SetNull)
-  negotiationHandoff NegotiationHandoff?
-  corrections        AgentCorrection[]
+  lead                 Lead                  @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  conversation         Conversation          @relation(fields: [conversationId], references: [id], onDelete: Restrict)
+  message              Message               @relation(fields: [messageId], references: [id], onDelete: Restrict)
+  inboundEmail         InboundEmail?         @relation(fields: [inboundEmailId], references: [id], onDelete: SetNull)
+  negotiationHandoff   NegotiationHandoff?
+  corrections          AgentCorrection[]
   voiceConversationRun VoiceConversationRun?
 
   @@index([leadId])

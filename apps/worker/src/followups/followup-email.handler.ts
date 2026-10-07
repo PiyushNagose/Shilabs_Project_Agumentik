@@ -225,6 +225,10 @@ async function sendFollowUpEmail(input: {
   provider?: WorkerEmailProvider;
   timelineSyncer?: TimelineSyncer;
 }): Promise<void> {
+  const eventWorkspaceId = input.event.workspaceId;
+  if (!eventWorkspaceId) {
+    throw new PermanentDomainEventError("WORKSPACE_CONTEXT_MISSING", "Follow-up event has no persisted workspace");
+  }
   const attemptId = payloadString(input.event, "followUpAttemptId");
   if (!attemptId) {
     throw new PermanentDomainEventError(
@@ -233,8 +237,8 @@ async function sendFollowUpEmail(input: {
     );
   }
 
-  const attempt = await workerPrisma.followUpAttempt.findUnique({
-    where: { id: attemptId },
+  const attempt = await workerPrisma.followUpAttempt.findFirst({
+    where: { id: attemptId, sequence: { workspaceId: eventWorkspaceId } },
     include: {
       sequence: true,
       lead: { include: { contact: true, conversations: { where: { channel: "EMAIL" }, take: 1 } } }
@@ -320,6 +324,7 @@ async function sendFollowUpEmail(input: {
     const config = getWorkerSelectedEmailConfig(input.env);
     outbound = await workerPrisma.outboundEmail.create({
       data: {
+        workspaceId: eventWorkspaceId,
         leadId: lead.id,
         contactId: lead.contactId,
         toEmail,
@@ -381,10 +386,11 @@ async function sendFollowUpEmail(input: {
           const messageConversation =
             conversation ??
             (await tx.conversation.create({
-              data: { leadId: lead.id, channel: "EMAIL", mode: "AUTO", status: "OPEN" }
+              data: { workspaceId: eventWorkspaceId, leadId: lead.id, channel: "EMAIL", mode: "AUTO", status: "OPEN" }
             }));
           await tx.message.create({
             data: {
+              workspaceId: eventWorkspaceId,
               conversationId: messageConversation.id,
               providerMessageId: sent.providerMessageId,
               direction: "OUTBOUND",
@@ -397,6 +403,7 @@ async function sendFollowUpEmail(input: {
           });
           const activity = await tx.activity.create({
             data: {
+              workspaceId: eventWorkspaceId,
               leadId: lead.id,
               type: "MESSAGE_SENT",
               description: `Follow-up email sent to ${updated.toEmail}: ${updated.subject}`
@@ -404,6 +411,7 @@ async function sendFollowUpEmail(input: {
           });
           await tx.auditEvent.create({
             data: {
+              workspaceId: eventWorkspaceId,
               actorType: "SYSTEM",
               entityType: "FollowUpAttempt",
               entityId: attempt.id,

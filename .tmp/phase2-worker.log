@@ -1,0 +1,16 @@
+
+> shilabs-ai-sales-engine@0.0.0 dev:e2e:worker
+> dotenv -o -e .env -e .env.e2e.local -- npm run dev -w @shilabs/worker
+
+
+> @shilabs/worker@0.0.0 dev
+> tsx src/worker.ts
+
+Worker booted {
+  status: 'ok',
+  service: 'worker',
+  queuesEnabled: true,
+  redisUrlConfigured: true,
+  redisStatus: 'CONFIGURED',
+  domainEventQueueName: 'domain-events-e2e-local'
+}

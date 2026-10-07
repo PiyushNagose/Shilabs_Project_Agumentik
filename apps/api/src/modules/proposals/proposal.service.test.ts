@@ -62,6 +62,7 @@ async function seedUser(email: string, role: UserRole = UserRole.ADMIN) {
 }
 
 async function seedLeadAndDeal() {
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
   const stage = await prisma.pipelineStage.upsert({
     where: { key: "PROPOSAL" },
     create: {
@@ -83,10 +84,11 @@ async function seedLeadAndDeal() {
     }
   });
   const company = await prisma.company.create({
-    data: { name: `R14 Proposal ${randomUUID()}` }
+    data: { workspaceId: workspace.id, name: `R14 Proposal ${randomUUID()}` }
   });
   const contact = await prisma.contact.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       firstName: "Proposal",
       lastName: "Lead",
@@ -97,6 +99,7 @@ async function seedLeadAndDeal() {
   });
   const lead = await prisma.lead.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       contactId: contact.id,
       stageId: stage.id,
@@ -107,6 +110,7 @@ async function seedLeadAndDeal() {
   });
   const deal = await prisma.deal.create({
     data: {
+      workspaceId: workspace.id,
       leadId: lead.id,
       stageId: stage.id,
       probability: stage.probability,
@@ -192,6 +196,7 @@ describe("R14 proposal workflow service", () => {
     });
     const outbound = await prisma.outboundEmail.create({
       data: {
+        workspaceId: lead.workspaceId,
         leadId: lead.id,
         contactId: contact.id,
         toEmail: contact.email ?? "r14@example.local",
@@ -227,6 +232,7 @@ describe("R14 proposal workflow service", () => {
     await approveProposal(actor, proposal.id, {});
     const outbound = await prisma.outboundEmail.create({
       data: {
+        workspaceId: lead.workspaceId,
         leadId: lead.id,
         contactId: contact.id,
         toEmail: contact.email ?? "r14@example.local",

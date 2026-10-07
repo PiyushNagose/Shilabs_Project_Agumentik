@@ -247,6 +247,7 @@ export async function createLead(
     lead: {
       company: { connect: { id: input.companyId } },
       contact: { connect: { id: input.contactId } },
+      workspaceId: actor.activeWorkspaceId,
       owner: ownerId ? { connect: { id: ownerId } } : undefined,
       stage: { connect: { id: defaultStage.id } },
       source: input.source,

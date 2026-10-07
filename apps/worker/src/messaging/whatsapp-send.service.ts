@@ -55,6 +55,7 @@ function createWorkerMessagingProvider(config: MessagingConfig): WorkerMessaging
 }
 
 async function markWhatsAppBlocked(input: {
+  workspaceId: string;
   leadId: string;
   contactId: string;
   callingAttemptId: string | null;
@@ -69,6 +70,7 @@ async function markWhatsAppBlocked(input: {
     const outbound = await tx.outboundWhatsAppMessage.upsert({
       where: { idempotencyKey: input.idempotencyKey },
       create: {
+        workspaceId: input.workspaceId,
         leadId: input.leadId,
         contactId: input.contactId,
         callingAttemptId: input.callingAttemptId,
@@ -89,6 +91,7 @@ async function markWhatsAppBlocked(input: {
     });
     await tx.activity.create({
       data: {
+        workspaceId: input.workspaceId,
         leadId: input.leadId,
         type: "WHATSAPP_FAILED",
         description: `WhatsApp automation blocked: ${input.message}`
@@ -96,6 +99,7 @@ async function markWhatsAppBlocked(input: {
     });
     await tx.auditEvent.create({
       data: {
+        workspaceId: input.workspaceId,
         actorType: "SYSTEM",
         entityType: "OutboundWhatsAppMessage",
         entityId: outbound.id,
@@ -135,6 +139,10 @@ export async function executeWhatsAppSend(input: {
   provider?: WorkerMessagingProvider;
   timelineSyncer?: TimelineSyncer;
 }): Promise<void> {
+  const eventWorkspaceId = input.event.workspaceId;
+  if (!eventWorkspaceId) {
+    throw new PermanentDomainEventError("WORKSPACE_CONTEXT_MISSING", "WhatsApp event has no persisted workspace");
+  }
   const callingAttemptId = payloadString(input.event, "callingAttemptId");
   const leadId = payloadString(input.event, "leadId");
   const contactId = payloadString(input.event, "contactId");
@@ -142,8 +150,13 @@ export async function executeWhatsAppSend(input: {
     throw new PermanentDomainEventError("WHATSAPP_CONTEXT_MISSING", "WhatsApp send event context is incomplete");
   }
 
-  const attempt = await workerPrisma.callingAttempt.findUnique({
-    where: { id: callingAttemptId },
+  const attempt = await workerPrisma.callingAttempt.findFirst({
+    where: {
+      id: callingAttemptId,
+      leadId,
+      contactId,
+      sequence: { workspaceId: eventWorkspaceId }
+    },
     include: {
       sequence: true,
       lead: { include: { contact: true, conversations: { where: { channel: "WHATSAPP" }, take: 1 } } }
@@ -220,6 +233,7 @@ export async function executeWhatsAppSend(input: {
 
   if (block) {
     await markWhatsAppBlocked({
+      workspaceId: eventWorkspaceId,
       leadId,
       contactId,
       callingAttemptId,
@@ -240,6 +254,7 @@ export async function executeWhatsAppSend(input: {
   const outbound = await workerPrisma.outboundWhatsAppMessage.upsert({
     where: { idempotencyKey },
     create: {
+      workspaceId: attempt.sequence.workspaceId,
       leadId,
       contactId,
       callingAttemptId,
@@ -282,6 +297,7 @@ export async function executeWhatsAppSend(input: {
     });
     await workerPrisma.activity.create({
       data: {
+        workspaceId: attempt.sequence.workspaceId,
         leadId,
         type: "WHATSAPP_FAILED",
         description: result.lastError ?? `${providerLabel} did not accept the message`
@@ -308,6 +324,7 @@ export async function executeWhatsAppSend(input: {
     });
     const activity = await tx.activity.create({
       data: {
+        workspaceId: attempt.sequence.workspaceId,
         leadId,
         type: "WHATSAPP_SENT",
         description: `WhatsApp message accepted by ${providerLabel}`
@@ -315,6 +332,7 @@ export async function executeWhatsAppSend(input: {
     });
     await tx.auditEvent.create({
       data: {
+        workspaceId: attempt.sequence.workspaceId,
         actorType: "SYSTEM",
         entityType: "OutboundWhatsAppMessage",
         entityId: updated.id,
@@ -329,13 +347,15 @@ export async function executeWhatsAppSend(input: {
     });
     await tx.externalRecordMapping.upsert({
       where: {
-        provider_entityType_localEntityId: {
+        workspaceId_provider_entityType_localEntityId: {
+          workspaceId: eventWorkspaceId,
           provider: persistedProvider,
           entityType: "WHATSAPP_MESSAGE",
           localEntityId: updated.id
         }
       },
       create: {
+        workspaceId: eventWorkspaceId,
         provider: persistedProvider,
         entityType: "WHATSAPP_MESSAGE",
         localEntityId: updated.id,
@@ -356,6 +376,7 @@ export async function executeWhatsAppSend(input: {
     await tx.domainEventOutbox.upsert({
       where: { idempotencyKey: `domain-event:whatsapp-sent:${updated.id}` },
       create: {
+        workspaceId: attempt.sequence.workspaceId,
         eventType: "WHATSAPP_SENT",
         aggregateType: "OutboundWhatsAppMessage",
         aggregateId: updated.id,

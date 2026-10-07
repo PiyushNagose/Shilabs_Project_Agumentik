@@ -44,11 +44,14 @@ export async function syncZohoLeadContacts(input: {
   env?: NodeJS.ProcessEnv;
   transport?: FetchTransport;
 }): Promise<ZohoLeadContactSyncDto> {
+  const workspaceId = input.actor.activeWorkspaceId;
+  if (!workspaceId) throw new AppError(403, "AUTHORIZATION_ERROR", "Active workspace required");
   const startedAt = new Date();
   const config = getZohoBiginConfig(input.env);
 
   if (config.status === "NOT_CONFIGURED") {
     const account = await upsertIntegrationAccount({
+      workspaceId,
       provider: "ZOHO_BIGIN",
       key: "default",
       displayName: "Zoho Bigin",
@@ -64,6 +67,7 @@ export async function syncZohoLeadContacts(input: {
     });
     const run = await prisma.integrationSyncRun.create({
       data: {
+        workspaceId,
         integrationAccountId: account.id,
         provider: "ZOHO_BIGIN",
         operation: "LEAD_CONTACT_SYNC",
@@ -91,6 +95,7 @@ export async function syncZohoLeadContacts(input: {
   }
 
   const account = await upsertIntegrationAccount({
+    workspaceId,
     provider: "ZOHO_BIGIN",
     key: "default",
     displayName: "Zoho Bigin",
@@ -108,6 +113,7 @@ export async function syncZohoLeadContacts(input: {
 
   const run = await prisma.integrationSyncRun.create({
     data: {
+      workspaceId,
       integrationAccountId: account.id,
       provider: "ZOHO_BIGIN",
       operation: "LEAD_CONTACT_SYNC",
@@ -213,7 +219,9 @@ async function syncOneContact(input: {
   actor: AuthenticatedUser;
   env?: NodeJS.ProcessEnv;
 }): Promise<"SYNCED" | "SKIPPED"> {
-  const defaultStage = await prisma.pipelineStage.findUnique({ where: { key: "NEW" } });
+  const workspaceId = input.actor.activeWorkspaceId;
+  if (!workspaceId) throw new AppError(403, "AUTHORIZATION_ERROR", "Active workspace required");
+  const defaultStage = await prisma.pipelineStage.findFirst({ where: { key: "NEW", workspaceId } });
   if (!defaultStage) {
     throw new AppError(404, "NOT_FOUND", "Default pipeline stage not found");
   }
@@ -223,18 +231,27 @@ async function syncOneContact(input: {
       const normalizedWebsite = normalizeWebsite(input.contact.company.website);
       const companyMapping = await transaction.externalRecordMapping.findUnique({
         where: {
-          provider_entityType_externalRecordId: {
+          workspaceId_provider_entityType_externalRecordId: {
+            workspaceId,
             provider: "ZOHO_BIGIN",
             entityType: "COMPANY",
             externalRecordId: input.contact.company.externalRecordId
           }
         }
       });
+      if (companyMapping) {
+        const scopedCompany = await transaction.company.findFirst({
+          where: { id: companyMapping.localEntityId, workspaceId },
+          select: { id: true }
+        });
+        if (!scopedCompany) throw new AppError(409, "CONFLICT", "Company mapping crosses workspace boundary");
+      }
 
       const company = companyMapping
         ? await transaction.company.update({
             where: { id: companyMapping.localEntityId },
             data: {
+              workspaceId,
               name: input.contact.company.name,
               website: input.contact.company.website ?? null,
               normalizedWebsite
@@ -242,6 +259,7 @@ async function syncOneContact(input: {
           })
         : await transaction.company.create({
             data: {
+              workspaceId,
               name: input.contact.company.name,
               website: input.contact.company.website ?? null,
               normalizedWebsite
@@ -250,13 +268,15 @@ async function syncOneContact(input: {
 
       await transaction.externalRecordMapping.upsert({
         where: {
-          provider_entityType_externalRecordId: {
+          workspaceId_provider_entityType_externalRecordId: {
+            workspaceId,
             provider: "ZOHO_BIGIN",
             entityType: "COMPANY",
             externalRecordId: input.contact.company.externalRecordId
           }
         },
         create: {
+          workspaceId,
           integrationAccountId: input.integrationAccountId,
           provider: "ZOHO_BIGIN",
           entityType: "COMPANY",
@@ -280,7 +300,8 @@ async function syncOneContact(input: {
 
       const existingContactMapping = await transaction.externalRecordMapping.findUnique({
         where: {
-          provider_entityType_externalRecordId: {
+          workspaceId_provider_entityType_externalRecordId: {
+            workspaceId,
             provider: "ZOHO_BIGIN",
             entityType: "CONTACT",
             externalRecordId: input.contact.externalRecordId
@@ -301,6 +322,7 @@ async function syncOneContact(input: {
         const identityMatch = await transaction.contact.findFirst({
           where: {
             companyId: company.id,
+            workspaceId,
             OR: identityConditions
           }
         });
@@ -308,11 +330,19 @@ async function syncOneContact(input: {
           contactLocalId = identityMatch.id;
         }
       }
+      if (contactLocalId) {
+        const scopedContact = await transaction.contact.findFirst({
+          where: { id: contactLocalId, workspaceId },
+          select: { id: true }
+        });
+        if (!scopedContact) throw new AppError(409, "CONFLICT", "Contact mapping crosses workspace boundary");
+      }
 
       if (!existingContactMapping && contactLocalId) {
         const existingLocalMapping = await transaction.externalRecordMapping.findUnique({
           where: {
-            provider_entityType_localEntityId: {
+            workspaceId_provider_entityType_localEntityId: {
+              workspaceId,
               provider: "ZOHO_BIGIN",
               entityType: "CONTACT",
               localEntityId: contactLocalId
@@ -326,6 +356,7 @@ async function syncOneContact(input: {
         const conflictingContact = await transaction.contact.findFirst({
           where: {
             companyId: company.id,
+            workspaceId,
             OR: identityConditions,
             NOT: { id: contactLocalId }
           }
@@ -337,6 +368,7 @@ async function syncOneContact(input: {
         ? await transaction.contact.update({
             where: { id: contactLocalId },
             data: {
+              workspaceId,
               companyId: company.id,
               firstName: input.contact.firstName,
               lastName: input.contact.lastName,
@@ -351,6 +383,7 @@ async function syncOneContact(input: {
           })
         : await transaction.contact.create({
             data: {
+              workspaceId,
               companyId: company.id,
               firstName: input.contact.firstName,
               lastName: input.contact.lastName,
@@ -367,13 +400,15 @@ async function syncOneContact(input: {
 
       await transaction.externalRecordMapping.upsert({
         where: {
-          provider_entityType_externalRecordId: {
+          workspaceId_provider_entityType_externalRecordId: {
+            workspaceId,
             provider: "ZOHO_BIGIN",
             entityType: "CONTACT",
             externalRecordId: input.contact.externalRecordId
           }
         },
         create: {
+          workspaceId,
           integrationAccountId: input.integrationAccountId,
           provider: "ZOHO_BIGIN",
           entityType: "CONTACT",
@@ -401,25 +436,35 @@ async function syncOneContact(input: {
 
       const existingLeadMapping = await transaction.externalRecordMapping.findUnique({
         where: {
-          provider_entityType_externalRecordId: {
+          workspaceId_provider_entityType_externalRecordId: {
+            workspaceId,
             provider: "ZOHO_BIGIN",
             entityType: "LEAD",
             externalRecordId: input.contact.externalRecordId
           }
         }
       });
+      if (existingLeadMapping) {
+        const scopedLead = await transaction.lead.findFirst({
+          where: { id: existingLeadMapping.localEntityId, workspaceId },
+          select: { id: true }
+        });
+        if (!scopedLead) throw new AppError(409, "CONFLICT", "Lead mapping crosses workspace boundary");
+      }
 
       const lead = existingLeadMapping
         ? await transaction.lead.update({
             where: { id: existingLeadMapping.localEntityId },
             data: {
               companyId: company.id,
+              workspaceId,
               contactId: contact.id,
               source: input.contact.source ?? "ZOHO_BIGIN"
             }
           })
         : await transaction.lead.create({
             data: {
+              workspaceId,
               companyId: company.id,
               contactId: contact.id,
               stageId: defaultStage.id,
@@ -431,13 +476,15 @@ async function syncOneContact(input: {
 
       await transaction.externalRecordMapping.upsert({
         where: {
-          provider_entityType_externalRecordId: {
+          workspaceId_provider_entityType_externalRecordId: {
+            workspaceId,
             provider: "ZOHO_BIGIN",
             entityType: "LEAD",
             externalRecordId: input.contact.externalRecordId
           }
         },
         create: {
+          workspaceId,
           integrationAccountId: input.integrationAccountId,
           provider: "ZOHO_BIGIN",
           entityType: "LEAD",

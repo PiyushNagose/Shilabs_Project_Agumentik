@@ -103,6 +103,7 @@ export async function createContact(
   try {
     return toContactDto(
       await createContactRecord({
+        workspaceId: actor.activeWorkspaceId,
         company: { connect: { id: input.companyId } },
         firstName: input.firstName,
         lastName: input.lastName,

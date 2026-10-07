@@ -123,10 +123,14 @@ export class ZohoTimelineSyncer implements TimelineSyncer {
     });
     if (!activity)
       return { status: "FAILED", externalRecordId: null, lastError: "Activity not found" };
+    if (!activity.workspaceId)
+      return { status: "FAILED", externalRecordId: null, lastError: "Activity workspace not found" };
+    const workspaceId = activity.workspaceId;
 
     const existingMapping = await this.prisma.externalRecordMapping.findUnique({
       where: {
-        provider_entityType_localEntityId: {
+        workspaceId_provider_entityType_localEntityId: {
+          workspaceId,
           provider: "ZOHO_BIGIN",
           entityType: "ACTIVITY",
           localEntityId: activity.id
@@ -145,8 +149,11 @@ export class ZohoTimelineSyncer implements TimelineSyncer {
     if (zohoConfig.status === "NOT_CONFIGURED") {
       const lastError = `Missing configuration: ${zohoConfig.missing.join(", ")}`;
       await this.prisma.integrationAccount.upsert({
-        where: { provider_key: { provider: "ZOHO_BIGIN", key: "default" } },
+        where: {
+          workspaceId_provider_key: { workspaceId, provider: "ZOHO_BIGIN", key: "default" }
+        },
         create: {
+          workspaceId,
           provider: "ZOHO_BIGIN",
           key: "default",
           displayName: "Zoho Bigin",
@@ -167,7 +174,8 @@ export class ZohoTimelineSyncer implements TimelineSyncer {
 
     const leadMapping = await this.prisma.externalRecordMapping.findUnique({
       where: {
-        provider_entityType_localEntityId: {
+        workspaceId_provider_entityType_localEntityId: {
+          workspaceId,
           provider: "ZOHO_BIGIN",
           entityType: "LEAD",
           localEntityId: activity.leadId
@@ -183,8 +191,11 @@ export class ZohoTimelineSyncer implements TimelineSyncer {
     }
 
     const account = await this.prisma.integrationAccount.upsert({
-      where: { provider_key: { provider: "ZOHO_BIGIN", key: "default" } },
+      where: {
+        workspaceId_provider_key: { workspaceId, provider: "ZOHO_BIGIN", key: "default" }
+      },
       create: {
+        workspaceId,
         provider: "ZOHO_BIGIN",
         key: "default",
         displayName: "Zoho Bigin",
@@ -213,13 +224,15 @@ export class ZohoTimelineSyncer implements TimelineSyncer {
       });
       const mapping = await this.prisma.externalRecordMapping.upsert({
         where: {
-          provider_entityType_localEntityId: {
+          workspaceId_provider_entityType_localEntityId: {
+            workspaceId,
             provider: "ZOHO_BIGIN",
             entityType: "ACTIVITY",
             localEntityId: activity.id
           }
         },
         create: {
+          workspaceId,
           integrationAccountId: account.id,
           provider: "ZOHO_BIGIN",
           entityType: "ACTIVITY",

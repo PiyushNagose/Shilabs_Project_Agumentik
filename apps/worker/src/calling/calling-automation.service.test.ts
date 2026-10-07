@@ -86,12 +86,14 @@ async function clean(): Promise<void> {
 }
 
 async function createCompletedFollowUp() {
+  const workspace = await workerPrisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
   const stage = await workerPrisma.pipelineStage.findFirstOrThrow({ where: { key: "NEW" } });
   const company = await workerPrisma.company.create({
-    data: { name: `R23 Calling ${crypto.randomUUID()}` }
+    data: { workspaceId: workspace.id, name: `R23 Calling ${crypto.randomUUID()}` }
   });
   const contact = await workerPrisma.contact.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       firstName: "R23",
       lastName: "Caller",
@@ -104,6 +106,7 @@ async function createCompletedFollowUp() {
   });
   const lead = await workerPrisma.lead.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       contactId: contact.id,
       stageId: stage.id,
@@ -112,6 +115,7 @@ async function createCompletedFollowUp() {
   });
   const sequence = await workerPrisma.followUpSequence.create({
     data: {
+      workspaceId: workspace.id,
       leadId: lead.id,
       contactId: contact.id,
       status: "COMPLETED",

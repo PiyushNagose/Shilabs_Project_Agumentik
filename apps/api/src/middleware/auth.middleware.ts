@@ -3,6 +3,7 @@ import type { UserRole } from "@prisma/client";
 import { AppError } from "../shared/errors.js";
 import { verifyAccessToken } from "../modules/auth/auth.service.js";
 import type { AuthenticatedUser } from "../modules/auth/auth.types.js";
+import { resolveWorkspaceContext } from "../modules/workspaces/workspace.service.js";
 
 function getBearerToken(request: Request): string {
   const authorization = request.header("authorization");
@@ -20,7 +21,10 @@ export async function requireAuth(
 ): Promise<void> {
   try {
     const token = getBearerToken(request);
-    request.user = await verifyAccessToken(token);
+    const user = await verifyAccessToken(token);
+    const workspace = await resolveWorkspaceContext(user.id, request.header("x-workspace-id"));
+    request.workspace = workspace;
+    request.user = { ...user, activeWorkspaceId: workspace.workspaceId };
     request.accessToken = token;
     next();
   } catch (error) {

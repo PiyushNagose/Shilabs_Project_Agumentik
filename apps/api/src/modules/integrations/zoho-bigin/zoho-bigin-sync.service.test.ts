@@ -115,6 +115,7 @@ async function cleanup(): Promise<void> {
 
 describe("Zoho lead/contact sync", () => {
   beforeAll(async () => {
+    const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
     await prisma.user.deleteMany({ where: { email: actorEmail } });
     const user = await prisma.user.create({
       data: {
@@ -134,7 +135,8 @@ describe("Zoho lead/contact sync", () => {
       role: user.role,
       status: user.status,
       createdAt: user.createdAt,
-      updatedAt: user.updatedAt
+      updatedAt: user.updatedAt,
+      activeWorkspaceId: workspace.id
     };
   });
 
@@ -173,13 +175,11 @@ describe("Zoho lead/contact sync", () => {
     expect(first.status).toBe("COMPLETED");
     expect(first.succeededRecords).toBe(1);
 
-    const leadMapping = await prisma.externalRecordMapping.findUniqueOrThrow({
+    const leadMapping = await prisma.externalRecordMapping.findFirstOrThrow({
       where: {
-        provider_entityType_externalRecordId: {
-          provider: "ZOHO_BIGIN",
-          entityType: "LEAD",
-          externalRecordId: "r3-zoho-contact-1"
-        }
+        provider: "ZOHO_BIGIN",
+        entityType: "LEAD",
+        externalRecordId: "r3-zoho-contact-1"
       }
     });
     await prisma.lead.update({
@@ -205,13 +205,11 @@ describe("Zoho lead/contact sync", () => {
     const contact = await prisma.contact.findUniqueOrThrow({
       where: {
         id: (
-          await prisma.externalRecordMapping.findUniqueOrThrow({
+          await prisma.externalRecordMapping.findFirstOrThrow({
             where: {
-              provider_entityType_externalRecordId: {
-                provider: "ZOHO_BIGIN",
-                entityType: "CONTACT",
-                externalRecordId: "r3-zoho-contact-1"
-              }
+              provider: "ZOHO_BIGIN",
+              entityType: "CONTACT",
+              externalRecordId: "r3-zoho-contact-1"
             }
           })
         ).localEntityId

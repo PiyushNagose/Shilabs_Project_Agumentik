@@ -9,6 +9,7 @@ export interface AuthenticatedUser {
   status: UserStatus;
   createdAt: Date;
   updatedAt: Date;
+  activeWorkspaceId?: string;
 }
 
 export interface AccessTokenClaims {

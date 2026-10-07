@@ -11,6 +11,11 @@ import {
 } from "./integration-mapping.repository.js";
 
 const accountKey = "r1-test";
+const workspaceSlugs = ["r1-mapping-a", "r1-mapping-b"];
+
+async function workspaceId(slug = workspaceSlugs[0] ?? "r1-mapping-a"): Promise<string> {
+  return (await prisma.workspace.findUniqueOrThrow({ where: { slug } })).id;
+}
 
 describe("integration mapping repository", () => {
   beforeEach(async () => {
@@ -19,6 +24,10 @@ describe("integration mapping repository", () => {
     });
     await prisma.integrationAccount.deleteMany({
       where: { provider: "ZOHO_BIGIN", key: accountKey }
+    });
+    await prisma.workspace.deleteMany({ where: { slug: { in: workspaceSlugs } } });
+    await prisma.workspace.createMany({
+      data: workspaceSlugs.map((slug) => ({ name: slug, slug }))
     });
   });
 
@@ -29,11 +38,13 @@ describe("integration mapping repository", () => {
     await prisma.integrationAccount.deleteMany({
       where: { provider: "ZOHO_BIGIN", key: accountKey }
     });
+    await prisma.workspace.deleteMany({ where: { slug: { in: workspaceSlugs } } });
     await prisma.$disconnect();
   });
 
   it("stores integration account configuration without plaintext secrets", async () => {
     const account = await upsertIntegrationAccount({
+      workspaceId: await workspaceId(),
       provider: "ZOHO_BIGIN",
       key: accountKey,
       displayName: "R1 Test Zoho Bigin",
@@ -47,7 +58,7 @@ describe("integration mapping repository", () => {
     expect(JSON.stringify(account.publicConfig)).not.toContain("secret");
 
     await expect(
-      findIntegrationAccount({ provider: "ZOHO_BIGIN", key: accountKey })
+      findIntegrationAccount({ workspaceId: await workspaceId(), provider: "ZOHO_BIGIN", key: accountKey })
     ).resolves.toMatchObject({
       id: account.id
     });
@@ -55,6 +66,7 @@ describe("integration mapping repository", () => {
 
   it("maps one local record to one external record with idempotency metadata", async () => {
     const account = await upsertIntegrationAccount({
+      workspaceId: await workspaceId(),
       provider: "ZOHO_BIGIN",
       key: accountKey,
       displayName: "R1 Test Zoho Bigin",
@@ -62,6 +74,7 @@ describe("integration mapping repository", () => {
     });
 
     const mapping = await createExternalRecordMapping({
+      workspaceId: await workspaceId(),
       integrationAccountId: account.id,
       provider: "ZOHO_BIGIN",
       entityType: "LEAD",
@@ -74,6 +87,7 @@ describe("integration mapping repository", () => {
 
     await expect(
       findMappingByLocalRecord({
+        workspaceId: await workspaceId(),
         provider: "ZOHO_BIGIN",
         entityType: "LEAD",
         localEntityId: "r1-local-lead-1"
@@ -82,6 +96,7 @@ describe("integration mapping repository", () => {
 
     await expect(
       findMappingByExternalRecord({
+        workspaceId: await workspaceId(),
         provider: "ZOHO_BIGIN",
         entityType: "LEAD",
         externalRecordId: "zoho-lead-1"
@@ -91,6 +106,7 @@ describe("integration mapping repository", () => {
 
   it("enforces duplicate-safe local, external and idempotency uniqueness", async () => {
     await createExternalRecordMapping({
+      workspaceId: await workspaceId(),
       provider: "ZOHO_BIGIN",
       entityType: "CONTACT",
       localEntityId: "r1-local-contact-1",
@@ -100,6 +116,7 @@ describe("integration mapping repository", () => {
 
     await expect(
       createExternalRecordMapping({
+        workspaceId: await workspaceId(),
         provider: "ZOHO_BIGIN",
         entityType: "CONTACT",
         localEntityId: "r1-local-contact-1",
@@ -109,6 +126,7 @@ describe("integration mapping repository", () => {
 
     await expect(
       createExternalRecordMapping({
+        workspaceId: await workspaceId(),
         provider: "ZOHO_BIGIN",
         entityType: "CONTACT",
         localEntityId: "r1-local-contact-2",
@@ -118,6 +136,7 @@ describe("integration mapping repository", () => {
 
     await expect(
       createExternalRecordMapping({
+        workspaceId: await workspaceId(),
         provider: "ZOHO_BIGIN",
         entityType: "LEAD",
         localEntityId: "r1-local-lead-2",
@@ -129,6 +148,7 @@ describe("integration mapping repository", () => {
 
   it("records sync success and failure without losing retry history", async () => {
     const mapping = await createExternalRecordMapping({
+      workspaceId: await workspaceId(),
       provider: "ZOHO_BIGIN",
       entityType: "DEAL",
       localEntityId: "r1-local-deal-1",
@@ -137,6 +157,7 @@ describe("integration mapping repository", () => {
 
     const failed = await markMappingFailed({
       id: mapping.id,
+      workspaceId: await workspaceId(),
       errorCode: "RATE_LIMITED",
       errorMessage: "Provider rate limit reached"
     });
@@ -148,6 +169,7 @@ describe("integration mapping repository", () => {
     const syncedAt = new Date("2026-09-15T01:00:00.000Z");
     const synced = await markMappingSynced({
       id: mapping.id,
+      workspaceId: await workspaceId(),
       externalVersion: "version-2",
       externalUpdatedAt: syncedAt,
       syncedAt
@@ -157,5 +179,37 @@ describe("integration mapping repository", () => {
     expect(synced.retryCount).toBe(1);
     expect(synced.lastErrorCode).toBeNull();
     expect(synced.externalVersion).toBe("version-2");
+  });
+
+  it("isolates identical provider record ids between workspaces", async () => {
+    const workspaceA = await workspaceId(workspaceSlugs[0]);
+    const workspaceB = await workspaceId(workspaceSlugs[1]);
+    const first = await createExternalRecordMapping({
+      workspaceId: workspaceA,
+      provider: "ZOHO_BIGIN",
+      entityType: "LEAD",
+      localEntityId: "r1-shared-local",
+      externalRecordId: "r1-shared-external"
+    });
+    const second = await createExternalRecordMapping({
+      workspaceId: workspaceB,
+      provider: "ZOHO_BIGIN",
+      entityType: "LEAD",
+      localEntityId: "r1-shared-local",
+      externalRecordId: "r1-shared-external"
+    });
+
+    await expect(findMappingByExternalRecord({
+      workspaceId: workspaceA,
+      provider: "ZOHO_BIGIN",
+      entityType: "LEAD",
+      externalRecordId: "r1-shared-external"
+    })).resolves.toMatchObject({ id: first.id, workspaceId: workspaceA });
+    await expect(findMappingByExternalRecord({
+      workspaceId: workspaceB,
+      provider: "ZOHO_BIGIN",
+      entityType: "LEAD",
+      externalRecordId: "r1-shared-external"
+    })).resolves.toMatchObject({ id: second.id, workspaceId: workspaceB });
   });
 });

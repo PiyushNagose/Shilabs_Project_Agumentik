@@ -56,10 +56,12 @@ async function cleanup(): Promise<void> {
 }
 
 async function fixture() {
+  const workspace = await workerPrisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
   const stage = await workerPrisma.pipelineStage.findFirstOrThrow({ where: { key: "NEW" } });
-  const company = await workerPrisma.company.create({ data: { name: `R13 Worker ${crypto.randomUUID()}` } });
+  const company = await workerPrisma.company.create({ data: { workspaceId: workspace.id, name: `R13 Worker ${crypto.randomUUID()}` } });
   const contact = await workerPrisma.contact.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       firstName: "Worker",
       lastName: "Lead",
@@ -70,6 +72,7 @@ async function fixture() {
   });
   const lead = await workerPrisma.lead.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       contactId: contact.id,
       stageId: stage.id,
@@ -77,10 +80,11 @@ async function fixture() {
     }
   });
   const conversation = await workerPrisma.conversation.create({
-    data: { leadId: lead.id, channel: "EMAIL", mode: "AUTO" }
+    data: { workspaceId: workspace.id, leadId: lead.id, channel: "EMAIL", mode: "AUTO" }
   });
   const sequence = await workerPrisma.followUpSequence.create({
     data: {
+      workspaceId: workspace.id,
       leadId: lead.id,
       contactId: contact.id,
       conversationId: conversation.id,
@@ -102,6 +106,7 @@ async function fixture() {
   });
   const event = await workerPrisma.domainEventOutbox.create({
     data: {
+      workspaceId: workspace.id,
       eventType: "FOLLOWUP_EMAIL_SEND_REQUESTED",
       aggregateType: "FollowUpAttempt",
       aggregateId: attempt.id,
@@ -120,10 +125,12 @@ async function fixture() {
 }
 
 async function outOfOrderFinalAttemptFixture() {
+  const workspace = await workerPrisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
   const stage = await workerPrisma.pipelineStage.findFirstOrThrow({ where: { key: "NEW" } });
-  const company = await workerPrisma.company.create({ data: { name: `R13 Worker ${crypto.randomUUID()}` } });
+  const company = await workerPrisma.company.create({ data: { workspaceId: workspace.id, name: `R13 Worker ${crypto.randomUUID()}` } });
   const contact = await workerPrisma.contact.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       firstName: "Worker",
       lastName: "OutOfOrder",
@@ -136,6 +143,7 @@ async function outOfOrderFinalAttemptFixture() {
   });
   const lead = await workerPrisma.lead.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       contactId: contact.id,
       stageId: stage.id,
@@ -143,10 +151,11 @@ async function outOfOrderFinalAttemptFixture() {
     }
   });
   const conversation = await workerPrisma.conversation.create({
-    data: { leadId: lead.id, channel: "EMAIL", mode: "AUTO" }
+    data: { workspaceId: workspace.id, leadId: lead.id, channel: "EMAIL", mode: "AUTO" }
   });
   const sequence = await workerPrisma.followUpSequence.create({
     data: {
+      workspaceId: workspace.id,
       leadId: lead.id,
       contactId: contact.id,
       conversationId: conversation.id,
@@ -174,6 +183,7 @@ async function outOfOrderFinalAttemptFixture() {
     });
     const event = await workerPrisma.domainEventOutbox.create({
       data: {
+        workspaceId: workspace.id,
         eventType: "FOLLOWUP_EMAIL_SEND_REQUESTED",
         aggregateType: "FollowUpAttempt",
         aggregateId: attempt.id,

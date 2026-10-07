@@ -66,16 +66,18 @@ async function cleanup(): Promise<void> {
 }
 
 async function createFixture() {
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
   const stage = await prisma.pipelineStage.upsert({
     where: { key: "R24_WORKER_NEW" },
     create: { key: "R24_WORKER_NEW", label: "R24 Worker New", order: 9241, probability: 10 },
     update: {}
   });
   const company = await prisma.company.create({
-    data: { name: `${companyPrefix} ${crypto.randomUUID()}` }
+    data: { workspaceId: workspace.id, name: `${companyPrefix} ${crypto.randomUUID()}` }
   });
   const contact = await prisma.contact.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       firstName: "R24",
       lastName: "Worker",
@@ -87,6 +89,7 @@ async function createFixture() {
   });
   const lead = await prisma.lead.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       contactId: contact.id,
       source: "R24_WORKER_TEST",
@@ -96,6 +99,7 @@ async function createFixture() {
   });
   const sequence = await prisma.callingSequence.create({
     data: {
+      workspaceId: workspace.id,
       leadId: lead.id,
       contactId: contact.id,
       cadenceOffsets: [0],
@@ -115,6 +119,7 @@ async function createFixture() {
   });
   const event = await prisma.domainEventOutbox.create({
     data: {
+      workspaceId: workspace.id,
       eventType: "WHATSAPP_SEND_REQUESTED",
       aggregateType: "CallingAttempt",
       aggregateId: attempt.id,

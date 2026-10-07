@@ -148,6 +148,7 @@ export async function startVoiceConversationRun(input: {
     where: { providerCallId: input.providerCallId }
   });
   if (!call) return;
+  if (!call.workspaceId) return;
   const now = new Date();
   await prisma.$transaction(async (tx) => {
     await tx.voiceConversationRun.upsert({
@@ -169,6 +170,7 @@ export async function startVoiceConversationRun(input: {
         }
       },
       create: {
+        workspaceId: call.workspaceId,
         provider: "EXOTEL",
         providerEventId: `exotel-stream:${input.providerCallId}:start`,
         providerCallId: input.providerCallId,
@@ -229,6 +231,7 @@ export async function finalizeVoiceConversationRun(input: {
     include: { lead: { include: { company: true, contact: true, owner: true } } }
   });
   if (!call) return;
+  if (!call.workspaceId) return;
   const existing = await prisma.voiceConversationRun.findUnique({
     where: { voiceCallAttemptId: call.id }
   });
@@ -268,10 +271,11 @@ export async function finalizeVoiceConversationRun(input: {
         orderBy: { createdAt: "desc" }
       })) ??
       (await tx.conversation.create({
-        data: { leadId: call.leadId, channel: "INTERNAL", mode: "AUTO", status: "OPEN" }
+        data: { workspaceId: call.workspaceId, leadId: call.leadId, channel: "INTERNAL", mode: "AUTO", status: "OPEN" }
       }));
     const messageRecord = await tx.message.create({
       data: {
+        workspaceId: call.workspaceId,
         conversationId: conversationRecord.id,
         direction: "INBOUND",
         senderType: "PROSPECT",
@@ -442,6 +446,7 @@ export async function finalizeVoiceConversationRun(input: {
       });
       const activity = await tx.activity.create({
         data: {
+          workspaceId: call.workspaceId,
           leadId: call.leadId,
           type: "CALL_CONVERSATION_COMPLETED",
           description: `AI voice conversation completed: ${output.summary}`
@@ -449,6 +454,7 @@ export async function finalizeVoiceConversationRun(input: {
       });
       await tx.auditEvent.create({
         data: {
+          workspaceId: call.workspaceId,
           actorType: "SYSTEM",
           entityType: "VoiceConversationRun",
           entityId: voiceRun.id,
@@ -485,6 +491,7 @@ export async function finalizeVoiceConversationRun(input: {
           await tx.domainEventOutbox.upsert({
             where: { idempotencyKey: `domain-event:voice-whatsapp:${call.id}` },
             create: {
+              workspaceId: call.workspaceId,
               eventType: "WHATSAPP_SEND_REQUESTED",
               aggregateType: "CallingAttempt",
               aggregateId: callingAttempt.id,
@@ -535,6 +542,7 @@ export async function finalizeVoiceConversationRun(input: {
     if (zohoTimeline.status === "FAILED") {
       await prisma.auditEvent.create({
         data: {
+          workspaceId: call.workspaceId,
           actorType: "SYSTEM",
           entityType: "VoiceConversationRun",
           entityId: result.voiceRunId,

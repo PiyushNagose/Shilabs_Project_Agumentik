@@ -216,18 +216,25 @@ export async function getExecutionContext(input: { event: DomainEventRecord }): 
 
   const [lead, conversation] = await Promise.all([
     leadId
-      ? workerPrisma.lead.findUnique({
-          where: { id: leadId },
+      ? workerPrisma.lead.findFirst({
+          where: {
+            id: leadId,
+            workspaceId: input.event.workspaceId
+          },
           select: {
+            workspaceId: true,
             status: true,
             contact: { select: { doNotContact: true, normalizedEmail: true } }
           }
         })
       : Promise.resolve(null),
     conversationId
-      ? workerPrisma.conversation.findUnique({
-          where: { id: conversationId },
-          select: { mode: true }
+      ? workerPrisma.conversation.findFirst({
+          where: {
+            id: conversationId,
+            workspaceId: input.event.workspaceId
+          },
+          select: { workspaceId: true, mode: true }
         })
       : Promise.resolve(null)
   ]);
@@ -240,6 +247,7 @@ export async function getExecutionContext(input: { event: DomainEventRecord }): 
       ? await workerPrisma.humanTakeover.findFirst({
           where: {
             status: "ACTIVE",
+            lead: { workspaceId: input.event.workspaceId },
             OR: [
               ...(leadId ? [{ leadId }] : []),
               ...(conversationId ? [{ conversationId }] : [])

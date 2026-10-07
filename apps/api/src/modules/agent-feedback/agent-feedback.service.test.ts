@@ -32,6 +32,7 @@ async function cleanup(): Promise<void> {
 }
 
 async function createFixture() {
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
   const user = await prisma.user.create({
     data: {
       email: `r25-correction-${crypto.randomUUID()}@example.local`,
@@ -50,7 +51,8 @@ async function createFixture() {
     role: user.role,
     status: user.status,
     createdAt: user.createdAt,
-    updatedAt: user.updatedAt
+    updatedAt: user.updatedAt,
+    activeWorkspaceId: workspace.id
   };
   const stage = await prisma.pipelineStage.upsert({
     where: { key: "R25_CORRECTION_NEW" },
@@ -58,16 +60,17 @@ async function createFixture() {
     update: {}
   });
   const company = await prisma.company.create({
-    data: { name: `${companyPrefix} ${crypto.randomUUID()}` }
+    data: { workspaceId: workspace.id, name: `${companyPrefix} ${crypto.randomUUID()}` }
   });
   const contact = await prisma.contact.create({
-    data: { companyId: company.id, firstName: "R25", lastName: "Prospect" }
+    data: { workspaceId: workspace.id, companyId: company.id, firstName: "R25", lastName: "Prospect" }
   });
   const lead = await prisma.lead.create({
-    data: { companyId: company.id, contactId: contact.id, source: "R25_TEST", stageId: stage.id }
+    data: { workspaceId: workspace.id, companyId: company.id, contactId: contact.id, source: "R25_TEST", stageId: stage.id }
   });
   const proposal = await prisma.proposal.create({
     data: {
+      workspaceId: workspace.id,
       leadId: lead.id,
       title: "R25 Generated Proposal",
       createdByUserId: user.id

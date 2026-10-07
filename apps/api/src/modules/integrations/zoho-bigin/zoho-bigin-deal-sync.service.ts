@@ -54,11 +54,14 @@ export async function syncZohoDeals(input: {
   env?: NodeJS.ProcessEnv;
   transport?: FetchTransport;
 }): Promise<ZohoDealSyncDto> {
+  const workspaceId = input.actor.activeWorkspaceId;
+  if (!workspaceId) throw new AppError(403, "AUTHORIZATION_ERROR", "Active workspace required");
   const startedAt = new Date();
   const config = getZohoBiginConfig(input.env);
 
   if (config.status === "NOT_CONFIGURED") {
     const account = await upsertIntegrationAccount({
+      workspaceId,
       provider: "ZOHO_BIGIN",
       key: "default",
       displayName: "Zoho Bigin",
@@ -74,6 +77,7 @@ export async function syncZohoDeals(input: {
     });
     const run = await prisma.integrationSyncRun.create({
       data: {
+        workspaceId,
         integrationAccountId: account.id,
         provider: "ZOHO_BIGIN",
         operation: "DEAL_SYNC",
@@ -101,6 +105,7 @@ export async function syncZohoDeals(input: {
   }
 
   const account = await upsertIntegrationAccount({
+    workspaceId,
     provider: "ZOHO_BIGIN",
     key: "default",
     displayName: "Zoho Bigin",
@@ -117,6 +122,7 @@ export async function syncZohoDeals(input: {
   });
   const run = await prisma.integrationSyncRun.create({
     data: {
+      workspaceId,
       integrationAccountId: account.id,
       provider: "ZOHO_BIGIN",
       operation: "DEAL_SYNC",
@@ -143,7 +149,7 @@ export async function syncZohoDeals(input: {
       for (const deal of pageResult.records) {
         counters.totalRecords += 1;
         try {
-          const outcome = await syncOneDeal({ deal, integrationAccountId: account.id });
+          const outcome = await syncOneDeal({ deal, integrationAccountId: account.id, workspaceId });
           if (outcome === "SKIPPED") counters.skippedRecords += 1;
           else counters.succeededRecords += 1;
         } catch (error) {
@@ -208,10 +214,12 @@ export async function syncZohoDeals(input: {
 async function syncOneDeal(input: {
   deal: CRMDeal;
   integrationAccountId: string;
+  workspaceId: string;
 }): Promise<"SYNCED" | "SKIPPED"> {
   const leadMapping = await prisma.externalRecordMapping.findUnique({
     where: {
-      provider_entityType_externalRecordId: {
+      workspaceId_provider_entityType_externalRecordId: {
+        workspaceId: input.workspaceId,
         provider: "ZOHO_BIGIN",
         entityType: "LEAD",
         externalRecordId: input.deal.relatedLeadExternalRecordId
@@ -219,13 +227,22 @@ async function syncOneDeal(input: {
     }
   });
   if (!leadMapping) return "SKIPPED";
+  const mappedLead = await prisma.lead.findFirst({
+    where: { id: leadMapping.localEntityId, workspaceId: input.workspaceId },
+    select: { id: true }
+  });
+  if (!mappedLead) throw new AppError(409, "CONFLICT", "Lead mapping crosses workspace boundary");
 
-  const defaultStage = await prisma.pipelineStage.findUnique({ where: { key: "NEW" } });
+  const defaultStage = await prisma.pipelineStage.findFirst({
+    where: { key: "NEW", workspaceId: input.workspaceId }
+  });
   if (!defaultStage) throw new AppError(404, "NOT_FOUND", "Default pipeline stage not found");
 
   const matchedStageKey = stageKey(input.deal.stageName);
   const stage = matchedStageKey
-    ? await prisma.pipelineStage.findUnique({ where: { key: matchedStageKey } })
+    ? await prisma.pipelineStage.findFirst({
+        where: { key: matchedStageKey, workspaceId: input.workspaceId }
+      })
     : null;
   const targetStage = stage ?? defaultStage;
 
@@ -233,7 +250,8 @@ async function syncOneDeal(input: {
     async (transaction) => {
       const existingMapping = await transaction.externalRecordMapping.findUnique({
         where: {
-          provider_entityType_externalRecordId: {
+          workspaceId_provider_entityType_externalRecordId: {
+            workspaceId: input.workspaceId,
             provider: "ZOHO_BIGIN",
             entityType: "DEAL",
             externalRecordId: input.deal.externalRecordId
@@ -241,8 +259,12 @@ async function syncOneDeal(input: {
         }
       });
       const existingDeal = existingMapping
-        ? await transaction.deal.findUnique({ where: { id: existingMapping.localEntityId } })
-        : await transaction.deal.findUnique({ where: { leadId: leadMapping.localEntityId } });
+        ? await transaction.deal.findFirst({
+            where: { id: existingMapping.localEntityId, workspaceId: input.workspaceId }
+          })
+        : await transaction.deal.findFirst({
+            where: { leadId: leadMapping.localEntityId, workspaceId: input.workspaceId }
+          });
       const value = input.deal.value ? new Prisma.Decimal(input.deal.value) : null;
       const probability = input.deal.probability ?? targetStage.probability;
       const status = statusForZohoDeal(input.deal);
@@ -251,6 +273,7 @@ async function syncOneDeal(input: {
         ? await transaction.deal.update({
             where: { id: existingDeal.id },
             data: {
+              workspaceId: input.workspaceId,
               stageId: targetStage.id,
               value,
               currency: input.deal.currency ?? existingDeal.currency,
@@ -260,6 +283,7 @@ async function syncOneDeal(input: {
           })
         : await transaction.deal.create({
             data: {
+              workspaceId: input.workspaceId,
               leadId: leadMapping.localEntityId,
               stageId: targetStage.id,
               value,
@@ -271,13 +295,15 @@ async function syncOneDeal(input: {
 
       await transaction.externalRecordMapping.upsert({
         where: {
-          provider_entityType_externalRecordId: {
+          workspaceId_provider_entityType_externalRecordId: {
+            workspaceId: input.workspaceId,
             provider: "ZOHO_BIGIN",
             entityType: "DEAL",
             externalRecordId: input.deal.externalRecordId
           }
         },
         create: {
+          workspaceId: input.workspaceId,
           integrationAccountId: input.integrationAccountId,
           provider: "ZOHO_BIGIN",
           entityType: "DEAL",

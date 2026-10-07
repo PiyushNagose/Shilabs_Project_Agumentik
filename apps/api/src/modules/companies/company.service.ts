@@ -71,7 +71,7 @@ export async function getCompany(actor: AuthenticatedUser, companyId: string): P
 }
 
 export async function createCompany(
-  _actor: AuthenticatedUser,
+  actor: AuthenticatedUser,
   input: CreateCompanyInput
 ): Promise<CompanyDto> {
   const normalizedWebsite = normalizeWebsite(input.website);
@@ -80,6 +80,7 @@ export async function createCompany(
   try {
     return toCompanyDto(
       await createCompanyRecord({
+        workspaceId: actor.activeWorkspaceId,
         name: input.name,
         website: input.website ?? null,
         normalizedWebsite,

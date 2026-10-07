@@ -62,12 +62,14 @@ async function cleanup(): Promise<void> {
 
 async function createLeadAndMessage(): Promise<{ leadId: string; messageId: string }> {
   const user = await prisma.user.findUniqueOrThrow({ where: { email: adminEmail } });
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
   const uniqueSlug = `m10-api-${randomUUID()}`;
   const company = await prisma.company.create({
-    data: { name: `${companyNamePrefix} ${uniqueSlug}` }
+    data: { workspaceId: workspace.id, name: `${companyNamePrefix} ${uniqueSlug}` }
   });
   const contact = await prisma.contact.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       firstName: "API",
       lastName: "Prospect",
@@ -77,6 +79,7 @@ async function createLeadAndMessage(): Promise<{ leadId: string; messageId: stri
   const stage = await prisma.pipelineStage.findUniqueOrThrow({ where: { key: "NEW" } });
   const lead = await prisma.lead.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       contactId: contact.id,
       ownerId: user.id,
@@ -85,10 +88,11 @@ async function createLeadAndMessage(): Promise<{ leadId: string; messageId: stri
     }
   });
   const conversation = await prisma.conversation.create({
-    data: { leadId: lead.id, channel: "WEBSITE" }
+    data: { workspaceId: workspace.id, leadId: lead.id, channel: "WEBSITE" }
   });
   const message = await prisma.message.create({
     data: {
+      workspaceId: workspace.id,
       conversationId: conversation.id,
       direction: "INBOUND",
       senderType: "PROSPECT",
