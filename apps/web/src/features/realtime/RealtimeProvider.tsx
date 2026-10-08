@@ -1,5 +1,13 @@
 import type React from "react";
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import { apiBaseUrl } from "../../services/api/core.js";
 import { useAuth } from "../auth/AuthProvider.js";
 
@@ -13,7 +21,8 @@ export type RealtimeEntityType =
   | "dashboard"
   | "operations"
   | "notifications"
-  | "domain-event";
+  | "domain-event"
+  | "agent";
 
 export interface RealtimeUpdateEvent {
   type: "realtime:update" | "realtime:reconnected";
@@ -51,9 +60,19 @@ function isRealtimeUpdate(value: unknown): value is RealtimeUpdateEvent {
     (value as { type?: unknown }).type === "realtime:update" &&
     typeof (value as { action?: unknown }).action === "string" &&
     typeof (value as { occurredAt?: unknown }).occurredAt === "string" &&
-    ["workspace", "lead", "deal", "pipeline", "task", "activity", "dashboard", "operations", "notifications", "domain-event"].includes(
-      String((value as { entityType?: unknown }).entityType)
-    )
+    [
+      "workspace",
+      "lead",
+      "deal",
+      "pipeline",
+      "task",
+      "activity",
+      "dashboard",
+      "operations",
+      "notifications",
+      "domain-event",
+      "agent"
+    ].includes(String((value as { entityType?: unknown }).entityType))
   );
 }
 

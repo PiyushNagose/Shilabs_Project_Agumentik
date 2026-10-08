@@ -17,7 +17,8 @@ export type RealtimeEntityType =
   | "dashboard"
   | "operations"
   | "notifications"
-  | "domain-event";
+  | "domain-event"
+  | "agent";
 
 export interface RealtimeEvent {
   type: "realtime:update";

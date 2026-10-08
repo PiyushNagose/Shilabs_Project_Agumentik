@@ -8,6 +8,7 @@ import { LeadContactsWorkspace } from "../contacts/LeadContactsWorkspace.js";
 import { DealsWorkspace } from "../deals/DealsWorkspace.js";
 import { CrmWorkspace, type DetailTab } from "../leads/CrmWorkspace.js";
 import { OperationsDashboard } from "../operations/OperationsDashboard.js";
+import { AgentsWorkspace } from "../agents/AgentsWorkspace.js";
 import { useAuth } from "./AuthProvider.js";
 
 export function AuthenticatedShell(): React.JSX.Element {
@@ -58,6 +59,17 @@ export function AuthenticatedShell(): React.JSX.Element {
           initialDealId={route.dealId ?? null}
           onRouteChange={(dealId) => navigate({ id: "deals", leadId: null, dealId })}
           onOpenLead={openWorkspace}
+        />
+      </section>
+    );
+  } else if (route.id === "agents") {
+    content = (
+      <section className="app-page-content">
+        <AgentsWorkspace
+          accessToken={accessToken}
+          currentUser={user}
+          initialAgentId={route.agentId ?? null}
+          onRouteChange={(agentId) => navigate({ id: "agents", leadId: null, agentId })}
         />
       </section>
     );

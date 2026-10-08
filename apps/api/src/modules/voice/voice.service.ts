@@ -1,5 +1,11 @@
 import crypto from "node:crypto";
-import { IntegrationAccountStatus, Prisma, UserRole, VoiceCallStatus } from "@prisma/client";
+import {
+  AgentType,
+  IntegrationAccountStatus,
+  Prisma,
+  UserRole,
+  VoiceCallStatus
+} from "@prisma/client";
 import { getVoiceConfig, type VoiceConfig } from "@shilabs/shared-config";
 import type {
   IntegrationHealthDto,
@@ -10,6 +16,7 @@ import { AppError } from "../../shared/errors.js";
 import { prisma } from "../../shared/prisma.js";
 import { redactSecrets } from "../../shared/redaction.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
+import { assertAgentCapabilityActive } from "../agents/agent.service.js";
 import { publishDomainEvent } from "../domain-events/domain-events.service.js";
 import {
   upsertExternalRecordMapping,
@@ -451,6 +458,7 @@ export async function createManualVoiceCall(
   if (!canAccessLead(actor, lead)) {
     throw new AppError(403, "AUTHORIZATION_ERROR", "Cannot call for this lead");
   }
+  if (lead.workspaceId) await assertAgentCapabilityActive(lead.workspaceId, AgentType.VOICE);
 
   const config = getVoiceConfig(options?.env);
   const normalizedToPhone = normalizePhone(lead.contact.phone);

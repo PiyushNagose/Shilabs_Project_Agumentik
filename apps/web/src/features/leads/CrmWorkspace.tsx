@@ -29,6 +29,7 @@ import { Icon } from "../../components/Icon.js";
 import { StateBlock } from "../../components/StateBlock.js";
 import { StatusBadge } from "../../components/StatusBadge.js";
 import { useToast } from "../../components/ToastProvider.js";
+import { Select } from "../../components/ui/index.js";
 import {
   accelerateFollowUpSequenceForE2E,
   assignLead,
@@ -90,11 +91,6 @@ function isE2ELocalUi(): boolean {
 }
 
 type WorkspaceView = "leads" | "pipeline";
-interface SelectOption {
-  label: string;
-  value: string;
-}
-
 export type DetailTab =
   | "Overview"
   | "Conversation"
@@ -117,87 +113,6 @@ const detailTabs: DetailTab[] = [
   "Deal",
   "AI Insights"
 ];
-
-function ThemedSelect({
-  ariaLabel,
-  disabled = false,
-  onChange,
-  options,
-  value
-}: {
-  ariaLabel: string;
-  disabled?: boolean;
-  onChange: (value: string) => void;
-  options: SelectOption[];
-  value: string;
-}): React.JSX.Element {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  const selected = options.find((option) => option.value === value) ?? options[0];
-
-  useEffect(() => {
-    if (!open) return;
-    function onPointerDown(event: PointerEvent): void {
-      if (!rootRef.current?.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    }
-    document.addEventListener("pointerdown", onPointerDown);
-    return () => document.removeEventListener("pointerdown", onPointerDown);
-  }, [open]);
-
-  return (
-    <div className={`themed-select${open ? " open" : ""}`} ref={rootRef}>
-      <select
-        aria-label={ariaLabel}
-        className="native-select-proxy"
-        disabled={disabled}
-        onChange={(event) => onChange(event.target.value)}
-        tabIndex={-1}
-        value={value}
-      >
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-      <button
-        aria-expanded={open}
-        aria-haspopup="listbox"
-        className="themed-select-trigger"
-        disabled={disabled}
-        onClick={() => setOpen((current) => !current)}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") setOpen(false);
-        }}
-        type="button"
-      >
-        <span>{selected?.label ?? ""}</span>
-        <Icon name="chevron-down" size={16} />
-      </button>
-      {open ? (
-        <div className="themed-select-menu" role="listbox" aria-label={ariaLabel}>
-          {options.map((option) => (
-            <button
-              aria-selected={option.value === value}
-              className={option.value === value ? "selected" : ""}
-              key={option.value}
-              onClick={() => {
-                onChange(option.value);
-                setOpen(false);
-              }}
-              role="option"
-              type="button"
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
 
 interface CrmWorkspaceProps {
   accessToken: string;
@@ -458,7 +373,9 @@ export function planCrmRealtimeRefresh(
   plan.lead = true;
   plan.notifications = true;
 
-  if (includesAny(["conversation", "message", "reply", "email", "followup", "follow-up", "whatsapp"])) {
+  if (
+    includesAny(["conversation", "message", "reply", "email", "followup", "follow-up", "whatsapp"])
+  ) {
     plan.conversations = true;
     plan.qualification = true;
   }
@@ -640,15 +557,20 @@ export function CrmWorkspace({
     const request = (detailRequestsRef.current[scope] ?? 0) + 1;
     detailRequestsRef.current[scope] = request;
     const selection = selectionRequestRef.current;
-    return () => selectedLeadRef.current === leadId &&
-      selectionRequestRef.current === selection && detailRequestsRef.current[scope] === request;
+    return () =>
+      selectedLeadRef.current === leadId &&
+      selectionRequestRef.current === selection &&
+      detailRequestsRef.current[scope] === request;
   }
 
-  useEffect(() => () => {
-    selectionRequestRef.current += 1;
-    listRequestRef.current += 1;
-    workspaceRequestRef.current += 1;
-  }, [accessToken]);
+  useEffect(
+    () => () => {
+      selectionRequestRef.current += 1;
+      listRequestRef.current += 1;
+      workspaceRequestRef.current += 1;
+    },
+    [accessToken]
+  );
 
   async function loadWorkspace(
     nextFilters = filters,
@@ -681,16 +603,18 @@ export function CrmWorkspace({
         : null;
       const tasks = selectedLead
         ? await listTasks(accessToken, { leadId: selectedLead.id })
-            .then((items) => Array.isArray(items) ? items : [])
+            .then((items) => (Array.isArray(items) ? items : []))
             .catch(() => [])
         : [];
       const allTasks = await listTasks(accessToken, {})
-        .then((items) => Array.isArray(items) ? items : [])
+        .then((items) => (Array.isArray(items) ? items : []))
         .catch(() => []);
 
-      if (request !== workspaceRequestRef.current || selection !== selectionRequestRef.current) return;
+      if (request !== workspaceRequestRef.current || selection !== selectionRequestRef.current)
+        return;
       setState((current) => ({
-        leadsPage: listRequest === listRequestRef.current ? leadsPage : current.leadsPage ?? leadsPage,
+        leadsPage:
+          listRequest === listRequestRef.current ? leadsPage : (current.leadsPage ?? leadsPage),
         stages,
         users,
         selectedLead,
@@ -707,7 +631,8 @@ export function CrmWorkspace({
       setTaskState({ tasks, loading: false, error: null });
       setWorkspaceTasks(allTasks);
     } catch {
-      if (request !== workspaceRequestRef.current || selection !== selectionRequestRef.current) return;
+      if (request !== workspaceRequestRef.current || selection !== selectionRequestRef.current)
+        return;
       setState((current) => ({
         ...current,
         loading: false,
@@ -727,8 +652,12 @@ export function CrmWorkspace({
   }, [initialTab]);
 
   useEffect(() => {
-    if (!initialLeadId || state.loading || state.selectedLead?.id === initialLeadId ||
-      selectionTargetRef.current === initialLeadId) {
+    if (
+      !initialLeadId ||
+      state.loading ||
+      state.selectedLead?.id === initialLeadId ||
+      selectionTargetRef.current === initialLeadId
+    ) {
       return;
     }
 
@@ -893,7 +822,7 @@ export function CrmWorkspace({
             limit: 10
           });
         } catch (error) {
-      if (!isCurrent()) return;
+          if (!isCurrent()) return;
           correctionError = apiErrorMessage(error, "Correction history could not be loaded");
         }
       }
@@ -905,12 +834,19 @@ export function CrmWorkspace({
         selectedProposalId: selectedProposal?.id ?? null,
         corrections,
         correctionSummary: current.correctionSummary,
-        draftTitle: current.selectedProposalId === selectedProposal?.id &&
-          current.draftTitle !== current.proposals.find((item) => item.id === selectedProposal.id)?.title
-            ? current.draftTitle : selectedProposal?.title ?? "",
-        draftContent: current.selectedProposalId === selectedProposal?.id &&
-          current.draftContent !== (current.proposals.find((item) => item.id === selectedProposal.id)?.currentVersion?.content ?? "")
-            ? current.draftContent : selectedProposal?.currentVersion?.content ?? "",
+        draftTitle:
+          current.selectedProposalId === selectedProposal?.id &&
+          current.draftTitle !==
+            current.proposals.find((item) => item.id === selectedProposal.id)?.title
+            ? current.draftTitle
+            : (selectedProposal?.title ?? ""),
+        draftContent:
+          current.selectedProposalId === selectedProposal?.id &&
+          current.draftContent !==
+            (current.proposals.find((item) => item.id === selectedProposal.id)?.currentVersion
+              ?.content ?? "")
+            ? current.draftContent
+            : (selectedProposal?.currentVersion?.content ?? ""),
         loading: false,
         error: correctionError,
         sendResult: current.sendResult
@@ -1108,7 +1044,9 @@ export function CrmWorkspace({
         listLeadActivities(accessToken, leadId).catch(() => []),
         listNotifications(accessToken, { leadId, limit: 10 }).catch(() => []),
         getLeadQualification(accessToken, leadId).catch(() => null),
-        listTasks(accessToken, { leadId }).then((items) => Array.isArray(items) ? items : []).catch(() => []),
+        listTasks(accessToken, { leadId })
+          .then((items) => (Array.isArray(items) ? items : []))
+          .catch(() => []),
         listMeetingRequests(accessToken, { leadId, limit: 50 }).catch(() => [])
       ]);
       if (request !== selectionRequestRef.current) return;
@@ -1126,7 +1064,10 @@ export function CrmWorkspace({
       setBriefingState(initialBriefingState);
     } catch (error) {
       if (request === selectionRequestRef.current) {
-        toast.error({ title: "Lead could not be loaded", detail: apiErrorMessage(error, "Please retry") });
+        toast.error({
+          title: "Lead could not be loaded",
+          detail: apiErrorMessage(error, "Please retry")
+        });
       }
     } finally {
       if (request === selectionRequestRef.current) selectionTargetRef.current = null;
@@ -1144,13 +1085,18 @@ export function CrmWorkspace({
       const completed = await completeTask(accessToken, taskId);
       setTaskState((current) => ({
         ...current,
-        tasks: current.tasks.map((task) => task.id === completed.id ? completed : task)
+        tasks: current.tasks.map((task) => (task.id === completed.id ? completed : task))
       }));
-      setWorkspaceTasks((current) => current.map((task) => task.id === completed.id ? completed : task));
+      setWorkspaceTasks((current) =>
+        current.map((task) => (task.id === completed.id ? completed : task))
+      );
       if (state.selectedLead) await refreshSelectedLead(state.selectedLead.id);
       toast.success({ title: "Task completed" });
     } catch (error) {
-      toast.error({ title: "Task could not be completed", detail: apiErrorMessage(error, "Please retry") });
+      toast.error({
+        title: "Task could not be completed",
+        detail: apiErrorMessage(error, "Please retry")
+      });
     }
   }
 
@@ -2097,162 +2043,187 @@ export function CrmWorkspace({
   const isProfile = Boolean(initialLeadId);
 
   return (
-    <section className={`crm-workspace phase4a-workspace${isProfile ? " profile-mode" : " list-mode"}`} aria-label="CRM workspace">
-      {!isProfile ? <div className="workspace-rail">
-        <div className="workspace-actions">
-          <div className="workspace-switch" aria-label="Workspace view">
-            <button
-              className={view === "leads" ? "active" : ""}
-              onClick={() => setView("leads")}
-              type="button"
-            >
-              <Icon name="layout-list" size={16} />
-              Leads
-            </button>
-            <button
-              className={view === "pipeline" ? "active" : ""}
-              onClick={() => setView("pipeline")}
-              type="button"
-            >
-              <Icon name="bar-chart" size={16} />
-              Pipeline
-            </button>
+    <section
+      className={`crm-workspace phase4a-workspace${isProfile ? " profile-mode" : " list-mode"}`}
+      aria-label="CRM workspace"
+    >
+      {!isProfile ? (
+        <div className="workspace-rail">
+          <div className="workspace-actions">
+            <div className="workspace-switch" aria-label="Workspace view">
+              <button
+                className={view === "leads" ? "active" : ""}
+                onClick={() => setView("leads")}
+                type="button"
+              >
+                <Icon name="layout-list" size={16} />
+                Leads
+              </button>
+              <button
+                className={view === "pipeline" ? "active" : ""}
+                onClick={() => setView("pipeline")}
+                type="button"
+              >
+                <Icon name="bar-chart" size={16} />
+                Pipeline
+              </button>
+            </div>
+            {canSyncZoho ? (
+              <button
+                className="workspace-sync-button"
+                disabled={zohoSyncState.syncing || state.loading}
+                onClick={() => void syncZohoLeadsContacts()}
+                type="button"
+              >
+                <Icon name="refresh" size={16} />
+                {zohoSyncState.syncing ? "Syncing Zoho" : "Sync Zoho"}
+              </button>
+            ) : null}
           </div>
-          {canSyncZoho ? (
-            <button
-              className="workspace-sync-button"
-              disabled={zohoSyncState.syncing || state.loading}
-              onClick={() => void syncZohoLeadsContacts()}
-              type="button"
+          <LeadFilters
+            filters={filters}
+            stages={state.stages}
+            users={state.users}
+            onChange={applyFilters}
+          />
+          {zohoSyncState.result !== null || zohoSyncState.error !== null ? (
+            <div
+              aria-live="polite"
+              className={`workspace-sync-status${zohoSyncState.error ? " error" : ""}`}
             >
-              <Icon name="refresh" size={16} />
-              {zohoSyncState.syncing ? "Syncing Zoho" : "Sync Zoho"}
-            </button>
+              {zohoSyncState.error ??
+                (zohoSyncState.result ? formatZohoSyncResult(zohoSyncState.result) : null)}
+            </div>
           ) : null}
         </div>
-        <LeadFilters
-          filters={filters}
-          stages={state.stages}
-          users={state.users}
-          onChange={applyFilters}
-        />
-        {zohoSyncState.result !== null || zohoSyncState.error !== null ? (
-          <div
-            aria-live="polite"
-            className={`workspace-sync-status${zohoSyncState.error ? " error" : ""}`}
-          >
-            {zohoSyncState.error ??
-              (zohoSyncState.result ? formatZohoSyncResult(zohoSyncState.result) : null)}
-          </div>
-        ) : null}
-      </div> : null}
+      ) : null}
 
       {state.error && state.leadsPage ? (
-        <p className="refresh-error" role="alert">{state.error}. Showing the last loaded data.</p>
+        <p className="refresh-error" role="alert">
+          {state.error}. Showing the last loaded data.
+        </p>
       ) : null}
       <div className={`workspace-grid${isProfile ? " profile-grid" : " list-grid"}`}>
-        {!isProfile ? <div className="workspace-panel phase4a-list-panel">
-          {state.loading ? (
-            <StateBlock title="Loading CRM" detail="Fetching real sales records from the API." />
-          ) : state.error && !state.leadsPage ? (
-            <StateBlock
-              title="CRM unavailable"
-              detail={state.error}
-              action={
-                <button onClick={() => void loadWorkspace(filters)} type="button">
-                  <Icon name="refresh" size={16} />
-                  Retry
-                </button>
-              }
-            />
-          ) : leads.length === 0 ? (
-            <StateBlock
-              title="No leads found"
-              detail="Create leads through the API or lead intake flow."
-            />
-          ) : view === "leads" ? (
-            <LeadList
-              leads={leads}
-              selectedLeadId={quickViewOpen ? state.selectedLead?.id : undefined}
-              tasks={workspaceTasks}
-              onSelect={openQuickView}
-            />
-          ) : (
-            <PipelineBoard groupedLeads={groupedLeads} onSelect={openQuickView} />
-          )}
-          {state.leadsPage && state.leadsPage.totalPages > 1 ? (
-            <nav className="lead-pagination" aria-label="Lead pages">
-              <span>
-                Showing {(state.leadsPage.page - 1) * state.leadsPage.pageSize + 1} - {Math.min(state.leadsPage.page * state.leadsPage.pageSize, state.leadsPage.total)} of {state.leadsPage.total}
-              </span>
-              <div>
-                <button disabled={state.leadsPage.page <= 1} onClick={() => void applyFilters({ page: (state.leadsPage?.page ?? 2) - 1 })} type="button">Previous</button>
-                <strong>{state.leadsPage.page}</strong>
-                <button disabled={state.leadsPage.page >= state.leadsPage.totalPages} onClick={() => void applyFilters({ page: (state.leadsPage?.page ?? 0) + 1 })} type="button">Next</button>
-              </div>
-            </nav>
-          ) : null}
-        </div> : null}
+        {!isProfile ? (
+          <div className="workspace-panel phase4a-list-panel">
+            {state.loading ? (
+              <StateBlock title="Loading CRM" detail="Fetching real sales records from the API." />
+            ) : state.error && !state.leadsPage ? (
+              <StateBlock
+                title="CRM unavailable"
+                detail={state.error}
+                action={
+                  <button onClick={() => void loadWorkspace(filters)} type="button">
+                    <Icon name="refresh" size={16} />
+                    Retry
+                  </button>
+                }
+              />
+            ) : leads.length === 0 ? (
+              <StateBlock
+                title="No leads found"
+                detail="Create leads through the API or lead intake flow."
+              />
+            ) : view === "leads" ? (
+              <LeadList
+                leads={leads}
+                selectedLeadId={quickViewOpen ? state.selectedLead?.id : undefined}
+                tasks={workspaceTasks}
+                onSelect={openQuickView}
+              />
+            ) : (
+              <PipelineBoard groupedLeads={groupedLeads} onSelect={openQuickView} />
+            )}
+            {state.leadsPage && state.leadsPage.totalPages > 1 ? (
+              <nav className="lead-pagination" aria-label="Lead pages">
+                <span>
+                  Showing {(state.leadsPage.page - 1) * state.leadsPage.pageSize + 1} -{" "}
+                  {Math.min(state.leadsPage.page * state.leadsPage.pageSize, state.leadsPage.total)}{" "}
+                  of {state.leadsPage.total}
+                </span>
+                <div>
+                  <button
+                    disabled={state.leadsPage.page <= 1}
+                    onClick={() => void applyFilters({ page: (state.leadsPage?.page ?? 2) - 1 })}
+                    type="button"
+                  >
+                    Previous
+                  </button>
+                  <strong>{state.leadsPage.page}</strong>
+                  <button
+                    disabled={state.leadsPage.page >= state.leadsPage.totalPages}
+                    onClick={() => void applyFilters({ page: (state.leadsPage?.page ?? 0) + 1 })}
+                    type="button"
+                  >
+                    Next
+                  </button>
+                </div>
+              </nav>
+            ) : null}
+          </div>
+        ) : null}
 
-        {isProfile ? <LeadDetail
-          activeTab={activeTab}
-          activities={state.activities}
-          notifications={state.notifications}
-          lead={state.selectedLead}
-          stages={state.stages}
-          users={state.users}
-          conversationState={conversationState}
-          currentUser={currentUser}
-          onAssignOwner={persistOwner}
-          onChangeStage={persistStage}
-          onConversationChange={selectConversation}
-          onConversationInputChange={(input) =>
-            setConversationState((current) => ({ ...current, input }))
-          }
-          onHumanReplyInputChange={(humanReplyInput) =>
-            setConversationState((current) => ({ ...current, humanReplyInput }))
-          }
-          onE2ECustomerReplyInputChange={(e2eReplyInput) =>
-            setConversationState((current) => ({ ...current, e2eReplyInput }))
-          }
-          onModeChange={persistConversationMode}
-          meetingState={meetingState}
-          briefingState={briefingState}
-          onGenerateLeadBriefing={generateSelectedLeadBriefing}
-          onGenerateMeetingBriefing={generateMeetingRequestBriefing}
-          onAcknowledgeNotification={acknowledgeLeadNotification}
-          onReadNotification={markLeadNotificationRead}
-          onMeetingConfirm={confirmMeetingSlot}
-          onMeetingDraftChange={updateMeetingDraft}
-          onMeetingRefresh={loadLeadMeetings}
-          onMeetingRequest={requestMeetingSlots}
-          onProposalApprove={approveSelectedProposal}
-          onProposalDraftChange={(patch) =>
-            setProposalState((current) => ({ ...current, ...patch, error: null }))
-          }
-          onProposalGenerate={generateSelectedProposal}
-          onProposalRefresh={() =>
-            state.selectedLead ? loadLeadProposals(state.selectedLead.id) : Promise.resolve()
-          }
-          qualificationState={qualificationState}
-          onProposalSave={saveProposalDraft}
-          onProposalSelect={selectProposal}
-          onProposalSend={sendSelectedProposal}
-          onProposalCorrection={recordProposalCorrection}
-          onSendProspectMessage={sendProspectMessage}
-          onSendHumanReply={sendHumanReply}
-          onSubmitE2ECustomerReply={submitE2ECustomerReplyFromConversation}
-          onAccelerateFollowUpForE2E={accelerateProductionFollowUpForE2E}
-          onRunCallingAttemptNowForE2E={runAiCallNowForE2E}
-          onStartFollowUp={startProductionFollowUp}
-          onStartConversation={startSimulatorConversation}
-          onStartHumanTakeover={startSelectedHumanTakeover}
-          onTabChange={changeDetailTab}
-          proposalState={proposalState}
-          taskState={taskState}
-          onCompleteTask={completeLeadTask}
-          onBack={() => onRouteChange?.(null)}
-        /> : null}
+        {isProfile ? (
+          <LeadDetail
+            activeTab={activeTab}
+            activities={state.activities}
+            notifications={state.notifications}
+            lead={state.selectedLead}
+            stages={state.stages}
+            users={state.users}
+            conversationState={conversationState}
+            currentUser={currentUser}
+            onAssignOwner={persistOwner}
+            onChangeStage={persistStage}
+            onConversationChange={selectConversation}
+            onConversationInputChange={(input) =>
+              setConversationState((current) => ({ ...current, input }))
+            }
+            onHumanReplyInputChange={(humanReplyInput) =>
+              setConversationState((current) => ({ ...current, humanReplyInput }))
+            }
+            onE2ECustomerReplyInputChange={(e2eReplyInput) =>
+              setConversationState((current) => ({ ...current, e2eReplyInput }))
+            }
+            onModeChange={persistConversationMode}
+            meetingState={meetingState}
+            briefingState={briefingState}
+            onGenerateLeadBriefing={generateSelectedLeadBriefing}
+            onGenerateMeetingBriefing={generateMeetingRequestBriefing}
+            onAcknowledgeNotification={acknowledgeLeadNotification}
+            onReadNotification={markLeadNotificationRead}
+            onMeetingConfirm={confirmMeetingSlot}
+            onMeetingDraftChange={updateMeetingDraft}
+            onMeetingRefresh={loadLeadMeetings}
+            onMeetingRequest={requestMeetingSlots}
+            onProposalApprove={approveSelectedProposal}
+            onProposalDraftChange={(patch) =>
+              setProposalState((current) => ({ ...current, ...patch, error: null }))
+            }
+            onProposalGenerate={generateSelectedProposal}
+            onProposalRefresh={() =>
+              state.selectedLead ? loadLeadProposals(state.selectedLead.id) : Promise.resolve()
+            }
+            qualificationState={qualificationState}
+            onProposalSave={saveProposalDraft}
+            onProposalSelect={selectProposal}
+            onProposalSend={sendSelectedProposal}
+            onProposalCorrection={recordProposalCorrection}
+            onSendProspectMessage={sendProspectMessage}
+            onSendHumanReply={sendHumanReply}
+            onSubmitE2ECustomerReply={submitE2ECustomerReplyFromConversation}
+            onAccelerateFollowUpForE2E={accelerateProductionFollowUpForE2E}
+            onRunCallingAttemptNowForE2E={runAiCallNowForE2E}
+            onStartFollowUp={startProductionFollowUp}
+            onStartConversation={startSimulatorConversation}
+            onStartHumanTakeover={startSelectedHumanTakeover}
+            onTabChange={changeDetailTab}
+            proposalState={proposalState}
+            taskState={taskState}
+            onCompleteTask={completeLeadTask}
+            onBack={() => onRouteChange?.(null)}
+          />
+        ) : null}
       </div>
       {!isProfile ? (
         <LeadQuickView
@@ -2319,25 +2290,25 @@ function LeadFilters({
           value={filters.search ?? ""}
         />
       </div>
-      <ThemedSelect
+      <Select
         ariaLabel="Filter by status"
         onChange={(status) => void onChange({ status })}
         options={statusOptions}
         value={filters.status ?? ""}
       />
-      <ThemedSelect
+      <Select
         ariaLabel="Filter by stage"
         onChange={(stageId) => void onChange({ stageId })}
         options={stageOptions}
         value={filters.stageId ?? ""}
       />
-      <ThemedSelect
+      <Select
         ariaLabel="Filter by owner"
         onChange={(ownerId) => void onChange({ ownerId })}
         options={ownerOptions}
         value={filters.ownerId ?? ""}
       />
-      <ThemedSelect
+      <Select
         ariaLabel="Sort leads"
         onChange={(sort) =>
           void onChange({ sort: sort as LeadListParams["sort"], direction: "desc" })
@@ -2379,48 +2350,93 @@ function LeadList({
           <h2>All Leads</h2>
         </div>
         <div className="lead-list-counts" aria-label="Lead counts">
-          <span className="active">All <strong>{leads.length}</strong></span>
-          <span>Open <strong>{leads.filter((lead) => lead.status === "OPEN").length}</strong></span>
-          <span>Nurture <strong>{leads.filter((lead) => lead.status === "NURTURE").length}</strong></span>
+          <span className="active">
+            All <strong>{leads.length}</strong>
+          </span>
+          <span>
+            Open <strong>{leads.filter((lead) => lead.status === "OPEN").length}</strong>
+          </span>
+          <span>
+            Nurture <strong>{leads.filter((lead) => lead.status === "NURTURE").length}</strong>
+          </span>
         </div>
       </header>
       {selectedIds.size > 0 ? (
         <div className="lead-selection-bar" role="status">
           <strong>{selectedIds.size} selected</strong>
-          <button onClick={() => setSelectedIds(new Set())} type="button">Clear selection</button>
+          <button onClick={() => setSelectedIds(new Set())} type="button">
+            Clear selection
+          </button>
         </div>
       ) : null}
       <div className="lead-list" role="table" aria-label="Leads list">
-      <div className="lead-row lead-row-head" role="row">
-        <span><input aria-label="Select all leads" checked={allSelected} onChange={() => setSelectedIds(allSelected ? new Set() : new Set(leads.map((lead) => lead.id)))} type="checkbox" /></span>
-        <span>Name</span>
-        <span>Company</span>
-        <span>Owner</span>
-        <span>Status</span>
-        <span>Deal stage</span>
-        <span>Priority</span>
-        <span>Score</span>
-        <span>Next action</span>
-      </div>
-      {leads.map((lead) => {
-        const priority = leadPriority(tasks.filter((task) => task.leadId === lead.id));
-        return (
-          <div className={`lead-row ${lead.id === selectedLeadId ? "selected" : ""}`} key={lead.id} role="row">
-            <span><input aria-label={`Select ${leadName(lead)}`} checked={selectedIds.has(lead.id)} onChange={() => toggle(lead.id)} type="checkbox" /></span>
-            <button className="lead-primary-cell" onClick={() => void onSelect(lead.id)} type="button">
-              <span className="lead-avatar" aria-hidden="true">{lead.contact.firstName.slice(0, 1)}{lead.contact.lastName.slice(0, 1)}</span>
-              <span><strong>{leadName(lead)}</strong><small>{lead.contact.email ?? "No email"}</small></span>
-            </button>
-            <span>{lead.company.name}</span>
-            <span>{lead.owner ? `${lead.owner.firstName} ${lead.owner.lastName}` : "Unassigned"}</span>
-            <span><StatusBadge tone="neutral">{lead.status.replaceAll("_", " ")}</StatusBadge></span>
-            <span>{lead.stage.label}</span>
-            <span>{priority === "NONE" ? "-" : priority}</span>
-            <span><strong>{lead.score}</strong><small>{lead.temperature}</small></span>
-            <span>{lead.nextAction ?? "No next action"}</span>
-          </div>
-        );
-      })}
+        <div className="lead-row lead-row-head" role="row">
+          <span>
+            <input
+              aria-label="Select all leads"
+              checked={allSelected}
+              onChange={() =>
+                setSelectedIds(allSelected ? new Set() : new Set(leads.map((lead) => lead.id)))
+              }
+              type="checkbox"
+            />
+          </span>
+          <span>Name</span>
+          <span>Company</span>
+          <span>Owner</span>
+          <span>Status</span>
+          <span>Deal stage</span>
+          <span>Priority</span>
+          <span>Score</span>
+          <span>Next action</span>
+        </div>
+        {leads.map((lead) => {
+          const priority = leadPriority(tasks.filter((task) => task.leadId === lead.id));
+          return (
+            <div
+              className={`lead-row ${lead.id === selectedLeadId ? "selected" : ""}`}
+              key={lead.id}
+              role="row"
+            >
+              <span>
+                <input
+                  aria-label={`Select ${leadName(lead)}`}
+                  checked={selectedIds.has(lead.id)}
+                  onChange={() => toggle(lead.id)}
+                  type="checkbox"
+                />
+              </span>
+              <button
+                className="lead-primary-cell"
+                onClick={() => void onSelect(lead.id)}
+                type="button"
+              >
+                <span className="lead-avatar" aria-hidden="true">
+                  {lead.contact.firstName.slice(0, 1)}
+                  {lead.contact.lastName.slice(0, 1)}
+                </span>
+                <span>
+                  <strong>{leadName(lead)}</strong>
+                  <small>{lead.contact.email ?? "No email"}</small>
+                </span>
+              </button>
+              <span>{lead.company.name}</span>
+              <span>
+                {lead.owner ? `${lead.owner.firstName} ${lead.owner.lastName}` : "Unassigned"}
+              </span>
+              <span>
+                <StatusBadge tone="neutral">{lead.status.replaceAll("_", " ")}</StatusBadge>
+              </span>
+              <span>{lead.stage.label}</span>
+              <span>{priority === "NONE" ? "-" : priority}</span>
+              <span>
+                <strong>{lead.score}</strong>
+                <small>{lead.temperature}</small>
+              </span>
+              <span>{lead.nextAction ?? "No next action"}</span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -2585,21 +2601,35 @@ function LeadDetail({
   return (
     <main className="lead-detail lead-profile" aria-label="Lead profile">
       <div className="lead-profile-breadcrumb">
-        <button onClick={onBack} type="button"><ArrowLeft size={16} /> All leads</button>
+        <button onClick={onBack} type="button">
+          <ArrowLeft size={16} /> All leads
+        </button>
         <span>Lead profile</span>
       </div>
       <header className="detail-hero">
-        <span className="lead-avatar profile-avatar" aria-hidden="true">{lead.contact.firstName.slice(0, 1)}{lead.contact.lastName.slice(0, 1)}</span>
+        <span className="lead-avatar profile-avatar" aria-hidden="true">
+          {lead.contact.firstName.slice(0, 1)}
+          {lead.contact.lastName.slice(0, 1)}
+        </span>
         <div className="profile-identity">
           <p className="eyebrow">{lead.source}</p>
           <h2>{leadName(lead)}</h2>
           <p>
-            {lead.contact.title ? `${lead.contact.title} at ` : ""}{lead.company.name}
+            {lead.contact.title ? `${lead.contact.title} at ` : ""}
+            {lead.company.name}
           </p>
         </div>
         <div className="profile-quick-actions">
-          {lead.contact.email ? <a href={`mailto:${lead.contact.email}`}><Mail size={16} /> Email</a> : null}
-          {lead.contact.phone ? <a href={`tel:${lead.contact.phone}`}><Phone size={16} /> Call</a> : null}
+          {lead.contact.email ? (
+            <a href={`mailto:${lead.contact.email}`}>
+              <Mail size={16} /> Email
+            </a>
+          ) : null}
+          {lead.contact.phone ? (
+            <a href={`tel:${lead.contact.phone}`}>
+              <Phone size={16} /> Call
+            </a>
+          ) : null}
         </div>
         <div className="score-orbit" aria-label={`Lead score ${String(lead.score)}`}>
           <span>{lead.score}</span>
@@ -2607,12 +2637,16 @@ function LeadDetail({
         </div>
       </header>
 
-      <LeadFactStrip lead={lead} qualification={qualificationState.qualification} tasks={taskState.tasks} />
+      <LeadFactStrip
+        lead={lead}
+        qualification={qualificationState.qualification}
+        tasks={taskState.tasks}
+      />
 
       <div className="detail-controls">
         <label>
           <span>Stage</span>
-          <ThemedSelect
+          <Select
             ariaLabel="Change lead stage"
             onChange={(stageId) => void onChangeStage(stageId)}
             options={stageOptions}
@@ -2621,7 +2655,7 @@ function LeadDetail({
         </label>
         <label>
           <span>Owner</span>
-          <ThemedSelect
+          <Select
             ariaLabel="Assign owner"
             onChange={(ownerId) => void onAssignOwner(ownerId)}
             options={ownerOptions}
@@ -2631,9 +2665,18 @@ function LeadDetail({
       </div>
 
       <div className="detail-metrics">
-        <span><small>Estimated value</small><strong>{formatMoney(lead.estimatedValue, lead.currency)}</strong></span>
-        <span><small>Last activity</small><strong>{formatDate(lead.lastActivityAt)}</strong></span>
-        <span><small>Next action</small><strong>{nextAction}</strong></span>
+        <span>
+          <small>Estimated value</small>
+          <strong>{formatMoney(lead.estimatedValue, lead.currency)}</strong>
+        </span>
+        <span>
+          <small>Last activity</small>
+          <strong>{formatDate(lead.lastActivityAt)}</strong>
+        </span>
+        <span>
+          <small>Next action</small>
+          <strong>{nextAction}</strong>
+        </span>
       </div>
 
       <NotificationAlerts
@@ -2927,7 +2970,11 @@ function DetailTabPanel({
   if (tab === "Tasks") {
     return (
       <div className="tab-panel tab-panel-structured">
-        <TabSection eyebrow="Tasks" title="Lead work" meta={`${String(taskState.tasks.length)} tasks`}>
+        <TabSection
+          eyebrow="Tasks"
+          title="Lead work"
+          meta={`${String(taskState.tasks.length)} tasks`}
+        >
           <LeadTaskList
             tasks={taskState.tasks}
             loading={taskState.loading}
@@ -4117,7 +4164,7 @@ function ConversationSimulator({
 
       <p className="eyebrow">Internal simulator</p>
       <div className="simulator-toolbar">
-        <ThemedSelect
+        <Select
           ariaLabel="Select conversation"
           onChange={(conversationId) => void onConversationChange(conversationId)}
           options={conversationState.conversations.map((conversation) => ({
@@ -4126,7 +4173,7 @@ function ConversationSimulator({
           }))}
           value={selectedConversation.id}
         />
-        <ThemedSelect
+        <Select
           ariaLabel="AI mode"
           onChange={(mode) => void onModeChange(mode as ConversationModeName)}
           options={CONVERSATION_MODES.map((mode) => ({

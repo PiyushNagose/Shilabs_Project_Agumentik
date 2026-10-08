@@ -1,4 +1,4 @@
-import type { DomainEventOutbox, Prisma } from "@prisma/client";
+import { AgentType, type DomainEventOutbox, type Prisma } from "@prisma/client";
 import {
   getCallingAutomationConfig,
   getVoiceConfig,
@@ -14,6 +14,7 @@ import {
 } from "../integrations/twilio-voice.provider.js";
 import { ZohoTimelineSyncer, type TimelineSyncer } from "../followups/zoho-timeline.syncer.js";
 import { normalizeAutomationPhone } from "../shared/automation-phone.js";
+import { isAgentCapabilityActive } from "../shared/agent-control.js";
 
 type EligibilityBlock = readonly [
   code: string,
@@ -312,7 +313,8 @@ async function markAttemptBlocked(input: {
     await tx.lead.update({
       where: { id: input.leadId },
       data: {
-        nextAction: input.sequenceStatus === "ATTENTION_REQUIRED" ? "Review call/WhatsApp automation" : null,
+        nextAction:
+          input.sequenceStatus === "ATTENTION_REQUIRED" ? "Review call/WhatsApp automation" : null,
         nextActionAt: null
       }
     });
@@ -353,7 +355,10 @@ export async function executeCallingAutomationAttempt(input: {
 }): Promise<void> {
   const eventWorkspaceId = input.event.workspaceId;
   if (!eventWorkspaceId) {
-    throw new PermanentDomainEventError("WORKSPACE_CONTEXT_MISSING", "Calling event has no persisted workspace");
+    throw new PermanentDomainEventError(
+      "WORKSPACE_CONTEXT_MISSING",
+      "Calling event has no persisted workspace"
+    );
   }
   const attemptId = payloadString(input.event, "callingAttemptId");
   if (!attemptId) {
@@ -386,6 +391,19 @@ export async function executeCallingAutomationAttempt(input: {
     });
     return;
   }
+  if (!(await isAgentCapabilityActive(eventWorkspaceId, AgentType.VOICE))) {
+    await markAttemptBlocked({
+      workspaceId: eventWorkspaceId,
+      attemptId,
+      sequenceId: attempt.sequenceId,
+      leadId: attempt.leadId,
+      status: "SKIPPED",
+      sequenceStatus: "STOPPED",
+      code: "AGENT_PAUSED",
+      message: "Voice agent is paused"
+    });
+    return;
+  }
 
   const lead = attempt.lead;
   const conversation = lead.conversations[0];
@@ -402,7 +420,10 @@ export async function executeCallingAutomationAttempt(input: {
   });
 
   const voiceConfig = getVoiceConfig(input.env);
-  const normalizedToPhone = normalizeAutomationPhone(lead.contact.phone, voiceConfig.e2eAllowedToNumbers);
+  const normalizedToPhone = normalizeAutomationPhone(
+    lead.contact.phone,
+    voiceConfig.e2eAllowedToNumbers
+  );
   const configuredFromPhone = providerFromNumber(voiceConfig);
   const normalizedFromPhone =
     voiceConfig.provider === "twilio"

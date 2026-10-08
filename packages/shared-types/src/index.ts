@@ -1316,6 +1316,103 @@ export interface OperationsDashboardDto {
   usage: OperationsUsageIndicatorDto[];
 }
 
+export const AGENT_TYPES = [
+  "OUTREACH",
+  "REPLY_UNDERSTANDING",
+  "QUALIFICATION",
+  "PROPOSAL",
+  "MEETING",
+  "VOICE",
+  "WHATSAPP",
+  "SALES_COPILOT"
+] as const;
+export type AgentTypeName = (typeof AGENT_TYPES)[number];
+
+export const AGENT_STATUSES = ["DRAFT", "ACTIVE", "PAUSED", "ARCHIVED"] as const;
+export type AgentStatusName = (typeof AGENT_STATUSES)[number];
+
+export const AGENT_EXECUTION_STATUSES = [
+  "QUEUED",
+  "RUNNING",
+  "SUCCEEDED",
+  "FAILED",
+  "CANCELED"
+] as const;
+export type AgentExecutionStatusName = (typeof AGENT_EXECUTION_STATUSES)[number];
+
+export type AgentJsonValue =
+  string | number | boolean | null | { [key: string]: AgentJsonValue } | AgentJsonValue[];
+
+export interface AgentVersionDto {
+  id: string;
+  agentId: string;
+  version: number;
+  definition: AgentJsonValue;
+  modelConfig: AgentJsonValue;
+  toolsConfig: AgentJsonValue;
+  knowledgeConfig: AgentJsonValue;
+  publishedAt: string | null;
+  publishedByUserId: string | null;
+  createdAt: string;
+}
+
+export interface AgentExecutionDto {
+  id: string;
+  agentId: string;
+  versionId: string;
+  source: string;
+  sourceEntityType: string | null;
+  sourceEntityId: string | null;
+  entityType: string | null;
+  entityId: string | null;
+  leadId: string | null;
+  status: AgentExecutionStatusName;
+  startedAt: string;
+  completedAt: string | null;
+  durationMs: number | null;
+  summary: string | null;
+  result: AgentJsonValue;
+  evaluation: AgentJsonValue;
+  correlationId: string;
+}
+
+export interface AgentDto {
+  id: string;
+  key: string;
+  name: string;
+  description: string;
+  type: AgentTypeName;
+  status: AgentStatusName;
+  currentVersionId: string | null;
+  createdByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  currentVersion: AgentVersionDto | null;
+  versions: AgentVersionDto[];
+  executionCount: number;
+  successfulExecutionCount: number;
+  failedExecutionCount: number;
+  successRate: number | null;
+  lastExecutedAt: string | null;
+}
+
+export interface AgentDetailDto extends AgentDto {
+  executions: AgentExecutionDto[];
+}
+
+export interface AgentDashboardDto {
+  agents: AgentDto[];
+  summary: {
+    totalAgents: number;
+    activeAgents: number;
+    pausedAgents: number;
+    totalExecutions: number;
+    successfulExecutions: number;
+    failedExecutions: number;
+    successRate: number | null;
+  };
+}
+
 export const FOLLOW_UP_SEQUENCE_STATUSES = [
   "ACTIVE",
   "STOPPED",

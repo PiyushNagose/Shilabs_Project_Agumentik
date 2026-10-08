@@ -1,13 +1,11 @@
-import { Prisma } from "@prisma/client";
-import type {
-  ProposalGenerationResultDto,
-  ProposalGenerationRunDto
-} from "@shilabs/shared-types";
+import { AgentType, Prisma } from "@prisma/client";
+import type { ProposalGenerationResultDto, ProposalGenerationRunDto } from "@shilabs/shared-types";
 import { getAIConfig } from "../../config/ai.js";
 import { getSemrushConfig } from "../../config/semrush.js";
 import { AppError } from "../../shared/errors.js";
 import { prisma } from "../../shared/prisma.js";
 import { createAIProvider } from "../ai/ai.factory.js";
+import { assertAgentCapabilityActive } from "../agents/agent.service.js";
 import type { AIProvider, ProposalDraftResult } from "../ai/ai.provider.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
 import { publishDomainEvent } from "../domain-events/domain-events.service.js";
@@ -111,7 +109,10 @@ async function ensureLeadAndDeal(input: GenerateProposalInput): Promise<void> {
   const lead = await prisma.lead.findUnique({ where: { id: input.leadId }, select: { id: true } });
   if (!lead) throw new AppError(404, "NOT_FOUND", "Lead not found");
   if (!input.dealId) return;
-  const deal = await prisma.deal.findUnique({ where: { id: input.dealId }, select: { leadId: true } });
+  const deal = await prisma.deal.findUnique({
+    where: { id: input.dealId },
+    select: { leadId: true }
+  });
   if (!deal) throw new AppError(404, "NOT_FOUND", "Deal not found");
   if (deal.leadId !== input.leadId) {
     throw new AppError(400, "VALIDATION_ERROR", "Deal must belong to the proposal lead");
@@ -185,7 +186,9 @@ function validateProposalOutput(input: {
   if (unknownKnowledge.length > 0) {
     throw new AppError(502, "PROVIDER_ERROR", "AI proposal referenced unapproved knowledge");
   }
-  const unknownEvidence = input.output.evidence.filter((item) => !allowedSourceIds.has(item.sourceId));
+  const unknownEvidence = input.output.evidence.filter(
+    (item) => !allowedSourceIds.has(item.sourceId)
+  );
   if (unknownEvidence.length > 0) {
     throw new AppError(502, "PROVIDER_ERROR", "AI proposal evidence referenced unknown sources");
   }
@@ -246,6 +249,7 @@ export async function generateProposal(
 
   const missingFields = input.kind === "WEB_DESIGN" ? getMissingWebDesignFields(input) : [];
   const lead = await loadLeadContext(input.leadId);
+  if (lead.workspaceId) await assertAgentCapabilityActive(lead.workspaceId, AgentType.PROPOSAL);
   const inputContext = {
     kind: input.kind,
     lead: {
@@ -304,7 +308,11 @@ export async function generateProposal(
   let metadata: { provider: string; model: string } | null = null;
   try {
     metadata = aiMetadata(options?.env);
-    const seo = await analyzeSeo({ request: input, provider: options?.seoProvider, env: options?.env });
+    const seo = await analyzeSeo({
+      request: input,
+      provider: options?.seoProvider,
+      env: options?.env
+    });
     const aiProvider = options?.aiProvider ?? createAIProvider(options?.env);
     const aiOutput = await aiProvider.generateProposalDraft({
       messages: lead.conversations.flatMap((conversation) =>
@@ -355,14 +363,16 @@ export async function generateProposal(
       model: metadata.model,
       proposalId: waiting.id,
       inputContext,
-      approvedKnowledge: toJsonValue(knowledge.map((item) => ({
-        id: item.id,
-        key: item.key,
-        title: item.title,
-        category: item.category,
-        sourceTitle: item.sourceTitle,
-        sourceUrl: item.sourceUrl
-      }))),
+      approvedKnowledge: toJsonValue(
+        knowledge.map((item) => ({
+          id: item.id,
+          key: item.key,
+          title: item.title,
+          category: item.category,
+          sourceTitle: item.sourceTitle,
+          sourceUrl: item.sourceUrl
+        }))
+      ),
       toolEvidence: seo ? toJsonValue({ seo }) : undefined,
       aiOutput: toJsonValue(aiOutput)
     });
@@ -397,10 +407,12 @@ export async function generateProposal(
         kind: input.kind
       }
     });
-    return result(await prisma.proposalGenerationRun.findUniqueOrThrow({
-      where: { id: run.id },
-      include: generationRunInclude()
-    }));
+    return result(
+      await prisma.proposalGenerationRun.findUniqueOrThrow({
+        where: { id: run.id },
+        include: generationRunInclude()
+      })
+    );
   } catch (error) {
     const sanitized = sanitizeError(error);
     return result(
@@ -412,14 +424,16 @@ export async function generateProposal(
         provider: metadata?.provider ?? null,
         model: metadata?.model ?? null,
         inputContext,
-        approvedKnowledge: toJsonValue(knowledge.map((item) => ({
-          id: item.id,
-          key: item.key,
-          title: item.title,
-          category: item.category,
-          sourceTitle: item.sourceTitle,
-          sourceUrl: item.sourceUrl
-        }))),
+        approvedKnowledge: toJsonValue(
+          knowledge.map((item) => ({
+            id: item.id,
+            key: item.key,
+            title: item.title,
+            category: item.category,
+            sourceTitle: item.sourceTitle,
+            sourceUrl: item.sourceUrl
+          }))
+        ),
         failureCode: sanitized.code,
         failureMessage: sanitized.message
       })

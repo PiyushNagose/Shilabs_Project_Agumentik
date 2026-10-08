@@ -1,9 +1,10 @@
-import { Prisma } from "@prisma/client";
+import { AgentType, Prisma } from "@prisma/client";
 import type { FollowUpAttemptDto, FollowUpSequenceDto } from "@shilabs/shared-types";
 import { getFollowUpTimingConfig } from "@shilabs/shared-config";
 import { AppError } from "../../shared/errors.js";
 import { prisma } from "../../shared/prisma.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
+import { assertAgentCapabilityActive } from "../agents/agent.service.js";
 import { createAIProvider } from "../ai/ai.factory.js";
 import type { AIProvider } from "../ai/ai.provider.js";
 import { listApprovedKnowledge } from "../knowledge-base/knowledge-base.service.js";
@@ -19,7 +20,10 @@ const FOLLOW_UP_CADENCE_MODES = {
 } as const;
 
 type SequenceRecord = Prisma.FollowUpSequenceGetPayload<{ include: { attempts: true } }>;
-type FollowUpLeadActionAttempt = Pick<SequenceRecord["attempts"][number], "stepIndex" | "scheduledAt">;
+type FollowUpLeadActionAttempt = Pick<
+  SequenceRecord["attempts"][number],
+  "stepIndex" | "scheduledAt"
+>;
 
 interface StartOptions {
   provider?: AIProvider;
@@ -212,6 +216,7 @@ export async function startFollowUpSequence(
   });
   if (!lead) throw new AppError(404, "NOT_FOUND", "Lead not found");
   assertCanMutateLead(actor, lead);
+  if (lead.workspaceId) await assertAgentCapabilityActive(lead.workspaceId, AgentType.OUTREACH);
 
   const eligibility = await validateOutboundEmailPreSend(actor, { leadId });
   if (!eligibility.allowed) {
@@ -517,7 +522,11 @@ export async function runCallingAttemptNowForE2E(
   options?: { env?: NodeJS.ProcessEnv; now?: Date }
 ): Promise<{ status: "ACCELERATED" | "ALREADY_QUEUED"; attemptId: string; scheduledAt: string }> {
   if (getFollowUpTimingConfig(options?.env).mode !== "e2e_accelerated_minutes") {
-    throw new AppError(409, "CONFLICT", "E2E calling acceleration is not enabled in this environment");
+    throw new AppError(
+      409,
+      "CONFLICT",
+      "E2E calling acceleration is not enabled in this environment"
+    );
   }
   const lead = await prisma.lead.findUnique({ where: { id: leadId } });
   if (!lead) throw new AppError(404, "NOT_FOUND", "Lead not found");
@@ -575,22 +584,40 @@ export async function runCallingAttemptNowForE2E(
           eventType: "CALL_AUTOMATION_ATTEMPT_DUE",
           aggregateType: "CallingAttempt",
           aggregateId: createdAttempt.id,
-          payload: { leadId, contactId: exhausted.contactId, callingSequenceId: createdSequence.id, callingAttemptId: createdAttempt.id },
+          payload: {
+            leadId,
+            contactId: exhausted.contactId,
+            callingSequenceId: createdSequence.id,
+            callingAttemptId: createdAttempt.id
+          },
           correlationId: createdSequence.id,
           idempotencyKey: `domain-event:calling-attempt:${createdAttempt.id}`,
           nextAttemptAt: scheduledAt,
           maxAttempts: 5
         },
-        update: { nextAttemptAt: scheduledAt, status: "PENDING", lastErrorCode: null, lastErrorMessage: null }
+        update: {
+          nextAttemptAt: scheduledAt,
+          status: "PENDING",
+          lastErrorCode: null,
+          lastErrorMessage: null
+        }
       });
-      await tx.callingAttempt.update({ where: { id: createdAttempt.id }, data: { domainEventId: event.id } });
+      await tx.callingAttempt.update({
+        where: { id: createdAttempt.id },
+        data: { domainEventId: event.id }
+      });
       await tx.domainEventOutbox.upsert({
         where: { idempotencyKey: `domain-event:whatsapp-send:${createdAttempt.id}` },
         create: {
           eventType: "WHATSAPP_SEND_REQUESTED",
           aggregateType: "CallingAttempt",
           aggregateId: createdAttempt.id,
-          payload: { leadId, contactId: exhausted.contactId, callingSequenceId: createdSequence.id, callingAttemptId: createdAttempt.id },
+          payload: {
+            leadId,
+            contactId: exhausted.contactId,
+            callingSequenceId: createdSequence.id,
+            callingAttemptId: createdAttempt.id
+          },
           correlationId: createdSequence.id,
           idempotencyKey: `domain-event:whatsapp-send:${createdAttempt.id}`,
           nextAttemptAt: scheduledAt,
@@ -598,10 +625,17 @@ export async function runCallingAttemptNowForE2E(
         },
         update: {}
       });
-      await tx.lead.update({ where: { id: leadId }, data: { nextAction: "Call lead now", nextActionAt: scheduledAt } });
+      await tx.lead.update({
+        where: { id: leadId },
+        data: { nextAction: "Call lead now", nextActionAt: scheduledAt }
+      });
       return { id: createdAttempt.id, scheduledAt };
     });
-    return { status: "ACCELERATED", attemptId: retry.id, scheduledAt: retry.scheduledAt.toISOString() };
+    return {
+      status: "ACCELERATED",
+      attemptId: retry.id,
+      scheduledAt: retry.scheduledAt.toISOString()
+    };
   }
 
   if (!attempt?.domainEventId || !sequence) {
@@ -613,7 +647,11 @@ export async function runCallingAttemptNowForE2E(
   });
   if (event?.status !== "PENDING") {
     if (event?.status === "QUEUED" || event?.status === "PROCESSING") {
-      return { status: "ALREADY_QUEUED", attemptId: attempt.id, scheduledAt: attempt.scheduledAt.toISOString() };
+      return {
+        status: "ALREADY_QUEUED",
+        attemptId: attempt.id,
+        scheduledAt: attempt.scheduledAt.toISOString()
+      };
     }
     throw new AppError(409, "CONFLICT", "Calling attempt is no longer pending");
   }
@@ -621,8 +659,14 @@ export async function runCallingAttemptNowForE2E(
   const scheduledAt = options?.now ?? new Date();
   await prisma.$transaction(async (tx) => {
     await tx.callingAttempt.update({ where: { id: attempt.id }, data: { scheduledAt } });
-    await tx.domainEventOutbox.update({ where: { id: attempt.domainEventId ?? "" }, data: { nextAttemptAt: scheduledAt } });
-    await tx.lead.update({ where: { id: leadId }, data: { nextAction: "Call lead now", nextActionAt: scheduledAt } });
+    await tx.domainEventOutbox.update({
+      where: { id: attempt.domainEventId ?? "" },
+      data: { nextAttemptAt: scheduledAt }
+    });
+    await tx.lead.update({
+      where: { id: leadId },
+      data: { nextAction: "Call lead now", nextActionAt: scheduledAt }
+    });
     await tx.auditEvent.create({
       data: {
         actorType: "USER",

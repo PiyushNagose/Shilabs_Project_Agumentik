@@ -19,7 +19,7 @@ import {
   UserRound
 } from "lucide-react";
 import { useMemo, useState } from "react";
-import { Badge, Button } from "../../components/ui/index.js";
+import { Badge, Button, Select } from "../../components/ui/index.js";
 import { StateBlock } from "../../components/StateBlock.js";
 import { usePersistedResource } from "../../hooks/usePersistedResource.js";
 import {
@@ -47,7 +47,9 @@ interface SavedContactView {
 const savedViewKey = "shilabs.lead-contacts.saved-view";
 
 function isSegmentId(value: unknown): value is SegmentId {
-  return typeof value === "string" && ["all", "hot", "follow-up", "unassigned", "recent"].includes(value);
+  return (
+    typeof value === "string" && ["all", "hot", "follow-up", "unassigned", "recent"].includes(value)
+  );
 }
 
 function isSortId(value: unknown): value is SortId {
@@ -96,7 +98,9 @@ function formatDate(value: string | null): string {
   if (!value) return "No activity yet";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "Time unavailable";
-  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(
+    date
+  );
 }
 
 function segmentMatch(segment: SegmentId, lead: LeadDto): boolean {
@@ -125,7 +129,12 @@ export function LeadContactsWorkspace({
     scope: `lead-contacts:${accessToken}`,
     load: async () => {
       const [page, tasks] = await Promise.all([
-        listLeads(accessToken, { page: 1, pageSize: 100, sort: "lastActivityAt", direction: "desc" }),
+        listLeads(accessToken, {
+          page: 1,
+          pageSize: 100,
+          sort: "lastActivityAt",
+          direction: "desc"
+        }),
         listTasks(accessToken, {})
       ]);
       return { leads: page.items, tasks };
@@ -171,13 +180,21 @@ export function LeadContactsWorkspace({
       .filter((lead) => !ownerId || lead.ownerId === ownerId)
       .filter((lead) => {
         if (!query) return true;
-        return [leadName(lead), lead.company.name, lead.contact.email, lead.requirement, lead.serviceInterest]
-          .some((value) => value?.toLocaleLowerCase().includes(query));
+        return [
+          leadName(lead),
+          lead.company.name,
+          lead.contact.email,
+          lead.requirement,
+          lead.serviceInterest
+        ].some((value) => value?.toLocaleLowerCase().includes(query));
       })
       .sort((left, right) => {
         if (sort === "score") return right.score - left.score;
         if (sort === "name") return leadName(left).localeCompare(leadName(right));
-        return new Date(right.lastActivityAt ?? 0).getTime() - new Date(left.lastActivityAt ?? 0).getTime();
+        return (
+          new Date(right.lastActivityAt ?? 0).getTime() -
+          new Date(left.lastActivityAt ?? 0).getTime()
+        );
       });
   }, [leads, ownerId, search, segment, sort]);
 
@@ -227,54 +244,164 @@ export function LeadContactsWorkspace({
           ))}
         </nav>
         <span className="records-eyebrow saved-view-label">Saved view</span>
-        {savedView ? <button className="saved-view-button" onClick={applySavedView} type="button"><Bookmark size={15} /><span>My contact view</span></button> : null}
-        <Button onClick={saveCurrentView} size="sm" variant="ghost"><Save size={15} /> Save current view</Button>
+        {savedView ? (
+          <button className="saved-view-button" onClick={applySavedView} type="button">
+            <Bookmark size={15} />
+            <span>My contact view</span>
+          </button>
+        ) : null}
+        <Button onClick={saveCurrentView} size="sm" variant="ghost">
+          <Save size={15} /> Save current view
+        </Button>
         <div className="saved-filter-note">
           <Sparkles size={16} />
-          <span><strong>Live segments</strong>Update from persisted CRM activity.</span>
+          <span>
+            <strong>Live segments</strong>Update from persisted CRM activity.
+          </span>
         </div>
       </aside>
 
       <div className="records-main">
         <header className="records-heading">
-          <div><span className="records-eyebrow">CRM / Contacts</span><h2>Lead contacts</h2><p>{visibleLeads.length} authorized records</p></div>
+          <div>
+            <span className="records-eyebrow">CRM / Contacts</span>
+            <h2>Lead contacts</h2>
+            <p>{visibleLeads.length} authorized records</p>
+          </div>
         </header>
         <div className="records-toolbar">
-          <label className="records-search"><Search size={17} /><input aria-label="Search lead contacts" onChange={(event) => setSearch(event.target.value)} placeholder="Search people, company or intent" type="search" value={search} /></label>
-          <label><UserRound size={16} /><select aria-label="Filter contacts by owner" onChange={(event) => setOwnerId(event.target.value)} value={ownerId}><option value="">All owners</option>{owners.map((owner) => <option key={owner.id} value={owner.id}>{owner.firstName} {owner.lastName}</option>)}</select></label>
-          <label><SlidersHorizontal size={16} /><select aria-label="Sort lead contacts" onChange={(event) => setSort(event.target.value as SortId)} value={sort}><option value="activity">Latest activity</option><option value="score">Highest score</option><option value="name">Name</option></select></label>
+          <label className="records-search">
+            <Search size={17} />
+            <input
+              aria-label="Search lead contacts"
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search people, company or intent"
+              type="search"
+              value={search}
+            />
+          </label>
+          <Select
+            ariaLabel="Filter contacts by owner"
+            className="records-filter"
+            icon={<UserRound size={16} />}
+            onChange={setOwnerId}
+            options={[
+              { value: "", label: "All owners" },
+              ...owners.map((owner) => ({
+                value: owner.id,
+                label: `${owner.firstName} ${owner.lastName}`
+              }))
+            ]}
+            value={ownerId}
+          />
+          <Select
+            ariaLabel="Sort lead contacts"
+            className="records-filter"
+            icon={<SlidersHorizontal size={16} />}
+            onChange={(value) => setSort(value as SortId)}
+            options={[
+              { value: "activity", label: "Latest activity" },
+              { value: "score", label: "Highest score" },
+              { value: "name", label: "Name" }
+            ]}
+            value={sort}
+          />
         </div>
 
-        {resource.loading && !resource.data ? <StateBlock title="Loading lead contacts" detail="Fetching authorized lead and engagement records." /> : null}
-        {resource.error && !resource.data ? <StateBlock title="Lead contacts unavailable" detail={resource.error} action={<Button onClick={() => void resource.reload()}>Retry</Button>} /> : null}
-        {!resource.loading && !resource.error && visibleLeads.length === 0 ? <StateBlock title="No matching contacts" detail="Try another segment or clear the search filters." /> : null}
+        {resource.loading && !resource.data ? (
+          <StateBlock
+            title="Loading lead contacts"
+            detail="Fetching authorized lead and engagement records."
+          />
+        ) : null}
+        {resource.error && !resource.data ? (
+          <StateBlock
+            title="Lead contacts unavailable"
+            detail={resource.error}
+            action={<Button onClick={() => void resource.reload()}>Retry</Button>}
+          />
+        ) : null}
+        {!resource.loading && !resource.error && visibleLeads.length === 0 ? (
+          <StateBlock
+            title="No matching contacts"
+            detail="Try another segment or clear the search filters."
+          />
+        ) : null}
 
-        {visibleLeads.length > 0 ? <div className="lead-contact-stack">
-          {visibleLeads.map((lead) => {
-            const priority = leadPriority(tasks.filter((task) => task.leadId === lead.id));
-            return <article className="lead-contact-card" key={lead.id}>
-              <div className="contact-card-profile">
-                <span className="lead-avatar" aria-hidden="true">{lead.contact.firstName.slice(0, 1)}{lead.contact.lastName.slice(0, 1)}</span>
-                <div><h3>{leadName(lead)}</h3><p>{lead.contact.title ?? lead.company.name}</p><small>{lead.contact.email ?? "No email"}</small></div>
-              </div>
-              <div className="contact-card-context">
-                <span>Company</span><strong>{lead.company.name}</strong><p>{lead.requirement ?? lead.serviceInterest ?? "Intent not identified"}</p>
-              </div>
-              <div className="contact-card-engagement">
-                <span><Clock3 size={14} /> Last engagement</span><strong>{formatDate(lead.lastActivityAt)}</strong><p>{lead.nextAction ?? "No next action"}</p>
-              </div>
-              <div className="contact-card-score"><strong>{lead.score}</strong><span>{lead.temperature}</span><Badge tone={priority === "HIGH" || priority === "URGENT" ? "danger" : "neutral"}>{priority === "NONE" ? "No task" : priority}</Badge></div>
-              <div className="contact-card-footer">
-                <div className="contact-quick-actions">
-                  {lead.contact.phone ? <a aria-label={`Call ${leadName(lead)}`} href={`tel:${lead.contact.phone}`}><Phone size={16} /></a> : null}
-                  {lead.contact.email ? <a aria-label={`Email ${leadName(lead)}`} href={`mailto:${lead.contact.email}`}><Mail size={16} /></a> : null}
-                  <button aria-label={`Preview ${leadName(lead)}`} onClick={() => setSelectedLeadId(lead.id)} type="button"><Eye size={16} /></button>
-                </div>
-                <Button onClick={() => onOpenLead(lead.id, "Overview")} size="sm" variant="ghost">Open profile <ArrowUpRight size={15} /></Button>
-              </div>
-            </article>;
-          })}
-        </div> : null}
+        {visibleLeads.length > 0 ? (
+          <div className="lead-contact-stack">
+            {visibleLeads.map((lead) => {
+              const priority = leadPriority(tasks.filter((task) => task.leadId === lead.id));
+              return (
+                <article className="lead-contact-card" key={lead.id}>
+                  <div className="contact-card-profile">
+                    <span className="lead-avatar" aria-hidden="true">
+                      {lead.contact.firstName.slice(0, 1)}
+                      {lead.contact.lastName.slice(0, 1)}
+                    </span>
+                    <div>
+                      <h3>{leadName(lead)}</h3>
+                      <p>{lead.contact.title ?? lead.company.name}</p>
+                      <small>{lead.contact.email ?? "No email"}</small>
+                    </div>
+                  </div>
+                  <div className="contact-card-context">
+                    <span>Company</span>
+                    <strong>{lead.company.name}</strong>
+                    <p>{lead.requirement ?? lead.serviceInterest ?? "Intent not identified"}</p>
+                  </div>
+                  <div className="contact-card-engagement">
+                    <span>
+                      <Clock3 size={14} /> Last engagement
+                    </span>
+                    <strong>{formatDate(lead.lastActivityAt)}</strong>
+                    <p>{lead.nextAction ?? "No next action"}</p>
+                  </div>
+                  <div className="contact-card-score">
+                    <strong>{lead.score}</strong>
+                    <span>{lead.temperature}</span>
+                    <Badge
+                      tone={priority === "HIGH" || priority === "URGENT" ? "danger" : "neutral"}
+                    >
+                      {priority === "NONE" ? "No task" : priority}
+                    </Badge>
+                  </div>
+                  <div className="contact-card-footer">
+                    <div className="contact-quick-actions">
+                      {lead.contact.phone ? (
+                        <a aria-label={`Call ${leadName(lead)}`} href={`tel:${lead.contact.phone}`}>
+                          <Phone size={16} />
+                        </a>
+                      ) : null}
+                      {lead.contact.email ? (
+                        <a
+                          aria-label={`Email ${leadName(lead)}`}
+                          href={`mailto:${lead.contact.email}`}
+                        >
+                          <Mail size={16} />
+                        </a>
+                      ) : null}
+                      <button
+                        aria-label={`Preview ${leadName(lead)}`}
+                        onClick={() => setSelectedLeadId(lead.id)}
+                        type="button"
+                      >
+                        <Eye size={16} />
+                      </button>
+                    </div>
+                    <Button
+                      onClick={() => onOpenLead(lead.id, "Overview")}
+                      size="sm"
+                      variant="ghost"
+                    >
+                      Open profile <ArrowUpRight size={15} />
+                    </Button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        ) : null}
       </div>
 
       <LeadQuickView

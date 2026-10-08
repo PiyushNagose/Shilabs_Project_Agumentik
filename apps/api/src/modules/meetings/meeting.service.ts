@@ -1,8 +1,9 @@
-import { Prisma, UserRole, UserStatus, type User } from "@prisma/client";
+import { AgentType, Prisma, UserRole, UserStatus, type User } from "@prisma/client";
 import type { MeetingRequestDto, MeetingSlotDto } from "@shilabs/shared-types";
 import { AppError } from "../../shared/errors.js";
 import { prisma } from "../../shared/prisma.js";
 import { toPublicUser } from "../auth/auth.service.js";
+import { assertAgentCapabilityActive } from "../agents/agent.service.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
 import { getCalendarAvailability } from "../calendar/calendar.service.js";
 import { createCalendarProvider } from "../calendar/calendar.provider.js";
@@ -257,7 +258,9 @@ function isReplyCreatedMeetingRequest(request: MeetingRequestRecord): boolean {
   return request.idempotencyKey.startsWith("meeting-request:reply-processing:");
 }
 
-async function findReusableMeetingRequestForLead(leadId: string): Promise<MeetingRequestRecord | null> {
+async function findReusableMeetingRequestForLead(
+  leadId: string
+): Promise<MeetingRequestRecord | null> {
   const candidates = await prisma.meetingRequest.findMany({
     where: {
       leadId,
@@ -354,6 +357,7 @@ export async function createMeetingRequest(
   if (lead.contact.doNotContact) {
     throw new AppError(409, "CONFLICT", "Cannot request a meeting for a do-not-contact contact");
   }
+  if (lead.workspaceId) await assertAgentCapabilityActive(lead.workspaceId, AgentType.MEETING);
 
   const requestIdempotencyKey = input.idempotencyKey ?? defaultIdempotencyKey(input);
   const existingForDefaultKey = input.idempotencyKey
@@ -472,7 +476,9 @@ export async function createMeetingRequest(
           leadId: lead.id,
           conversationId: input.conversationId ?? reusable.conversationId ?? null,
           ownerId,
-          title: hasSlots ? "Meeting slots need confirmation" : "Meeting scheduling needs attention",
+          title: hasSlots
+            ? "Meeting slots need confirmation"
+            : "Meeting scheduling needs attention",
           body: hasSlots
             ? `${String(availability.slots.length)} real calendar slot(s) are available for confirmation.`
             : (availability.unavailableReason ?? "Calendar availability is unavailable."),
@@ -503,115 +509,119 @@ export async function createMeetingRequest(
     return toMeetingRequestDto(request);
   }
 
-  const request = await prisma.$transaction(
-    async (tx) => {
-      const hasSlots = availability.status === "AVAILABLE" && availability.slots.length > 0;
-      const created = await tx.meetingRequest.create({
-        data: {
-          workspaceId: lead.workspaceId,
-          leadId: lead.id,
-          contactId: lead.contactId,
-          conversationId: input.conversationId,
-          ownerId,
-          requestedByUserId: actor.id,
-          status: hasSlots ? "CONFIRMATION_REQUIRED" : "ATTENTION_REQUIRED",
-          title: input.title,
-          description: input.description,
-          timeZone: input.timeZone,
-          durationMinutes: input.durationMinutes,
-          slotMinutes,
-          windowStart: input.windowStart,
-          windowEnd: input.windowEnd,
-          provider: "GOOGLE_CALENDAR",
-          providerSyncStatus: "NOT_REQUIRED",
-          providerLastError: hasSlots ? null : availability.unavailableReason,
-          providerCalendarId: null,
-          providerOrganizerEmail: null,
-          zohoSyncStatus: "NOT_REQUIRED",
-          partyNotificationStatus: "NOT_REQUIRED",
-          partyNotificationNote: "External party notification semantics remain blocked by OC-09",
-          idempotencyKey: requestIdempotencyKey,
-          slots: {
-            create: availability.slots.map((slot) => ({
-              startsAt: new Date(slot.startsAt),
-              endsAt: new Date(slot.endsAt),
-              timeZone: slot.timeZone
-            }))
+  const request = await prisma
+    .$transaction(
+      async (tx) => {
+        const hasSlots = availability.status === "AVAILABLE" && availability.slots.length > 0;
+        const created = await tx.meetingRequest.create({
+          data: {
+            workspaceId: lead.workspaceId,
+            leadId: lead.id,
+            contactId: lead.contactId,
+            conversationId: input.conversationId,
+            ownerId,
+            requestedByUserId: actor.id,
+            status: hasSlots ? "CONFIRMATION_REQUIRED" : "ATTENTION_REQUIRED",
+            title: input.title,
+            description: input.description,
+            timeZone: input.timeZone,
+            durationMinutes: input.durationMinutes,
+            slotMinutes,
+            windowStart: input.windowStart,
+            windowEnd: input.windowEnd,
+            provider: "GOOGLE_CALENDAR",
+            providerSyncStatus: "NOT_REQUIRED",
+            providerLastError: hasSlots ? null : availability.unavailableReason,
+            providerCalendarId: null,
+            providerOrganizerEmail: null,
+            zohoSyncStatus: "NOT_REQUIRED",
+            partyNotificationStatus: "NOT_REQUIRED",
+            partyNotificationNote: "External party notification semantics remain blocked by OC-09",
+            idempotencyKey: requestIdempotencyKey,
+            slots: {
+              create: availability.slots.map((slot) => ({
+                startsAt: new Date(slot.startsAt),
+                endsAt: new Date(slot.endsAt),
+                timeZone: slot.timeZone
+              }))
+            }
           }
-        }
-      });
+        });
 
-      await tx.lead.update({
-        where: { id: lead.id },
-        data: {
-          nextAction: hasSlots
-            ? "Confirm proposed meeting slot"
-            : "Review meeting scheduling issue",
-          nextActionAt: availability.slots[0]?.startsAt
-            ? new Date(availability.slots[0].startsAt)
-            : null,
-          lastActivityAt: new Date()
-        }
-      });
-      await tx.activity.create({
-        data: {
-          workspaceId: lead.workspaceId,
+        await tx.lead.update({
+          where: { id: lead.id },
+          data: {
+            nextAction: hasSlots
+              ? "Confirm proposed meeting slot"
+              : "Review meeting scheduling issue",
+            nextActionAt: availability.slots[0]?.startsAt
+              ? new Date(availability.slots[0].startsAt)
+              : null,
+            lastActivityAt: new Date()
+          }
+        });
+        await tx.activity.create({
+          data: {
+            workspaceId: lead.workspaceId,
+            leadId: lead.id,
+            actorUserId: actor.id,
+            type: "MEETING_REQUESTED",
+            description: hasSlots
+              ? `Meeting requested with ${String(availability.slots.length)} real available slot(s)`
+              : `Meeting request needs attention: ${availability.unavailableReason ?? availability.status}`
+          }
+        });
+        await tx.auditEvent.create({
+          data: {
+            workspaceId: lead.workspaceId,
+            actorType: "USER",
+            actorId: actor.id,
+            entityType: "MeetingRequest",
+            entityId: created.id,
+            action: hasSlots ? "MEETING_REQUESTED" : "MEETING_REQUEST_ATTENTION_REQUIRED",
+            after: {
+              leadId: lead.id,
+              ownerId,
+              status: hasSlots ? "CONFIRMATION_REQUIRED" : "ATTENTION_REQUIRED",
+              availabilityStatus: availability.status
+            }
+          }
+        });
+        await createMeetingAttentionNotification({
+          client: tx,
+          requestId: created.id,
           leadId: lead.id,
-          actorUserId: actor.id,
-          type: "MEETING_REQUESTED",
-          description: hasSlots
-            ? `Meeting requested with ${String(availability.slots.length)} real available slot(s)`
-            : `Meeting request needs attention: ${availability.unavailableReason ?? availability.status}`
-        }
-      });
-      await tx.auditEvent.create({
-        data: {
-          workspaceId: lead.workspaceId,
-          actorType: "USER",
-          actorId: actor.id,
-          entityType: "MeetingRequest",
-          entityId: created.id,
-          action: hasSlots ? "MEETING_REQUESTED" : "MEETING_REQUEST_ATTENTION_REQUIRED",
-          after: {
+          conversationId: input.conversationId ?? null,
+          ownerId,
+          title: hasSlots
+            ? "Meeting slots need confirmation"
+            : "Meeting scheduling needs attention",
+          body: hasSlots
+            ? `${String(availability.slots.length)} real calendar slot(s) are available for confirmation.`
+            : (availability.unavailableReason ?? "Calendar availability is unavailable."),
+          severity: hasSlots ? "INFO" : "CRITICAL",
+          status: hasSlots ? "UNREAD" : "ATTENTION_REQUIRED"
+        });
+        await publishDomainEvent({
+          client: tx,
+          eventType: "MEETING_REQUESTED",
+          aggregateType: "MeetingRequest",
+          aggregateId: created.id,
+          idempotencyKey: `domain-event:meeting-requested:${created.id}`,
+          payload: {
             leadId: lead.id,
             ownerId,
-            status: hasSlots ? "CONFIRMATION_REQUIRED" : "ATTENTION_REQUIRED",
-            availabilityStatus: availability.status
+            status: hasSlots ? "CONFIRMATION_REQUIRED" : "ATTENTION_REQUIRED"
           }
-        }
-      });
-      await createMeetingAttentionNotification({
-        client: tx,
-        requestId: created.id,
-        leadId: lead.id,
-        conversationId: input.conversationId ?? null,
-        ownerId,
-        title: hasSlots ? "Meeting slots need confirmation" : "Meeting scheduling needs attention",
-        body: hasSlots
-          ? `${String(availability.slots.length)} real calendar slot(s) are available for confirmation.`
-          : (availability.unavailableReason ?? "Calendar availability is unavailable."),
-        severity: hasSlots ? "INFO" : "CRITICAL",
-        status: hasSlots ? "UNREAD" : "ATTENTION_REQUIRED"
-      });
-      await publishDomainEvent({
-        client: tx,
-        eventType: "MEETING_REQUESTED",
-        aggregateType: "MeetingRequest",
-        aggregateId: created.id,
-        idempotencyKey: `domain-event:meeting-requested:${created.id}`,
-        payload: {
-          leadId: lead.id,
-          ownerId,
-          status: hasSlots ? "CONFIRMATION_REQUIRED" : "ATTENTION_REQUIRED"
-        }
-      });
-      return tx.meetingRequest.findUniqueOrThrow({
-        where: { id: created.id },
-        include: meetingRequestInclude
-      });
-    },
-    { maxWait: 10000, timeout: 30000 }
-    ).catch(async (error: unknown) => {
+        });
+        return tx.meetingRequest.findUniqueOrThrow({
+          where: { id: created.id },
+          include: meetingRequestInclude
+        });
+      },
+      { maxWait: 10000, timeout: 30000 }
+    )
+    .catch(async (error: unknown) => {
       if (!isUniqueConstraintError(error)) throw error;
       const existingRequest = await prisma.meetingRequest.findUnique({
         where: { idempotencyKey: requestIdempotencyKey },

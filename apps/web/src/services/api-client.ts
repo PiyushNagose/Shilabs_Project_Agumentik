@@ -34,6 +34,14 @@ import type {
 export { ApiClientError, apiBaseUrl, apiErrorMessage } from "./api/core.js";
 export { completeTask, listTasks, type TaskListParams } from "./api/tasks.js";
 export { listCompanies } from "./api/companies.js";
+export {
+  createAgent,
+  getAgent,
+  listAgents,
+  updateAgent,
+  updateAgentStatus,
+  type AgentBody
+} from "./api/agents.js";
 export { listContacts } from "./api/contacts.js";
 export {
   createDeal,
@@ -278,10 +286,14 @@ export function markNotificationRead(
   accessToken: string,
   notificationId: string
 ): Promise<InternalNotificationDto> {
-  return apiRequest<InternalNotificationDto>(`/api/notifications/${notificationId}/read`, accessToken, {
-    method: "PATCH",
-    body: JSON.stringify({})
-  });
+  return apiRequest<InternalNotificationDto>(
+    `/api/notifications/${notificationId}/read`,
+    accessToken,
+    {
+      method: "PATCH",
+      body: JSON.stringify({})
+    }
+  );
 }
 
 export function acknowledgeNotification(

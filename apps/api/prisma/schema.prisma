@@ -147,6 +147,32 @@ enum AuditActorType {
   PROVIDER
 }
 
+enum AgentType {
+  OUTREACH
+  REPLY_UNDERSTANDING
+  QUALIFICATION
+  PROPOSAL
+  MEETING
+  VOICE
+  WHATSAPP
+  SALES_COPILOT
+}
+
+enum AgentStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  ARCHIVED
+}
+
+enum AgentExecutionStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELED
+}
+
 enum ActivityVisibility {
   BUSINESS
   INTERNAL
@@ -608,6 +634,8 @@ model User {
   assignedTasks               Task[]                    @relation("TaskAssignee")
   createdTasks                Task[]                    @relation("TaskCreatedByUser")
   completedTasks              Task[]                    @relation("TaskCompletedByUser")
+  createdAgents               Agent[]                   @relation("AgentCreatedBy")
+  publishedAgentVersions      AgentVersion[]            @relation("AgentVersionPublishedBy")
 
   @@index([role])
   @@index([status])
@@ -622,11 +650,92 @@ model Workspace {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  members WorkspaceMember[]
-  tasks   Task[]
+  members   WorkspaceMember[]
+  tasks     Task[]
   pipelines Pipeline[]
+  agents    Agent[]
 
   @@index([status])
+}
+
+model Agent {
+  id               String      @id @default(cuid())
+  workspaceId      String
+  key              String
+  name             String
+  description      String
+  type             AgentType
+  status           AgentStatus @default(DRAFT)
+  currentVersionId String?
+  createdByUserId  String?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  workspace      Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy      User?            @relation("AgentCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  currentVersion AgentVersion?    @relation("AgentCurrentVersion", fields: [currentVersionId], references: [id], onDelete: SetNull)
+  versions       AgentVersion[]   @relation("AgentVersions")
+  executions     AgentExecution[]
+
+  @@unique([workspaceId, key])
+  @@index([workspaceId, type])
+  @@index([workspaceId, status])
+  @@index([currentVersionId])
+}
+
+model AgentVersion {
+  id                String    @id @default(cuid())
+  agentId           String
+  version           Int
+  definition        Json
+  modelConfig       Json?
+  toolsConfig       Json?
+  knowledgeConfig   Json?
+  publishedAt       DateTime?
+  publishedByUserId String?
+  createdAt         DateTime  @default(now())
+
+  agent       Agent            @relation("AgentVersions", fields: [agentId], references: [id], onDelete: Cascade)
+  currentFor  Agent[]          @relation("AgentCurrentVersion")
+  publishedBy User?            @relation("AgentVersionPublishedBy", fields: [publishedByUserId], references: [id], onDelete: SetNull)
+  executions  AgentExecution[]
+
+  @@unique([agentId, version])
+  @@index([agentId, createdAt])
+  @@index([publishedByUserId])
+}
+
+model AgentExecution {
+  id               String               @id @default(cuid())
+  workspaceId      String
+  agentId          String
+  versionId        String
+  source           String
+  sourceEntityType String?
+  sourceEntityId   String?
+  entityType       String?
+  entityId         String?
+  leadId           String?
+  status           AgentExecutionStatus @default(QUEUED)
+  startedAt        DateTime             @default(now())
+  completedAt      DateTime?
+  durationMs       Int?
+  summary          String?
+  result           Json?
+  evaluation       Json?
+  correlationId    String
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+
+  agent   Agent        @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  version AgentVersion @relation(fields: [versionId], references: [id], onDelete: Restrict)
+
+  @@unique([workspaceId, agentId, sourceEntityType, sourceEntityId])
+  @@index([workspaceId, status, startedAt])
+  @@index([agentId, startedAt])
+  @@index([versionId])
+  @@index([leadId])
+  @@index([correlationId])
 }
 
 model WorkspaceMember {
@@ -859,31 +968,31 @@ model Pipeline {
 }
 
 model PipelineStage {
-  id          String   @id @default(cuid())
+  id          String              @id @default(cuid())
   workspaceId String?
   pipelineId  String?
-  key         String   @unique
+  key         String              @unique
   semanticKey String?
   label       String
-  order       Int      @unique
-  position    Int      @default(0)
+  order       Int                 @unique
+  position    Int                 @default(0)
   probability Int
   color       String?
   status      PipelineStageStatus @default(ACTIVE)
-  isClosed    Boolean  @default(false)
-  isWon       Boolean  @default(false)
-  isLost      Boolean  @default(false)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  isClosed    Boolean             @default(false)
+  isWon       Boolean             @default(false)
+  isLost      Boolean             @default(false)
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
 
   pipeline Pipeline? @relation(fields: [pipelineId], references: [id], onDelete: Restrict)
   leads    Lead[]
   deals    Deal[]
 
+  @@unique([pipelineId, semanticKey])
   @@index([isClosed])
   @@index([workspaceId, order])
   @@index([pipelineId, position])
-  @@unique([pipelineId, semanticKey])
 }
 
 model Lead {

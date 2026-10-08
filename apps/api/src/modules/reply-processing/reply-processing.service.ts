@@ -1,9 +1,10 @@
-import { Prisma } from "@prisma/client";
+import { AgentType, Prisma } from "@prisma/client";
 import type { ReplyProcessingRunDto } from "@shilabs/shared-types";
 import { getAIConfig } from "../../config/ai.js";
 import { AppError } from "../../shared/errors.js";
 import { prisma } from "../../shared/prisma.js";
 import { createAIProvider } from "../ai/ai.factory.js";
+import { assertAgentCapabilityActive } from "../agents/agent.service.js";
 import type { AIProvider, ReplyUnderstandingResult } from "../ai/ai.provider.js";
 import { replyUnderstandingResultSchema } from "../ai/ai.schemas.js";
 import { sourceContainsGroundedQuote } from "../ai/grounding.js";
@@ -167,6 +168,11 @@ export async function processInboundReply(
     throw new AppError(409, "CONFLICT", "Inbound email is not eligible for reply processing");
   }
   const eligibleInbound: EligibleReplyInboundRecord = inbound;
+  if (eligibleInbound.lead.workspaceId)
+    await assertAgentCapabilityActive(
+      eligibleInbound.lead.workspaceId,
+      AgentType.REPLY_UNDERSTANDING
+    );
 
   const messages = await prisma.message.findMany({
     where: { conversationId: eligibleInbound.conversationId ?? "" },
@@ -332,6 +338,8 @@ export async function processInboundMessageReply(
     throw new AppError(409, "CONFLICT", "Inbound message is not eligible for reply processing");
   }
   const lead = message.conversation.lead;
+  if (lead.workspaceId)
+    await assertAgentCapabilityActive(lead.workspaceId, AgentType.REPLY_UNDERSTANDING);
   const provider = messageProvider(message);
   const providerMessageId = message.providerMessageId ?? message.id;
   const inbound = await prisma.inboundEmail.upsert({

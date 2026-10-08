@@ -4,6 +4,7 @@ import { getApiConfig } from "@shilabs/shared-config";
 import type { ApiConfig } from "@shilabs/shared-config";
 import type { HealthResponse } from "@shilabs/shared-types";
 import { agentFeedbackRoutes } from "./modules/agent-feedback/agent-feedback.routes.js";
+import { agentRoutes } from "./modules/agents/agent.routes.js";
 import { actionDashboardRoutes } from "./modules/action-dashboard/action-dashboard.routes.js";
 import { authRoutes } from "./modules/auth/auth.routes.js";
 import { briefingRoutes } from "./modules/briefings/briefing.routes.js";
@@ -114,6 +115,7 @@ export function createApp(
   app.use("/api/auth", authRoutes);
   app.use("/api/workspaces", workspaceRoutes);
   app.use("/api/agent-feedback", agentFeedbackRoutes);
+  app.use("/api/agents", agentRoutes);
   app.use("/api/action-dashboard", actionDashboardRoutes);
   app.use("/api/briefings", briefingRoutes);
   app.use("/api/calendar", calendarRoutes);

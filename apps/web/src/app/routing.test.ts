@@ -39,7 +39,23 @@ describe("app routing", () => {
 
   it("preserves Phase 5 deal deep links", () => {
     window.history.replaceState(null, "", "/deals/deal%2Fone");
-    expect(parseAppRoute(navigationByRole.ADMIN)).toEqual({ id: "deals", leadId: null, dealId: "deal/one" });
+    expect(parseAppRoute(navigationByRole.ADMIN)).toEqual({
+      id: "deals",
+      leadId: null,
+      dealId: "deal/one"
+    });
     expect(appPath({ id: "deals", leadId: null, dealId: "deal/one" })).toBe("/deals/deal%2Fone");
+  });
+
+  it("preserves Phase 6 agent deep links", () => {
+    window.history.replaceState(null, "", "/agents/agent%2Fone");
+    expect(parseAppRoute(navigationByRole.ADMIN)).toEqual({
+      id: "agents",
+      leadId: null,
+      agentId: "agent/one"
+    });
+    expect(appPath({ id: "agents", leadId: null, agentId: "agent/one" })).toBe(
+      "/agents/agent%2Fone"
+    );
   });
 });

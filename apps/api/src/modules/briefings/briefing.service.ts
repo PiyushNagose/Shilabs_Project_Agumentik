@@ -1,9 +1,10 @@
-import { BriefingKind, Prisma, UserRole } from "@prisma/client";
+import { AgentType, BriefingKind, Prisma, UserRole } from "@prisma/client";
 import type { BriefingEvidenceReferenceDto, BriefingRunDto } from "@shilabs/shared-types";
 import { getAIConfig } from "../../config/ai.js";
 import { AppError } from "../../shared/errors.js";
 import { prisma } from "../../shared/prisma.js";
 import { createAIProvider } from "../ai/ai.factory.js";
+import { assertAgentCapabilityActive } from "../agents/agent.service.js";
 import type { AIProvider, BriefingResult } from "../ai/ai.provider.js";
 import { briefingResultSchema } from "../ai/ai.schemas.js";
 import { sourceContainsGroundedQuote } from "../ai/grounding.js";
@@ -71,13 +72,21 @@ function trimText(value: string, max = 12000): string {
   return value.length > max ? value.slice(0, max) : value;
 }
 
-function source(id: string, sourceType: string, title: string, text: string | null | undefined): EvidenceSource | null {
+function source(
+  id: string,
+  sourceType: string,
+  title: string,
+  text: string | null | undefined
+): EvidenceSource | null {
   const normalized = text?.trim();
   if (!normalized) return null;
   return { id, sourceType, title, text: trimText(normalized) };
 }
 
-function providerMetadata(env: NodeJS.ProcessEnv | undefined, provider?: AIProvider): {
+function providerMetadata(
+  env: NodeJS.ProcessEnv | undefined,
+  provider?: AIProvider
+): {
   providerName: string;
   model: string;
 } {
@@ -184,10 +193,10 @@ function leadSummarySource(lead: LeadContext): EvidenceSource {
   };
 }
 
-function buildContext(input: {
-  lead: LeadContext;
-  meetingRequestId?: string | null;
-}): { inputContext: Prisma.InputJsonObject; sources: EvidenceSource[] } {
+function buildContext(input: { lead: LeadContext; meetingRequestId?: string | null }): {
+  inputContext: Prisma.InputJsonObject;
+  sources: EvidenceSource[];
+} {
   const lead = input.lead;
   const meeting = input.meetingRequestId
     ? (lead.meetingRequests.find((request) => request.id === input.meetingRequestId) ?? null)
@@ -323,7 +332,10 @@ function buildContext(input: {
   return { inputContext, sources };
 }
 
-async function loadLeadContextOrThrow(actor: AuthenticatedUser, leadId: string): Promise<LeadContext> {
+async function loadLeadContextOrThrow(
+  actor: AuthenticatedUser,
+  leadId: string
+): Promise<LeadContext> {
   const lead = await prisma.lead.findUnique({
     where: { id: leadId },
     include: leadContextInclude
@@ -532,6 +544,8 @@ export async function generateLeadBriefing(
   options?: BriefingOptions
 ): Promise<BriefingRunDto> {
   const lead = await loadLeadContextOrThrow(actor, leadId);
+  if (lead.workspaceId)
+    await assertAgentCapabilityActive(lead.workspaceId, AgentType.SALES_COPILOT);
   const idempotencyKey =
     body.idempotencyKey ?? `briefing:lead:${leadId}:actor:${actor.id}:${new Date().toISOString()}`;
   return generateBriefing({
@@ -555,6 +569,8 @@ export async function generateMeetingBriefing(
   });
   if (!request) throw new AppError(404, "NOT_FOUND", "Meeting request not found");
   const lead = await loadLeadContextOrThrow(actor, request.leadId);
+  if (lead.workspaceId)
+    await assertAgentCapabilityActive(lead.workspaceId, AgentType.SALES_COPILOT);
   if (!lead.meetingRequests.some((meeting) => meeting.id === meetingRequestId)) {
     throw new AppError(409, "CONFLICT", "Meeting request is not in briefing context");
   }

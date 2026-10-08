@@ -1,10 +1,31 @@
 import type { UserRoleName } from "@shilabs/shared-types";
 import type { LucideIcon } from "lucide-react";
-import { BarChart3, BriefcaseBusiness, Building2, ContactRound, Handshake, LayoutDashboard, Settings, Users } from "lucide-react";
+import {
+  BarChart3,
+  Bot,
+  BriefcaseBusiness,
+  Building2,
+  ContactRound,
+  Handshake,
+  LayoutDashboard,
+  Settings,
+  Users
+} from "lucide-react";
 import type { DetailTab } from "../features/leads/CrmWorkspace.js";
 
 export type AppRouteId =
-  "dashboard" | "crm" | "deals" | "contacts" | "companies" | "operations" | "users" | "settings" | "team" | "reports" | "workspace";
+  | "dashboard"
+  | "crm"
+  | "deals"
+  | "contacts"
+  | "companies"
+  | "agents"
+  | "operations"
+  | "users"
+  | "settings"
+  | "team"
+  | "reports"
+  | "workspace";
 
 export interface AppRouteDefinition {
   id: AppRouteId;
@@ -18,6 +39,7 @@ export interface AppRouteState {
   id: AppRouteId;
   leadId: string | null;
   dealId?: string | null;
+  agentId?: string | null;
   tab?: DetailTab;
 }
 
@@ -56,6 +78,13 @@ export const appRoutes: Readonly<Record<AppRouteId, AppRouteDefinition>> = {
     title: "Companies",
     path: "/companies",
     icon: Building2
+  },
+  agents: {
+    id: "agents",
+    label: "Agents",
+    title: "AI Agents",
+    path: "/agents",
+    icon: Bot
   },
   operations: {
     id: "operations",
@@ -102,9 +131,29 @@ export const appRoutes: Readonly<Record<AppRouteId, AppRouteDefinition>> = {
 };
 
 export const navigationByRole: Readonly<Record<UserRoleName, readonly AppRouteId[]>> = {
-  ADMIN: ["dashboard", "crm", "deals", "contacts", "companies", "operations", "users", "settings"],
-  SALES_MANAGER: ["dashboard", "crm", "deals", "contacts", "companies", "operations", "team", "reports"],
-  SALES_REP: ["dashboard", "crm", "deals", "contacts", "companies", "workspace"]
+  ADMIN: [
+    "dashboard",
+    "crm",
+    "deals",
+    "contacts",
+    "companies",
+    "agents",
+    "operations",
+    "users",
+    "settings"
+  ],
+  SALES_MANAGER: [
+    "dashboard",
+    "crm",
+    "deals",
+    "contacts",
+    "companies",
+    "agents",
+    "operations",
+    "team",
+    "reports"
+  ],
+  SALES_REP: ["dashboard", "crm", "deals", "contacts", "companies", "agents", "workspace"]
 };
 
 function isDetailTab(value: string | null): value is DetailTab {
@@ -139,6 +188,14 @@ export function parseAppRoute(allowedRoutes: readonly AppRouteId[]): AppRouteSta
     return { id: "deals", leadId: null, dealId: decodeURIComponent(path.slice("/deals/".length)) };
   }
 
+  if (path.startsWith("/agents/") && canOpen("agents")) {
+    return {
+      id: "agents",
+      leadId: null,
+      agentId: decodeURIComponent(path.slice("/agents/".length))
+    };
+  }
+
   const route = Object.values(appRoutes).find(
     (candidate) => candidate.path === path && canOpen(candidate.id)
   );
@@ -146,6 +203,7 @@ export function parseAppRoute(allowedRoutes: readonly AppRouteId[]): AppRouteSta
 }
 
 export function appPath(input: AppRouteState): string {
+  if (input.id === "agents" && input.agentId) return `/agents/${encodeURIComponent(input.agentId)}`;
   if (input.id === "deals" && input.dealId) return `/deals/${encodeURIComponent(input.dealId)}`;
   if ((input.id === "crm" || input.id === "workspace") && input.leadId) {
     const params = new URLSearchParams();

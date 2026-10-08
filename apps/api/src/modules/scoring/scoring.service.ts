@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { AgentType, Prisma } from "@prisma/client";
 import type {
   LeadScoreOverrideDto,
   LeadScoreResultDto,
@@ -6,6 +6,7 @@ import type {
 } from "@shilabs/shared-types";
 import { AppError } from "../../shared/errors.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
+import { assertAgentCapabilityActive } from "../agents/agent.service.js";
 import { assertCanMutateLead } from "../leads/lead.permissions.js";
 import { calculateLeadScore, classifyScore } from "./scoring.engine.js";
 import { scoringEvents } from "./scoring.events.js";
@@ -152,6 +153,8 @@ async function recalculateLeadScoreWithActor(
   const existingConfig = requireConfig(configRecord);
   const config = toScoringConfigDto(existingConfig);
   const existingLead = requireLead(lead);
+  if (existingLead.workspaceId)
+    await assertAgentCapabilityActive(existingLead.workspaceId, AgentType.QUALIFICATION);
   const calculation = calculateLeadScore(existingLead.qualification, config);
   const qualificationSnapshot = getQualificationSnapshot(existingLead);
   const factorSnapshot: Prisma.InputJsonArray = calculation.factors.map((factor) => ({
