@@ -28,8 +28,8 @@
     "db:reset": "dotenv -e .env -- npm run db:reset -w @shilabs/api"
   },
   "engines": {
-    "node": ">=20.11.0",
-    "npm": ">=10.0.0"
+    "node": "22.x",
+    "npm": "10.x"
   },
   "overrides": {
     "prisma": "6.12.0"
