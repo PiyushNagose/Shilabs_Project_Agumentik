@@ -643,6 +643,24 @@
   min-width: 0;
 }
 
+.demo-preview-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 34px;
+  padding: 7px 40px;
+  color: #334155;
+  background: #eef4ff;
+  border-bottom: 1px solid #cbd8ec;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.demo-preview-banner span {
+  color: #64748b;
+  font-weight: 600;
+}
+
 .app-shell-content {
   min-height: 100vh;
   overflow-x: clip;

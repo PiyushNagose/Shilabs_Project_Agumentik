@@ -1,3 +1,6 @@
+import { demoApiResponse } from "../../demo/demo-api.js";
+import { isDemoMode } from "../../demo/config.js";
+
 const viteEnv = import.meta.env as Readonly<Record<string, string | undefined>>;
 export const apiBaseUrl = viteEnv.VITE_API_BASE_URL ?? "http://localhost:4000";
 const bypassNgrokWarning = viteEnv.VITE_NGROK_BYPASS_WARNING === "true";
@@ -36,6 +39,14 @@ export async function apiRequest<TResponse>(
   accessToken: string,
   init: RequestInit = {}
 ): Promise<TResponse> {
+  if (isDemoMode) {
+    const method = (init.method ?? "GET").toUpperCase();
+    if (method !== "GET") {
+      throw new ApiClientError("This manager preview is read-only.", 403, "DEMO_READ_ONLY");
+    }
+    return demoApiResponse(path) as TResponse;
+  }
+
   const headers = apiHeaders(init.headers);
   headers.set("Content-Type", "application/json");
   headers.set("Authorization", `Bearer ${accessToken}`);

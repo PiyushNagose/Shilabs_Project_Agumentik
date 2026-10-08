@@ -9,6 +9,7 @@ import {
   useState
 } from "react";
 import { apiBaseUrl } from "../../services/api/core.js";
+import { isDemoMode } from "../../demo/config.js";
 import { useAuth } from "../auth/AuthProvider.js";
 
 export type RealtimeEntityType =
@@ -95,6 +96,10 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }): R
   }, []);
 
   useEffect(() => {
+    if (isDemoMode) {
+      setStatus("disconnected");
+      return undefined;
+    }
     if (authStatus !== "authenticated" || !accessToken) {
       connectedOnce.current = false;
       socketRef.current?.close();
