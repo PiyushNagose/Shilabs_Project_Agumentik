@@ -7,6 +7,7 @@ import { redactSecrets } from "../../../shared/redaction.js";
 import type { AuthenticatedUser } from "../../auth/auth.types.js";
 import type { CRMContact } from "../../crm/crm.provider.js";
 import { autoStartLeadAiAutomation } from "../../followups/lead-ai-automation.service.js";
+import { ensureWorkspacePipeline } from "../../pipeline/pipeline.service.js";
 import { upsertIntegrationAccount } from "../integration-mapping.repository.js";
 import { ZohoBiginAuthClient, type FetchTransport } from "./zoho-bigin.client.js";
 import { ZohoBiginProvider } from "./zoho-bigin.provider.js";
@@ -46,6 +47,7 @@ export async function syncZohoLeadContacts(input: {
 }): Promise<ZohoLeadContactSyncDto> {
   const workspaceId = input.actor.activeWorkspaceId;
   if (!workspaceId) throw new AppError(403, "AUTHORIZATION_ERROR", "Active workspace required");
+  await ensureWorkspacePipeline(workspaceId);
   const startedAt = new Date();
   const config = getZohoBiginConfig(input.env);
 
@@ -221,7 +223,14 @@ async function syncOneContact(input: {
 }): Promise<"SYNCED" | "SKIPPED"> {
   const workspaceId = input.actor.activeWorkspaceId;
   if (!workspaceId) throw new AppError(403, "AUTHORIZATION_ERROR", "Active workspace required");
-  const defaultStage = await prisma.pipelineStage.findFirst({ where: { workspaceId, status: "ACTIVE", pipeline: { status: "ACTIVE" }, OR: [{ key: "NEW" }, { semanticKey: "NEW" }] } });
+  const defaultStage = await prisma.pipelineStage.findFirst({
+    where: {
+      workspaceId,
+      status: "ACTIVE",
+      pipeline: { status: "ACTIVE" },
+      OR: [{ key: "NEW" }, { semanticKey: "NEW" }]
+    }
+  });
   if (!defaultStage) {
     throw new AppError(404, "NOT_FOUND", "Default pipeline stage not found");
   }
@@ -244,7 +253,8 @@ async function syncOneContact(input: {
           where: { id: companyMapping.localEntityId, workspaceId },
           select: { id: true }
         });
-        if (!scopedCompany) throw new AppError(409, "CONFLICT", "Company mapping crosses workspace boundary");
+        if (!scopedCompany)
+          throw new AppError(409, "CONFLICT", "Company mapping crosses workspace boundary");
       }
 
       const company = companyMapping
@@ -335,7 +345,8 @@ async function syncOneContact(input: {
           where: { id: contactLocalId, workspaceId },
           select: { id: true }
         });
-        if (!scopedContact) throw new AppError(409, "CONFLICT", "Contact mapping crosses workspace boundary");
+        if (!scopedContact)
+          throw new AppError(409, "CONFLICT", "Contact mapping crosses workspace boundary");
       }
 
       if (!existingContactMapping && contactLocalId) {
@@ -449,7 +460,8 @@ async function syncOneContact(input: {
           where: { id: existingLeadMapping.localEntityId, workspaceId },
           select: { id: true }
         });
-        if (!scopedLead) throw new AppError(409, "CONFLICT", "Lead mapping crosses workspace boundary");
+        if (!scopedLead)
+          throw new AppError(409, "CONFLICT", "Lead mapping crosses workspace boundary");
       }
 
       const lead = existingLeadMapping

@@ -6,6 +6,7 @@ import { prisma } from "../../../shared/prisma.js";
 import { redactSecrets } from "../../../shared/redaction.js";
 import type { AuthenticatedUser } from "../../auth/auth.types.js";
 import type { CRMDeal } from "../../crm/crm.provider.js";
+import { ensureWorkspacePipeline } from "../../pipeline/pipeline.service.js";
 import { upsertIntegrationAccount } from "../integration-mapping.repository.js";
 import { ZohoBiginAuthClient, type FetchTransport } from "./zoho-bigin.client.js";
 import { ZohoBiginProvider } from "./zoho-bigin.provider.js";
@@ -56,6 +57,7 @@ export async function syncZohoDeals(input: {
 }): Promise<ZohoDealSyncDto> {
   const workspaceId = input.actor.activeWorkspaceId;
   if (!workspaceId) throw new AppError(403, "AUTHORIZATION_ERROR", "Active workspace required");
+  await ensureWorkspacePipeline(workspaceId);
   const startedAt = new Date();
   const config = getZohoBiginConfig(input.env);
 
@@ -149,7 +151,11 @@ export async function syncZohoDeals(input: {
       for (const deal of pageResult.records) {
         counters.totalRecords += 1;
         try {
-          const outcome = await syncOneDeal({ deal, integrationAccountId: account.id, workspaceId });
+          const outcome = await syncOneDeal({
+            deal,
+            integrationAccountId: account.id,
+            workspaceId
+          });
           if (outcome === "SKIPPED") counters.skippedRecords += 1;
           else counters.succeededRecords += 1;
         } catch (error) {
@@ -234,14 +240,24 @@ async function syncOneDeal(input: {
   if (!mappedLead) throw new AppError(409, "CONFLICT", "Lead mapping crosses workspace boundary");
 
   const defaultStage = await prisma.pipelineStage.findFirst({
-    where: { workspaceId: input.workspaceId, status: "ACTIVE", pipeline: { status: "ACTIVE" }, OR: [{ key: "NEW" }, { semanticKey: "NEW" }] }
+    where: {
+      workspaceId: input.workspaceId,
+      status: "ACTIVE",
+      pipeline: { status: "ACTIVE" },
+      OR: [{ key: "NEW" }, { semanticKey: "NEW" }]
+    }
   });
   if (!defaultStage) throw new AppError(404, "NOT_FOUND", "Default pipeline stage not found");
 
   const matchedStageKey = stageKey(input.deal.stageName);
   const stage = matchedStageKey
     ? await prisma.pipelineStage.findFirst({
-        where: { workspaceId: input.workspaceId, status: "ACTIVE", pipeline: { status: "ACTIVE" }, OR: [{ key: matchedStageKey }, { semanticKey: matchedStageKey }] }
+        where: {
+          workspaceId: input.workspaceId,
+          status: "ACTIVE",
+          pipeline: { status: "ACTIVE" },
+          OR: [{ key: matchedStageKey }, { semanticKey: matchedStageKey }]
+        }
       })
     : null;
   const targetStage = stage ?? defaultStage;
