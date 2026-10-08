@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { AgentType, UserRole, UserStatus } from "@prisma/client";
-import type { AgentDashboardDto, AgentDetailDto, AuthResponse } from "@shilabs/shared-types";
+import type {
+  AgentComposerPreviewDto,
+  AgentComposerValidationDto,
+  AgentDashboardDto,
+  AgentDetailDto,
+  AuthResponse
+} from "@shilabs/shared-types";
 import { createApp } from "../../app.js";
 import { prisma } from "../../shared/prisma.js";
 import { hashPassword } from "../auth/auth.service.js";
@@ -39,7 +45,12 @@ async function identity(label: string, role: UserRole = UserRole.ADMIN) {
   return { user, workspace, token: (login.body as AuthResponse).accessToken };
 }
 
-function api(method: "get" | "post" | "patch", path: string, token: string, workspaceId: string) {
+function api(
+  method: "get" | "post" | "patch" | "put",
+  path: string,
+  token: string,
+  workspaceId: string
+) {
   const agentRequest = request(app);
   return agentRequest[method](path)
     .set("Authorization", `Bearer ${token}`)
@@ -171,6 +182,180 @@ describe("Phase 6 agents", () => {
     await expect(
       assertAgentCapabilityActive(admin.workspace.id, AgentType.PROPOSAL)
     ).resolves.toBeUndefined();
+  });
+
+  it("saves isolated drafts, validates graphs, previews safely, and publishes immutable versions", async () => {
+    const admin = await identity("composer-admin");
+    const other = await identity("composer-other");
+    const rep = await identity("composer-rep", UserRole.SALES_REP);
+    await prisma.workspaceMember.create({
+      data: {
+        workspaceId: admin.workspace.id,
+        userId: rep.user.id,
+        role: "SALES_REP",
+        status: "ACTIVE"
+      }
+    });
+    const dashboard = (await api("get", "/api/agents", admin.token, admin.workspace.id).expect(200))
+      .body as AgentDashboardDto;
+    const agent = dashboard.agents.find((item) => item.type === "OUTREACH");
+    if (!agent?.currentVersionId) throw new Error("Expected a published outreach agent");
+    const publishedVersionId = agent.currentVersionId;
+    const validDefinition = {
+      schemaVersion: 1,
+      kind: "AGENT_COMPOSER",
+      nodes: [
+        {
+          id: "trigger",
+          type: "TRIGGER",
+          label: "Lead updated",
+          position: { x: 20, y: 20 },
+          config: { event: "LEAD_UPDATED" }
+        },
+        {
+          id: "decision",
+          type: "AI_DECISION",
+          label: "Choose path",
+          position: { x: 20, y: 140 },
+          config: { instruction: "Choose a safe path" }
+        },
+        {
+          id: "action",
+          type: "TOOL_CRM_ACTION",
+          label: "Start outreach",
+          position: { x: 20, y: 260 },
+          config: { capability: "outreach" }
+        },
+        {
+          id: "handoff",
+          type: "HUMAN_HANDOFF",
+          label: "Ask manager",
+          position: { x: 260, y: 260 },
+          config: { reason: "Confidence is low" }
+        },
+        {
+          id: "end",
+          type: "END",
+          label: "Complete",
+          position: { x: 20, y: 380 },
+          config: { outcome: "Recorded" }
+        }
+      ],
+      edges: [
+        { id: "e1", source: "trigger", target: "decision", branch: null },
+        { id: "e2", source: "decision", target: "action", branch: "approved" },
+        { id: "e3", source: "decision", target: "handoff", branch: "review" },
+        { id: "e4", source: "action", target: "end", branch: null },
+        { id: "e5", source: "handoff", target: "end", branch: null }
+      ]
+    };
+
+    await api("put", `/api/agents/${agent.id}/composer`, rep.token, admin.workspace.id)
+      .send({ definition: validDefinition })
+      .expect(403);
+    await api("get", `/api/agents/${agent.id}`, other.token, other.workspace.id).expect(404);
+
+    const drafted = (
+      await api("put", `/api/agents/${agent.id}/composer`, admin.token, admin.workspace.id)
+        .send({ definition: validDefinition })
+        .expect(200)
+    ).body as AgentDetailDto;
+    expect(drafted.currentVersionId).toBe(publishedVersionId);
+    expect(drafted.draftVersionId).not.toBeNull();
+    expect(drafted.draftVersion?.publishedAt).toBeNull();
+    expect(drafted.currentVersion?.publishedAt).not.toBeNull();
+
+    await api(
+      "post",
+      `/api/agents/${agent.id}/composer/validate`,
+      admin.token,
+      admin.workspace.id
+    ).expect(200, { valid: true, issues: [] });
+    const executionCountBefore = await prisma.agentExecution.count({
+      where: { workspaceId: admin.workspace.id, agentId: agent.id }
+    });
+    const preview = await api(
+      "post",
+      `/api/agents/${agent.id}/composer/preview`,
+      admin.token,
+      admin.workspace.id
+    )
+      .send({ definition: validDefinition })
+      .expect(200);
+    expect(preview.body).toMatchObject({ safe: true, mode: "SANDBOX" });
+    const previewBody = preview.body as AgentComposerPreviewDto;
+    expect(previewBody.blockedActions).toContain("outreach");
+    expect(
+      await prisma.agentExecution.count({
+        where: { workspaceId: admin.workspace.id, agentId: agent.id }
+      })
+    ).toBe(executionCountBefore);
+
+    const invalidDefinition = {
+      ...validDefinition,
+      nodes: [
+        ...validDefinition.nodes,
+        {
+          id: "orphan",
+          type: "MESSAGE",
+          label: "Disconnected",
+          position: { x: 500, y: 500 },
+          config: { message: "Unused" }
+        }
+      ]
+    };
+    await api("put", `/api/agents/${agent.id}/composer`, admin.token, admin.workspace.id)
+      .send({ definition: invalidDefinition })
+      .expect(200);
+    const invalid = await api(
+      "post",
+      `/api/agents/${agent.id}/composer/validate`,
+      admin.token,
+      admin.workspace.id
+    ).expect(200);
+    const invalidBody = invalid.body as AgentComposerValidationDto;
+    expect(invalidBody.valid).toBe(false);
+    expect(invalidBody.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "DISCONNECTED_NODE", nodeId: "orphan" })
+      ])
+    );
+    await api(
+      "post",
+      `/api/agents/${agent.id}/composer/publish`,
+      admin.token,
+      admin.workspace.id
+    ).expect(422);
+
+    const redrafted = (
+      await api("put", `/api/agents/${agent.id}/composer`, admin.token, admin.workspace.id)
+        .send({ definition: validDefinition })
+        .expect(200)
+    ).body as AgentDetailDto;
+    const draftVersionId = redrafted.draftVersionId;
+    const published = (
+      await api(
+        "post",
+        `/api/agents/${agent.id}/composer/publish`,
+        admin.token,
+        admin.workspace.id
+      ).expect(200)
+    ).body as AgentDetailDto;
+    expect(published.currentVersionId).toBe(draftVersionId);
+    expect(published.draftVersionId).toBeNull();
+    expect(published.currentVersion?.publishedAt).not.toBeNull();
+    expect(
+      await prisma.agentVersion.findUnique({ where: { id: publishedVersionId } })
+    ).toMatchObject({ id: publishedVersionId });
+    expect(
+      await prisma.auditEvent.count({
+        where: {
+          workspaceId: admin.workspace.id,
+          entityId: agent.id,
+          action: { in: ["AGENT_COMPOSER_DRAFT_SAVED", "AGENT_COMPOSER_PUBLISHED"] }
+        }
+      })
+    ).toBeGreaterThanOrEqual(3);
   });
 
   it("projects existing capability runs into business-visible execution summaries", async () => {

@@ -12,3 +12,5 @@ npm-debug.log*
 docker/postgres-data/
 docker/redis-data/
 *.tsbuildinfo
+
+.vercel

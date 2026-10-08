@@ -6,12 +6,18 @@ import {
   createAgentController,
   getAgentController,
   listAgentsController,
+  previewAgentComposerController,
+  publishAgentComposerController,
+  saveAgentComposerController,
   updateAgentController,
-  updateAgentStatusController
+  updateAgentStatusController,
+  validateAgentComposerController
 } from "./agent.controller.js";
 import {
   createAgentSchema,
   listAgentExecutionsQuerySchema,
+  previewAgentComposerSchema,
+  saveAgentComposerSchema,
   updateAgentSchema,
   updateAgentStatusSchema
 } from "./agent.schemas.js";
@@ -31,3 +37,15 @@ agentRoutes.patch(
   validateBody(updateAgentStatusSchema),
   asyncHandler(updateAgentStatusController)
 );
+agentRoutes.put(
+  "/:id/composer",
+  validateBody(saveAgentComposerSchema),
+  asyncHandler(saveAgentComposerController)
+);
+agentRoutes.post("/:id/composer/validate", asyncHandler(validateAgentComposerController));
+agentRoutes.post(
+  "/:id/composer/preview",
+  validateBody(previewAgentComposerSchema),
+  asyncHandler(previewAgentComposerController)
+);
+agentRoutes.post("/:id/composer/publish", asyncHandler(publishAgentComposerController));

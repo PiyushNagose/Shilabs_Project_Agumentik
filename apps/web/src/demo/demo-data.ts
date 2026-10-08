@@ -392,6 +392,7 @@ export const demoAgents: AgentDashboardDto = {
     type,
     status: index === 5 ? "PAUSED" : "ACTIVE",
     currentVersionId: `agent-version-${index + 1}`,
+    draftVersionId: null,
     createdByUserId: demoUser.id,
     createdAt: "2026-09-01T09:00:00.000Z",
     updatedAt: now,
@@ -407,6 +408,7 @@ export const demoAgents: AgentDashboardDto = {
       publishedByUserId: demoUser.id,
       createdAt: "2026-09-15T09:00:00.000Z"
     },
+    draftVersion: null,
     versions: [],
     executionCount: 18 + index * 7,
     successfulExecutionCount: 16 + index * 6,

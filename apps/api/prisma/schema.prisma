@@ -667,6 +667,7 @@ model Agent {
   type             AgentType
   status           AgentStatus @default(DRAFT)
   currentVersionId String?
+  draftVersionId   String?
   createdByUserId  String?
   createdAt        DateTime    @default(now())
   updatedAt        DateTime    @updatedAt
@@ -674,6 +675,7 @@ model Agent {
   workspace      Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   createdBy      User?            @relation("AgentCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   currentVersion AgentVersion?    @relation("AgentCurrentVersion", fields: [currentVersionId], references: [id], onDelete: SetNull)
+  draftVersion   AgentVersion?    @relation("AgentDraftVersion", fields: [draftVersionId], references: [id], onDelete: SetNull)
   versions       AgentVersion[]   @relation("AgentVersions")
   executions     AgentExecution[]
 
@@ -681,6 +683,7 @@ model Agent {
   @@index([workspaceId, type])
   @@index([workspaceId, status])
   @@index([currentVersionId])
+  @@index([draftVersionId])
 }
 
 model AgentVersion {
@@ -697,6 +700,7 @@ model AgentVersion {
 
   agent       Agent            @relation("AgentVersions", fields: [agentId], references: [id], onDelete: Cascade)
   currentFor  Agent[]          @relation("AgentCurrentVersion")
+  draftFor    Agent[]          @relation("AgentDraftVersion")
   publishedBy User?            @relation("AgentVersionPublishedBy", fields: [publishedByUserId], references: [id], onDelete: SetNull)
   executions  AgentExecution[]
 

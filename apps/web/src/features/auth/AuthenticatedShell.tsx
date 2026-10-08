@@ -10,7 +10,6 @@ import { CrmWorkspace, type DetailTab } from "../leads/CrmWorkspace.js";
 import { OperationsDashboard } from "../operations/OperationsDashboard.js";
 import { AgentsWorkspace } from "../agents/AgentsWorkspace.js";
 import { useAuth } from "./AuthProvider.js";
-import { isDemoMode } from "../../demo/config.js";
 
 export function AuthenticatedShell(): React.JSX.Element {
   const { accessToken, user, logout } = useAuth();
@@ -105,11 +104,6 @@ export function AuthenticatedShell(): React.JSX.Element {
       onLogout={() => void logout()}
       onNavigate={navigateTo}
     >
-      {isDemoMode ? (
-        <div className="demo-preview-banner" role="status">
-          Manager preview <span>Read-only demo data</span>
-        </div>
-      ) : null}
       <section className="access-summary" aria-labelledby="access-title">
         <h1 id="access-title">{appRoutes[route.id].title}</h1>
         <p>{user.role.replace("_", " ")} permissions are active for this account.</p>

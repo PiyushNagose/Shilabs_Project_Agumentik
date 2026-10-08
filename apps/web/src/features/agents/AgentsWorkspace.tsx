@@ -14,6 +14,7 @@ import {
   CheckCircle2,
   CirclePause,
   Clock3,
+  GitBranch,
   History,
   Pencil,
   Play,
@@ -33,6 +34,7 @@ import {
   updateAgent,
   updateAgentStatus
 } from "../../services/api-client.js";
+import { AgentComposer } from "./AgentComposer.js";
 
 const typeLabels: Record<AgentTypeName, string> = {
   OUTREACH: "Outreach",
@@ -409,7 +411,7 @@ function AgentDetail({
   currentUser: PublicUser;
   onBack: () => void;
 }): React.JSX.Element {
-  const [tab, setTab] = useState<"executions" | "versions" | "overview">("executions");
+  const [tab, setTab] = useState<"composer" | "executions" | "versions" | "overview">("executions");
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const resource = usePersistedResource({
@@ -488,8 +490,14 @@ function AgentDetail({
       <section className="agent-detail-kpis">
         <Card>
           <span>Current version</span>
-          <strong>v{agent.currentVersion?.version ?? "-"}</strong>
-          <small>{agent.currentVersion?.publishedAt ? "Published" : "Draft"}</small>
+          <strong>v{agent.draftVersion?.version ?? agent.currentVersion?.version ?? "-"}</strong>
+          <small>
+            {agent.draftVersion
+              ? "Draft in progress"
+              : agent.currentVersion?.publishedAt
+                ? "Published"
+                : "Draft"}
+          </small>
         </Card>
         <Card>
           <span>Total executions</span>
@@ -508,6 +516,9 @@ function AgentDetail({
         </Card>
       </section>
       <nav className="agent-tabs" aria-label="Agent detail">
+        <button className={tab === "composer" ? "active" : ""} onClick={() => setTab("composer")}>
+          <GitBranch size={15} /> Composer {agent.draftVersion ? <Badge>Draft</Badge> : null}
+        </button>
         <button className={tab === "overview" ? "active" : ""} onClick={() => setTab("overview")}>
           <Bot size={15} /> Overview
         </button>
@@ -521,7 +532,15 @@ function AgentDetail({
           <Archive size={15} /> Versions <Badge>{agent.versions.length}</Badge>
         </button>
       </nav>
-      {tab === "overview" ? (
+      {tab === "composer" ? (
+        <AgentComposer
+          accessToken={accessToken}
+          agent={agent}
+          canManage={canManage}
+          key={agent.draftVersionId ?? agent.currentVersionId ?? agent.id}
+          onChanged={resource.reload}
+        />
+      ) : tab === "overview" ? (
         <AgentOverview agent={agent} />
       ) : tab === "versions" ? (
         <AgentVersions agent={agent} />
@@ -543,7 +562,7 @@ function AgentDetail({
 }
 
 function AgentOverview({ agent }: { agent: AgentDetailDto }): React.JSX.Element {
-  const definition = agent.currentVersion?.definition as
+  const definition = (agent.draftVersion?.definition ?? agent.currentVersion?.definition) as
     { adapter?: string; capability?: string; managed?: boolean } | undefined;
   return (
     <section className="agent-detail-grid">

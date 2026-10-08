@@ -1,4 +1,7 @@
 import type {
+  AgentComposerDefinitionDto,
+  AgentComposerPreviewDto,
+  AgentComposerValidationDto,
   AgentDashboardDto,
   AgentDetailDto,
   AgentStatusName,
@@ -50,5 +53,51 @@ export function updateAgentStatus(
   return apiRequest<AgentDetailDto>(`/api/agents/${agentId}/status`, accessToken, {
     method: "PATCH",
     body: JSON.stringify({ status })
+  });
+}
+
+export function saveAgentComposer(
+  accessToken: string,
+  agentId: string,
+  definition: AgentComposerDefinitionDto
+): Promise<AgentDetailDto> {
+  return apiRequest<AgentDetailDto>(`/api/agents/${agentId}/composer`, accessToken, {
+    method: "PUT",
+    body: JSON.stringify({ definition })
+  });
+}
+
+export function validateAgentComposer(
+  accessToken: string,
+  agentId: string
+): Promise<AgentComposerValidationDto> {
+  return apiRequest<AgentComposerValidationDto>(
+    `/api/agents/${agentId}/composer/validate`,
+    accessToken,
+    { method: "POST" }
+  );
+}
+
+export function previewAgentComposer(
+  accessToken: string,
+  agentId: string,
+  definition: AgentComposerDefinitionDto
+): Promise<AgentComposerPreviewDto> {
+  return apiRequest<AgentComposerPreviewDto>(
+    `/api/agents/${agentId}/composer/preview`,
+    accessToken,
+    {
+      method: "POST",
+      body: JSON.stringify({ definition })
+    }
+  );
+}
+
+export function publishAgentComposer(
+  accessToken: string,
+  agentId: string
+): Promise<AgentDetailDto> {
+  return apiRequest<AgentDetailDto>(`/api/agents/${agentId}/composer/publish`, accessToken, {
+    method: "POST"
   });
 }

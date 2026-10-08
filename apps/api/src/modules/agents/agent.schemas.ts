@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AGENT_STATUSES, AGENT_TYPES } from "@shilabs/shared-types";
+import { AGENT_COMPOSER_NODE_TYPES, AGENT_STATUSES, AGENT_TYPES } from "@shilabs/shared-types";
 
 const jsonRecord = z.record(z.string(), z.unknown());
 
@@ -33,7 +33,40 @@ export const listAgentExecutionsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50)
 });
 
+const composerNodeSchema = z.object({
+  id: z.string().trim().min(1).max(80),
+  type: z.enum(AGENT_COMPOSER_NODE_TYPES),
+  label: z.string().trim().min(1).max(120),
+  position: z.object({
+    x: z.number().min(0).max(5000),
+    y: z.number().min(0).max(5000)
+  }),
+  config: jsonRecord.default({})
+});
+
+const composerEdgeSchema = z.object({
+  id: z.string().trim().min(1).max(80),
+  source: z.string().trim().min(1).max(80),
+  target: z.string().trim().min(1).max(80),
+  branch: z.string().trim().min(1).max(80).nullable().default(null)
+});
+
+export const composerDefinitionSchema = z.object({
+  schemaVersion: z.literal(1),
+  kind: z.literal("AGENT_COMPOSER"),
+  nodes: z.array(composerNodeSchema).min(1).max(100),
+  edges: z.array(composerEdgeSchema).max(250)
+});
+
+export const saveAgentComposerSchema = z.object({ definition: composerDefinitionSchema });
+export const previewAgentComposerSchema = z.object({
+  definition: composerDefinitionSchema.optional()
+});
+
 export type CreateAgentInput = z.infer<typeof createAgentSchema>;
 export type UpdateAgentInput = z.infer<typeof updateAgentSchema>;
 export type UpdateAgentStatusInput = z.infer<typeof updateAgentStatusSchema>;
 export type ListAgentExecutionsQuery = z.infer<typeof listAgentExecutionsQuerySchema>;
+export type ComposerDefinitionInput = z.infer<typeof composerDefinitionSchema>;
+export type SaveAgentComposerInput = z.infer<typeof saveAgentComposerSchema>;
+export type PreviewAgentComposerInput = z.infer<typeof previewAgentComposerSchema>;

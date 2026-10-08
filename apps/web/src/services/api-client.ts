@@ -38,8 +38,12 @@ export {
   createAgent,
   getAgent,
   listAgents,
+  previewAgentComposer,
+  publishAgentComposer,
+  saveAgentComposer,
   updateAgent,
   updateAgentStatus,
+  validateAgentComposer,
   type AgentBody
 } from "./api/agents.js";
 export { listContacts } from "./api/contacts.js";

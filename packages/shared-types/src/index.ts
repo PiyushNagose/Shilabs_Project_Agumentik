@@ -1343,6 +1343,69 @@ export type AgentExecutionStatusName = (typeof AGENT_EXECUTION_STATUSES)[number]
 export type AgentJsonValue =
   string | number | boolean | null | { [key: string]: AgentJsonValue } | AgentJsonValue[];
 
+export const AGENT_COMPOSER_NODE_TYPES = [
+  "TRIGGER",
+  "MESSAGE",
+  "QUESTION",
+  "CONDITION",
+  "AI_DECISION",
+  "TOOL_CRM_ACTION",
+  "INTEGRATION_ACTION",
+  "WAIT",
+  "HUMAN_HANDOFF",
+  "END"
+] as const;
+export type AgentComposerNodeType = (typeof AGENT_COMPOSER_NODE_TYPES)[number];
+
+export interface AgentComposerNodeDto {
+  id: string;
+  type: AgentComposerNodeType;
+  label: string;
+  position: { x: number; y: number };
+  config: Record<string, AgentJsonValue>;
+}
+
+export interface AgentComposerEdgeDto {
+  id: string;
+  source: string;
+  target: string;
+  branch: string | null;
+}
+
+export interface AgentComposerDefinitionDto {
+  schemaVersion: 1;
+  kind: "AGENT_COMPOSER";
+  nodes: AgentComposerNodeDto[];
+  edges: AgentComposerEdgeDto[];
+}
+
+export interface AgentComposerValidationIssueDto {
+  code: string;
+  message: string;
+  nodeId: string | null;
+}
+
+export interface AgentComposerValidationDto {
+  valid: boolean;
+  issues: AgentComposerValidationIssueDto[];
+}
+
+export interface AgentComposerPreviewStepDto {
+  order: number;
+  nodeId: string;
+  nodeType: AgentComposerNodeType;
+  label: string;
+  outcome: string;
+}
+
+export interface AgentComposerPreviewDto {
+  safe: true;
+  mode: "SANDBOX";
+  validation: AgentComposerValidationDto;
+  steps: AgentComposerPreviewStepDto[];
+  blockedActions: string[];
+}
+
 export interface AgentVersionDto {
   id: string;
   agentId: string;
@@ -1384,10 +1447,12 @@ export interface AgentDto {
   type: AgentTypeName;
   status: AgentStatusName;
   currentVersionId: string | null;
+  draftVersionId: string | null;
   createdByUserId: string | null;
   createdAt: string;
   updatedAt: string;
   currentVersion: AgentVersionDto | null;
+  draftVersion: AgentVersionDto | null;
   versions: AgentVersionDto[];
   executionCount: number;
   successfulExecutionCount: number;

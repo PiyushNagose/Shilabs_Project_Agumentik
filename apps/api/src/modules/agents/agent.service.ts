@@ -106,16 +106,17 @@ const capabilities: readonly CapabilityDefinition[] = [
 
 type AgentRecord = Agent & {
   currentVersion: AgentVersion | null;
+  draftVersion: AgentVersion | null;
   versions: AgentVersion[];
 };
 
-function workspaceIdFor(actor: AuthenticatedUser): string {
+export function workspaceIdFor(actor: AuthenticatedUser): string {
   if (!actor.activeWorkspaceId)
     throw new AppError(403, "AUTHORIZATION_ERROR", "Active workspace required");
   return actor.activeWorkspaceId;
 }
 
-function assertCanManage(actor: AuthenticatedUser): void {
+export function assertCanManage(actor: AuthenticatedUser): void {
   if (actor.role !== UserRole.ADMIN && actor.role !== UserRole.SALES_MANAGER) {
     throw new AppError(403, "AUTHORIZATION_ERROR", "Agent management requires manager access");
   }
@@ -123,6 +124,7 @@ function assertCanManage(actor: AuthenticatedUser): void {
 
 const agentInclude = {
   currentVersion: true,
+  draftVersion: true,
   versions: { orderBy: { version: "desc" as const } }
 };
 
@@ -188,10 +190,12 @@ function agentDto(agent: AgentRecord, executions: AgentExecution[]): AgentDto {
     type: agent.type,
     status: agent.status,
     currentVersionId: agent.currentVersionId,
+    draftVersionId: agent.draftVersionId,
     createdByUserId: agent.createdByUserId,
     createdAt: agent.createdAt.toISOString(),
     updatedAt: agent.updatedAt.toISOString(),
     currentVersion: agent.currentVersion ? versionDto(agent.currentVersion) : null,
+    draftVersion: agent.draftVersion ? versionDto(agent.draftVersion) : null,
     versions: agent.versions.map(versionDto),
     executionCount: scoped.length,
     successfulExecutionCount: successful,
@@ -653,7 +657,7 @@ export async function createAgent(
     });
     return tx.agent.update({
       where: { id: created.id },
-      data: { currentVersionId: version.id },
+      data: { currentVersionId: version.id, draftVersionId: version.id },
       include: agentInclude
     });
   });
@@ -676,9 +680,8 @@ export async function updateAgent(
   const existing = await findAgent(workspaceId, agentId);
   if (existing.status === AgentStatus.ARCHIVED)
     throw new AppError(409, "CONFLICT", "Archived agents cannot be edited");
-  const current = existing.currentVersion;
-  if (!current) throw new AppError(409, "CONFLICT", "Agent has no current version");
-  const published = existing.status !== AgentStatus.DRAFT;
+  const current = existing.draftVersion ?? existing.currentVersion;
+  if (!current) throw new AppError(409, "CONFLICT", "Agent has no editable version");
   const updated = await prisma.$transaction(async (tx) => {
     const version = await tx.agentVersion.create({
       data: {
@@ -697,13 +700,18 @@ export async function updateAgent(
           input.knowledgeConfig === undefined
             ? (current.knowledgeConfig ?? Prisma.JsonNull)
             : nullableJson(input.knowledgeConfig),
-        publishedAt: published ? new Date() : null,
-        publishedByUserId: published ? actor.id : null
+        publishedAt: null,
+        publishedByUserId: null
       }
     });
     return tx.agent.update({
       where: { id: agentId },
-      data: { name: input.name, description: input.description, currentVersionId: version.id },
+      data: {
+        name: input.name,
+        description: input.description,
+        draftVersionId: version.id,
+        currentVersionId: existing.status === AgentStatus.DRAFT ? version.id : undefined
+      },
       include: agentInclude
     });
   });
@@ -716,7 +724,7 @@ export async function updateAgent(
     {
       name: updated.name,
       description: updated.description,
-      version: updated.currentVersion?.version ?? 0
+      version: updated.draftVersion?.version ?? updated.currentVersion?.version ?? 0
     }
   );
   await publishRealtimeEvent({ workspaceId, entityType: "agent", action: "agent-updated" });
@@ -750,17 +758,29 @@ export async function updateAgentStatus(
   const updated = await prisma.$transaction(async (tx) => {
     if (
       input.status === AgentStatus.ACTIVE &&
-      existing.currentVersion &&
-      !existing.currentVersion.publishedAt
+      (existing.draftVersion ?? existing.currentVersion) &&
+      !(existing.draftVersion ?? existing.currentVersion)?.publishedAt
     ) {
+      const version = existing.draftVersion ?? existing.currentVersion;
+      if (!version) throw new AppError(409, "CONFLICT", "Agent has no version to publish");
       await tx.agentVersion.update({
-        where: { id: existing.currentVersion.id },
+        where: { id: version.id },
         data: { publishedAt: now, publishedByUserId: actor.id }
       });
     }
     return tx.agent.update({
       where: { id: agentId },
-      data: { status: input.status },
+      data: {
+        status: input.status,
+        currentVersionId:
+          input.status === AgentStatus.ACTIVE && existing.status === AgentStatus.DRAFT
+            ? (existing.draftVersionId ?? existing.currentVersionId)
+            : undefined,
+        draftVersionId:
+          input.status === AgentStatus.ACTIVE && existing.status === AgentStatus.DRAFT
+            ? null
+            : undefined
+      },
       include: agentInclude
     });
   });

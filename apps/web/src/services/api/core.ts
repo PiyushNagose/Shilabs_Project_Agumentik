@@ -42,7 +42,11 @@ export async function apiRequest<TResponse>(
   if (isDemoMode) {
     const method = (init.method ?? "GET").toUpperCase();
     if (method !== "GET") {
-      throw new ApiClientError("This manager preview is read-only.", 403, "DEMO_READ_ONLY");
+      throw new ApiClientError(
+        "This action is unavailable in this environment.",
+        403,
+        "DEMO_READ_ONLY"
+      );
     }
     return demoApiResponse(path) as TResponse;
   }

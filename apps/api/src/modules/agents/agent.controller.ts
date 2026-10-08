@@ -1,5 +1,10 @@
 import type { Request, Response } from "express";
-import type { AgentDashboardDto, AgentDetailDto } from "@shilabs/shared-types";
+import type {
+  AgentComposerPreviewDto,
+  AgentComposerValidationDto,
+  AgentDashboardDto,
+  AgentDetailDto
+} from "@shilabs/shared-types";
 import { getRequiredUser } from "../../middleware/auth.middleware.js";
 import {
   createAgent,
@@ -9,11 +14,19 @@ import {
   updateAgentStatus
 } from "./agent.service.js";
 import type {
+  PreviewAgentComposerInput,
+  SaveAgentComposerInput,
   CreateAgentInput,
   ListAgentExecutionsQuery,
   UpdateAgentInput,
   UpdateAgentStatusInput
 } from "./agent.schemas.js";
+import {
+  previewAgentComposer,
+  publishAgentComposer,
+  saveAgentComposer,
+  validateAgentComposer
+} from "./agent-composer.service.js";
 
 export async function listAgentsController(
   request: Request,
@@ -60,4 +73,42 @@ export async function updateAgentStatusController(
   response
     .status(200)
     .json(await updateAgentStatus(getRequiredUser(request), request.params.id, request.body));
+}
+
+export async function saveAgentComposerController(
+  request: Request<{ id: string }, AgentDetailDto, SaveAgentComposerInput>,
+  response: Response<AgentDetailDto>
+): Promise<void> {
+  response
+    .status(200)
+    .json(
+      await saveAgentComposer(getRequiredUser(request), request.params.id, request.body.definition)
+    );
+}
+
+export async function validateAgentComposerController(
+  request: Request<{ id: string }>,
+  response: Response<AgentComposerValidationDto>
+): Promise<void> {
+  response
+    .status(200)
+    .json(await validateAgentComposer(getRequiredUser(request), request.params.id));
+}
+
+export async function previewAgentComposerController(
+  request: Request<{ id: string }, AgentComposerPreviewDto, PreviewAgentComposerInput>,
+  response: Response<AgentComposerPreviewDto>
+): Promise<void> {
+  response
+    .status(200)
+    .json(await previewAgentComposer(getRequiredUser(request), request.params.id, request.body));
+}
+
+export async function publishAgentComposerController(
+  request: Request<{ id: string }>,
+  response: Response<AgentDetailDto>
+): Promise<void> {
+  response
+    .status(200)
+    .json(await publishAgentComposer(getRequiredUser(request), request.params.id));
 }

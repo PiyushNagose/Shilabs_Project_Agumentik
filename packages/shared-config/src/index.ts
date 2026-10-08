@@ -158,7 +158,7 @@ export interface MessagingConfig {
 export function getApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
   return {
     host: env.API_HOST ?? "0.0.0.0",
-    port: Number(env.API_PORT ?? 4000),
+    port: Number(env.PORT ?? env.API_PORT ?? 4000),
     nodeEnv: env.NODE_ENV ?? "development",
     webOrigin: env.WEB_ORIGIN ?? "http://localhost:5173",
     realtimeInternalSecret: env.REALTIME_INTERNAL_SECRET ?? "",
@@ -185,7 +185,7 @@ export function getWorkerConfig(env: NodeJS.ProcessEnv = process.env): WorkerCon
     apiBaseUrl:
       env.WORKER_API_BASE_URL ??
       env.API_BASE_URL ??
-      `http://localhost:${String(Number(env.API_PORT ?? 4000))}`,
+      `http://localhost:${String(Number(env.PORT ?? env.API_PORT ?? 4000))}`,
     realtimeInternalSecret: env.REALTIME_INTERNAL_SECRET ?? "",
     domainEventQueueName: env.DOMAIN_EVENT_QUEUE_NAME ?? "domain-events",
     domainEventWorkerConcurrency: Number(env.DOMAIN_EVENT_WORKER_CONCURRENCY ?? 5),

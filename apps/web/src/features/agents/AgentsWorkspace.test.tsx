@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentDashboardDto, AgentDetailDto, PublicUser } from "@shilabs/shared-types";
 import { AgentsWorkspace } from "./AgentsWorkspace.js";
@@ -14,6 +14,7 @@ const agent: AgentDetailDto = {
   type: "PROPOSAL",
   status: "ACTIVE",
   currentVersionId: "version_1",
+  draftVersionId: null,
   createdByUserId: null,
   createdAt: "2026-10-08T10:00:00.000Z",
   updatedAt: "2026-10-08T10:00:00.000Z",
@@ -29,6 +30,7 @@ const agent: AgentDetailDto = {
     publishedByUserId: null,
     createdAt: "2026-10-08T10:00:00.000Z"
   },
+  draftVersion: null,
   versions: [],
   executionCount: 1,
   successfulExecutionCount: 1,
@@ -92,7 +94,10 @@ vi.mock("../../hooks/usePersistedResource.js", () => ({
 }));
 
 describe("AgentsWorkspace", () => {
-  afterEach(() => vi.clearAllMocks());
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
 
   it("renders real KPIs and preserves list navigation into execution detail", () => {
     const onRouteChange = vi.fn();
@@ -118,5 +123,37 @@ describe("AgentsWorkspace", () => {
     );
     expect(screen.getByText("Proposal generated successfully")).toBeTruthy();
     expect(screen.getByText("Passed")).toBeTruthy();
+  });
+
+  it("opens the shared Agent Composer with the complete node palette", () => {
+    render(
+      <AgentsWorkspace
+        accessToken="token"
+        currentUser={admin}
+        initialAgentId="agent_1"
+        onRouteChange={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Composer/i }));
+    expect(screen.getByText("Visual behavior")).toBeTruthy();
+    const palette = screen.getByLabelText("Composer nodes");
+    for (const label of [
+      "Trigger",
+      "Message",
+      "Question",
+      "Condition",
+      "AI Decision",
+      "Tool / CRM Action",
+      "Integration Action",
+      "Wait",
+      "Human Handoff",
+      "End"
+    ]) {
+      expect(within(palette).getByRole("button", { name: new RegExp(label, "i") })).toBeTruthy();
+    }
+    expect(screen.getAllByText("Evaluate context").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: /Tool \/ CRM Action Proposal Agent/i }));
+    expect(screen.getByText("Existing capability")).toBeTruthy();
   });
 });

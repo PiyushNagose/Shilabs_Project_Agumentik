@@ -643,24 +643,6 @@
   min-width: 0;
 }
 
-.demo-preview-banner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 34px;
-  padding: 7px 40px;
-  color: #334155;
-  background: #eef4ff;
-  border-bottom: 1px solid #cbd8ec;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.demo-preview-banner span {
-  color: #64748b;
-  font-weight: 600;
-}
-
 .app-shell-content {
   min-height: 100vh;
   overflow-x: clip;
@@ -2105,6 +2087,424 @@ body,
   }
   .lead-timeline article header {
     flex-direction: column;
+  }
+}
+
+/* Agent Composer */
+.agent-composer {
+  overflow: hidden;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border-subtle, #dbe3ef);
+  border-radius: 16px;
+  box-shadow: var(--shadow-sm);
+}
+
+.composer-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  min-height: 82px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border-subtle, #dbe3ef);
+}
+
+.composer-toolbar h3,
+.composer-inspector h4 {
+  margin: 2px 0 0;
+  color: var(--text-strong, #111827);
+  font-size: 17px;
+}
+
+.composer-toolbar p,
+.composer-palette p,
+.inspector-section p {
+  margin: 4px 0 0;
+  color: var(--text-muted, #64748b);
+  font-size: 12px;
+}
+
+.composer-toolbar-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.composer-error {
+  margin: 10px 18px 0;
+  padding: 10px 12px;
+  color: #b42318;
+  background: #fff1f0;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.composer-layout {
+  display: grid;
+  grid-template-columns: 190px minmax(520px, 1fr) 300px;
+  min-height: 650px;
+}
+
+.composer-palette,
+.composer-inspector {
+  padding: 16px;
+  background: #fff;
+}
+
+.composer-palette {
+  border-right: 1px solid var(--border-subtle, #dbe3ef);
+}
+
+.composer-palette > strong {
+  color: var(--text-strong, #111827);
+  font-size: 13px;
+}
+
+.composer-palette > button {
+  display: grid;
+  grid-template-columns: 20px 1fr 14px;
+  align-items: center;
+  width: 100%;
+  min-height: 38px;
+  margin-top: 7px;
+  padding: 7px 8px;
+  color: #334155;
+  text-align: left;
+  background: #fff;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.composer-palette > button:hover:not(:disabled) {
+  background: #f6f8fc;
+  border-color: #d7e0ed;
+  transform: translateY(-1px);
+}
+
+.composer-palette > button svg:last-child {
+  color: #94a3b8;
+}
+
+.composer-canvas {
+  position: relative;
+  min-width: 0;
+  overflow: auto;
+  background-color: #f8fafc;
+  background-image: radial-gradient(#cbd5e1 0.8px, transparent 0.8px);
+  background-size: 18px 18px;
+}
+
+.composer-connectors {
+  position: absolute;
+  inset: 0;
+  min-width: 900px;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.composer-connectors path {
+  fill: none;
+  stroke: #8da0b8;
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+}
+
+.composer-node {
+  position: absolute;
+  z-index: 2;
+  display: grid;
+  width: 200px;
+  min-height: 74px;
+  padding: 10px 12px;
+  color: #111827;
+  text-align: left;
+  background: #fff;
+  border: 1px solid #ccd6e4;
+  border-radius: 10px;
+  box-shadow: 0 4px 12px rgb(15 23 42 / 6%);
+  cursor: grab;
+}
+
+.composer-node:hover,
+.composer-node.selected {
+  border-color: #111827;
+  box-shadow: 0 8px 18px rgb(15 23 42 / 10%);
+  transform: translateY(-1px);
+}
+
+.composer-node.invalid {
+  border-color: #dc2626;
+}
+
+.composer-node > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.composer-node strong {
+  margin-top: 5px;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-node small {
+  margin-top: 3px;
+  color: #94a3b8;
+  font-size: 10px;
+}
+
+.composer-inspector {
+  min-width: 0;
+  border-left: 1px solid var(--border-subtle, #dbe3ef);
+}
+
+.composer-inspector > header,
+.composer-preview > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.composer-inspector header span,
+.composer-preview header span {
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.composer-inspector > label,
+.inspector-position label {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 14px;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.composer-inspector input,
+.composer-inspector textarea {
+  width: 100%;
+  padding: 9px 10px;
+  color: #111827;
+  background: #fff;
+  border: 1px solid #d7e0ed;
+  border-radius: 10px;
+  font: inherit;
+  font-size: 12px;
+  resize: vertical;
+}
+
+.composer-inspector input:focus,
+.composer-inspector textarea:focus {
+  border-color: #64748b;
+  outline: 2px solid rgb(100 116 139 / 12%);
+}
+
+.composer-inspector .themed-select-trigger {
+  min-height: 38px;
+}
+
+.inspector-section {
+  margin: 18px 0;
+  padding-top: 14px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.inspector-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.connection-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 36px;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.connection-editor > input {
+  grid-column: 1 / -1;
+}
+
+.inspector-position {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.composer-validation {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.composer-validation > header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #b42318;
+  font-size: 12px;
+}
+
+.composer-validation.valid > header {
+  color: #08783e;
+}
+
+.composer-validation > button {
+  display: grid;
+  width: 100%;
+  margin-top: 7px;
+  padding: 8px;
+  color: #334155;
+  text-align: left;
+  background: #fff7f6;
+  border: 1px solid #fee2e2;
+  border-radius: 8px;
+}
+
+.composer-validation > button small {
+  margin-top: 3px;
+  color: #b42318;
+  font-size: 9px;
+}
+
+.composer-preview article {
+  display: grid;
+  grid-template-columns: 26px 1fr;
+  gap: 9px;
+  margin-bottom: 8px;
+  padding: 9px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+}
+
+.composer-preview article > span {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  color: #fff;
+  background: #111827;
+  border-radius: 50%;
+  font-size: 10px;
+  place-items: center;
+}
+
+.composer-preview article div {
+  display: grid;
+  gap: 3px;
+}
+
+.composer-preview article strong {
+  font-size: 11px;
+}
+
+.composer-preview article small {
+  color: #64748b;
+  font-size: 10px;
+}
+
+.composer-preview > p {
+  display: flex;
+  gap: 6px;
+  margin: 14px 0;
+  color: #475569;
+  font-size: 11px;
+}
+
+.composer-empty {
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  min-height: 240px;
+  color: #64748b;
+  text-align: center;
+}
+
+.composer-empty strong {
+  margin-top: 8px;
+  color: #334155;
+  font-size: 13px;
+}
+
+.composer-empty span {
+  margin-top: 3px;
+  font-size: 11px;
+}
+
+@media (max-width: 1180px) {
+  .composer-layout {
+    grid-template-columns: 150px minmax(480px, 1fr) 270px;
+  }
+  .composer-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .composer-toolbar-actions {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 920px) {
+  .composer-layout {
+    grid-template-columns: 1fr;
+  }
+  .composer-palette {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    border-right: 0;
+    border-bottom: 1px solid #dbe3ef;
+  }
+  .composer-palette > strong,
+  .composer-palette > p {
+    display: none;
+  }
+  .composer-palette > button {
+    flex: 0 0 150px;
+    margin: 0;
+  }
+  .composer-canvas {
+    min-height: 620px;
+  }
+  .composer-inspector {
+    border-top: 1px solid #dbe3ef;
+    border-left: 0;
+  }
+}
+
+@media (max-width: 620px) {
+  .composer-toolbar,
+  .composer-inspector {
+    padding: 14px;
+  }
+  .composer-toolbar-actions .ui-badge {
+    width: 100%;
+  }
+  .composer-layout {
+    overflow: hidden;
+  }
+  .composer-canvas {
+    overflow: auto;
   }
 }
 
