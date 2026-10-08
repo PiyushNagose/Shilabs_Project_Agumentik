@@ -5,8 +5,8 @@ services:
     plan: free
     region: singapore
     autoDeployTrigger: commit
-    buildCommand: npm ci && npm run db:generate && npm run build -w @shilabs/api -w @shilabs/worker
-    startCommand: npm run db:deploy && npm run db:seed && node scripts/start-production.cjs
+    buildCommand: npm ci --include=dev && npm run db:generate -w @shilabs/api && npm run build -w @shilabs/api -w @shilabs/worker
+    startCommand: npm run db:deploy -w @shilabs/api && npm run db:seed -w @shilabs/api && node scripts/start-production.cjs
     healthCheckPath: /ready
     envVars:
       - key: NODE_ENV
