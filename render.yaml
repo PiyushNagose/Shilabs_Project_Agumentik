@@ -37,7 +37,25 @@ services:
       - key: GEMINI_API_KEY
         sync: false
       - key: CALENDAR_PROVIDER
-        value: none
+        value: google
+      - key: GOOGLE_CALENDAR_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CALENDAR_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_CALENDAR_REFRESH_TOKEN
+        sync: false
+      - key: GOOGLE_CALENDAR_ID
+        sync: false
+      - key: ZOHO_BIGIN_ACCOUNTS_URL
+        sync: false
+      - key: ZOHO_BIGIN_API_DOMAIN
+        sync: false
+      - key: ZOHO_BIGIN_CLIENT_ID
+        sync: false
+      - key: ZOHO_BIGIN_CLIENT_SECRET
+        sync: false
+      - key: ZOHO_BIGIN_REFRESH_TOKEN
+        sync: false
       - key: VOICE_PROVIDER
         value: none
       - key: MESSAGING_PROVIDER
