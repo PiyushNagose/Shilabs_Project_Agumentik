@@ -330,6 +330,7 @@
 .company-collection.grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: stretch;
   gap: 12px;
 }
 .company-collection.list {
@@ -337,29 +338,42 @@
   gap: 8px;
 }
 .company-card {
-  display: flex;
+  display: grid;
+  grid-template-rows: auto auto auto minmax(56px, auto);
   min-width: 0;
-  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
   border: 1px solid var(--color-border);
   border-radius: 7px;
   background: var(--color-surface);
 }
 .company-card > header {
-  display: flex;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 10px;
-  min-height: 72px;
-  padding: 14px;
+  min-height: 88px;
+  padding: 16px 18px;
+  column-gap: 12px;
   border-bottom: 1px solid var(--color-border);
 }
 .company-card > header > div {
   min-width: 0;
-  flex: 1;
+}
+.company-card > header h3,
+.company-card > header p {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .company-card > header p {
-  margin: 3px 0 0;
+  margin: 4px 0 0;
   color: var(--color-text-muted);
   font-size: 12px;
+}
+.company-card > header > .ui-badge {
+  width: max-content;
+  max-width: 100%;
+  justify-self: end;
 }
 .company-mark {
   display: grid;
@@ -377,11 +391,14 @@
 .company-facts {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+  grid-auto-rows: minmax(48px, auto);
+  gap: 14px 24px;
   margin: 0;
-  padding: 16px 14px;
+  padding: 20px 18px 14px;
 }
 .company-facts div {
+  display: grid;
+  align-content: start;
   min-width: 0;
 }
 .company-facts dt {
@@ -390,19 +407,21 @@
   text-transform: uppercase;
 }
 .company-facts dd {
-  margin: 4px 0 0;
+  margin: 6px 0 0;
   overflow: hidden;
   font-size: 12px;
   font-weight: 800;
+  line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .company-owners {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  min-height: 42px;
-  padding: 0 14px 12px;
+  min-height: 52px;
+  padding: 8px 18px 14px;
+  gap: 12px;
 }
 .avatar-stack {
   display: flex;
@@ -427,12 +446,17 @@
   color: var(--color-text-muted);
 }
 .company-card > footer {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(40px, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  margin-top: auto;
-  padding: 9px 12px;
+  min-height: 56px;
+  padding: 10px 14px;
+  gap: 12px;
   border-top: 1px solid var(--color-border);
+}
+.company-card > footer > .ui-button {
+  justify-self: end;
+  white-space: nowrap;
 }
 .company-collection.list .company-card {
   display: grid;
