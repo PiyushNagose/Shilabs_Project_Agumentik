@@ -42,6 +42,8 @@ const voiceTransactionOptions = { maxWait: 10000, timeout: 30000 };
 interface VoiceServiceOptions {
   env?: NodeJS.ProcessEnv;
   provider?: VoiceProvider;
+  workspaceId?: string;
+  accountKey?: string;
 }
 
 function displayVoiceProvider(config: VoiceConfig): "TWILIO" | "EXOTEL" {
@@ -324,8 +326,9 @@ export async function getVoiceHealth(options?: VoiceServiceOptions): Promise<Int
   const displayName = `${providerDisplayName(config)} Voice`;
   if (missingConfig.length > 0) {
     const account = await upsertIntegrationAccount({
+      workspaceId: options?.workspaceId,
       provider,
-      key: "default",
+      key: options?.accountKey ?? "default",
       displayName,
       status: "NOT_CONFIGURED",
       secretRef: voiceSecretRef(config),
@@ -348,8 +351,9 @@ export async function getVoiceHealth(options?: VoiceServiceOptions): Promise<Int
     const health = await voiceProvider.getHealth();
     const status = health.status === "CONFIGURED" ? "CONFIGURED" : "ERROR";
     const account = await upsertIntegrationAccount({
+      workspaceId: options?.workspaceId,
       provider,
-      key: "default",
+      key: options?.accountKey ?? "default",
       displayName,
       status,
       secretRef: voiceSecretRef(config),
@@ -368,8 +372,9 @@ export async function getVoiceHealth(options?: VoiceServiceOptions): Promise<Int
   } catch (error) {
     const lastError = sanitizeError(error);
     const account = await upsertIntegrationAccount({
+      workspaceId: options?.workspaceId,
       provider,
-      key: "default",
+      key: options?.accountKey ?? "default",
       displayName,
       status: "ERROR",
       secretRef: voiceSecretRef(config),

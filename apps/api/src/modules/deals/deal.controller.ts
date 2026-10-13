@@ -24,7 +24,9 @@ export async function listDealsController(
   request: Request,
   response: Response<PaginatedResponse<DealDto>>
 ): Promise<void> {
-  response.status(200).json(await listDeals(requireRequestUser(request), request.validatedQuery as ListDealsQuery));
+  response
+    .status(200)
+    .json(await listDeals(requireRequestUser(request), request.validatedQuery as ListDealsQuery));
 }
 
 export async function getDealController(

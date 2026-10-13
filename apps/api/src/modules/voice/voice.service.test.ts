@@ -18,9 +18,8 @@ import {
 const companyPrefix = "R22 Voice Company";
 
 class FakeVoiceProvider implements VoiceProvider {
-  public readonly createOutboundCallMock = vi.fn<
-    (input: VoiceOutboundCallInput) => Promise<VoiceOutboundCallResult>
-  >();
+  public readonly createOutboundCallMock =
+    vi.fn<(input: VoiceOutboundCallInput) => Promise<VoiceOutboundCallResult>>();
 
   public readonly verifyWebhookMock = vi.fn<(input: VoiceWebhookVerificationInput) => boolean>();
 

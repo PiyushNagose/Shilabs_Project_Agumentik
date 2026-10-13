@@ -148,10 +148,7 @@ function DashboardSection({
   const hiddenCount = Math.max(groupedItems.length - visibleItems.length, 0);
 
   return (
-    <section
-      className={`dashboard-section${expanded ? " is-expanded" : ""}`}
-      aria-label={title}
-    >
+    <section className={`dashboard-section${expanded ? " is-expanded" : ""}`} aria-label={title}>
       <header>
         <h3>{title}</h3>
         <StatusBadge>{items.length}</StatusBadge>
@@ -379,20 +376,20 @@ export function SalesActionDashboard({
 
       <div className="dashboard-summary-grid">
         <span>
+          <small>Proposal approvals</small>
           <strong>{dashboard.summary.pendingProposalApprovals}</strong>
-          Proposal approvals
         </span>
         <span>
+          <small>Handoff alerts</small>
           <strong>{dashboard.summary.negotiationAndTakeoverAlerts}</strong>
-          Handoff alerts
         </span>
         <span>
+          <small>Failures</small>
           <strong>{dashboard.summary.failuresRequiringAttention}</strong>
-          Failures
         </span>
         <span>
+          <small>Meetings</small>
           <strong>{dashboard.summary.meetings}</strong>
-          Meetings
         </span>
       </div>
 
@@ -485,78 +482,75 @@ export function SalesActionDashboard({
           className={`dashboard-section${expandedSections.has("meetings") ? " is-expanded" : ""}`}
           aria-label="Appointments and meetings"
         >
-            <header>
-              <h3>Appointments & Meetings</h3>
-              <StatusBadge>{dashboard.meetings.items.length}</StatusBadge>
-            </header>
-            {dashboard.meetings.items.length === 0 ? (
-              <StateBlock
-                title={
-                  dashboard.meetings.status === "AVAILABLE"
-                    ? "No meetings pending"
-                    : "Not yet available"
-                }
-                detail={dashboard.meetings.message}
-              />
-            ) : (
-              <>
-                <div className="dashboard-card-list">
-                  {(expandedSections.has("meetings")
-                    ? dashboard.meetings.items
-                    : dashboard.meetings.items.slice(0, DASHBOARD_SECTION_PREVIEW_LIMIT)
-                  ).map((item) => (
-                    <article className="dashboard-action-card" key={item.id}>
-                      <div className="dashboard-action-main">
-                        <div>
-                          <strong>{item.title}</strong>
-                          <span>{leadLabel(item)}</span>
-                        </div>
-                        <StatusBadge tone={statusTone(item.severity)}>
-                          {item.status.replaceAll("_", " ")}
-                        </StatusBadge>
+          <header>
+            <h3>Appointments & Meetings</h3>
+            <StatusBadge>{dashboard.meetings.items.length}</StatusBadge>
+          </header>
+          {dashboard.meetings.items.length === 0 ? (
+            <StateBlock
+              title={
+                dashboard.meetings.status === "AVAILABLE"
+                  ? "No meetings pending"
+                  : "Not yet available"
+              }
+              detail={dashboard.meetings.message}
+            />
+          ) : (
+            <>
+              <div className="dashboard-card-list">
+                {(expandedSections.has("meetings")
+                  ? dashboard.meetings.items
+                  : dashboard.meetings.items.slice(0, DASHBOARD_SECTION_PREVIEW_LIMIT)
+                ).map((item) => (
+                  <article className="dashboard-action-card" key={item.id}>
+                    <div className="dashboard-action-main">
+                      <div>
+                        <strong>{item.title}</strong>
+                        <span>{leadLabel(item)}</span>
                       </div>
-                      <p>
-                        {item.detail}
-                        {isDomainEventItem(item) ? (
-                          <>
-                            <br />
-                            <small>Retry after correcting the underlying issue.</small>
-                          </>
+                      <StatusBadge tone={statusTone(item.severity)}>
+                        {item.status.replaceAll("_", " ")}
+                      </StatusBadge>
+                    </div>
+                    <p>
+                      {item.detail}
+                      {isDomainEventItem(item) ? (
+                        <>
+                          <br />
+                          <small>Retry after correcting the underlying issue.</small>
+                        </>
+                      ) : null}
+                    </p>
+                    <footer>
+                      <span>{formatDate(item.occurredAt)}</span>
+                      <div className="dashboard-card-actions">
+                        {item.leadId ? (
+                          <button onClick={() => openDashboardItem(item, onOpenLead)} type="button">
+                            <Icon name="briefcase" size={15} />
+                            Open meeting
+                          </button>
                         ) : null}
-                      </p>
-                      <footer>
-                        <span>{formatDate(item.occurredAt)}</span>
-                        <div className="dashboard-card-actions">
-                          {item.leadId ? (
-                            <button
-                              onClick={() => openDashboardItem(item, onOpenLead)}
-                              type="button"
-                            >
-                              <Icon name="briefcase" size={15} />
-                              Open meeting
-                            </button>
-                          ) : null}
-                        </div>
-                      </footer>
-                    </article>
-                  ))}
+                      </div>
+                    </footer>
+                  </article>
+                ))}
+              </div>
+              {dashboard.meetings.items.length > DASHBOARD_SECTION_PREVIEW_LIMIT ? (
+                <div className="dashboard-section-more">
+                  <span>
+                    {expandedSections.has("meetings")
+                      ? `Showing all ${String(dashboard.meetings.items.length)} items.`
+                      : `Showing top ${String(DASHBOARD_SECTION_PREVIEW_LIMIT)} of ${String(
+                          dashboard.meetings.items.length
+                        )}.`}
+                  </span>
+                  <button onClick={() => toggleSection("meetings")} type="button">
+                    {expandedSections.has("meetings") ? "Show less" : "View all"}
+                  </button>
                 </div>
-                {dashboard.meetings.items.length > DASHBOARD_SECTION_PREVIEW_LIMIT ? (
-                  <div className="dashboard-section-more">
-                    <span>
-                      {expandedSections.has("meetings")
-                        ? `Showing all ${String(dashboard.meetings.items.length)} items.`
-                        : `Showing top ${String(DASHBOARD_SECTION_PREVIEW_LIMIT)} of ${String(
-                            dashboard.meetings.items.length
-                          )}.`}
-                    </span>
-                    <button onClick={() => toggleSection("meetings")} type="button">
-                      {expandedSections.has("meetings") ? "Show less" : "View all"}
-                    </button>
-                  </div>
-                ) : null}
-              </>
-            )}
+              ) : null}
+            </>
+          )}
         </section>
       </div>
     </section>

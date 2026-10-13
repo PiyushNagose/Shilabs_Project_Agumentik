@@ -663,3 +663,225 @@ export function getAuthConfig(env: NodeJS.ProcessEnv = process.env): AuthConfig 
     bcryptSaltRounds
   };
 }
+
+export interface ProductionEnvironmentSummary {
+  database: "configured";
+  redis: "configured";
+  webOrigin: string;
+  apiBaseUrl: string;
+  providers: {
+    email: string;
+    messaging: string;
+    voice: string;
+    calendar: string;
+    ai: string;
+    zohoBigin: "configured" | "disabled";
+  };
+  alerting: "configured" | "structured-logs-only";
+}
+
+function configured(env: NodeJS.ProcessEnv, name: string): boolean {
+  return Boolean(env[name]?.trim());
+}
+
+function requireConfigured(
+  env: NodeJS.ProcessEnv,
+  errors: string[],
+  names: readonly string[]
+): void {
+  for (const name of names) if (!configured(env, name)) errors.push(name);
+}
+
+function productionUrl(
+  env: NodeJS.ProcessEnv,
+  errors: string[],
+  name: string,
+  protocols: readonly string[]
+): URL | null {
+  const value = env[name]?.trim();
+  if (!value) {
+    errors.push(name);
+    return null;
+  }
+  try {
+    const url = new URL(value);
+    if (!protocols.includes(url.protocol)) errors.push(`${name}_PROTOCOL`);
+    if (["localhost", "127.0.0.1", "::1"].includes(url.hostname)) errors.push(`${name}_LOCALHOST`);
+    return url;
+  } catch {
+    errors.push(`${name}_INVALID_URL`);
+    return null;
+  }
+}
+
+export function assertProductionEnvironment(
+  env: NodeJS.ProcessEnv = process.env
+): ProductionEnvironmentSummary | null {
+  if ((env.NODE_ENV ?? "development").toLowerCase() !== "production") return null;
+
+  const errors: string[] = [];
+  productionUrl(env, errors, "DATABASE_URL", ["postgres:", "postgresql:"]);
+  productionUrl(env, errors, "REDIS_URL", ["redis:", "rediss:"]);
+  const webOrigin = productionUrl(env, errors, "WEB_ORIGIN", ["https:"]);
+  const apiBaseUrl = productionUrl(env, errors, "WORKER_API_BASE_URL", ["https:"]);
+  requireConfigured(env, errors, ["JWT_SECRET", "REALTIME_INTERNAL_SECRET"]);
+  if ((env.JWT_SECRET?.length ?? 0) < 32) errors.push("JWT_SECRET_MIN_LENGTH");
+  if ((env.REALTIME_INTERNAL_SECRET?.length ?? 0) < 32) {
+    errors.push("REALTIME_INTERNAL_SECRET_MIN_LENGTH");
+  }
+  if (env.DEV_ADMIN_PASSWORD || env.DEV_ADMIN_EMAIL)
+    errors.push("DEV_ADMIN_CREDENTIALS_NOT_ALLOWED");
+  if (configured(env, "PRODUCTION_BOOTSTRAP_ADMIN_EMAIL")) {
+    requireConfigured(env, errors, ["PRODUCTION_BOOTSTRAP_ADMIN_PASSWORD"]);
+    if ((env.PRODUCTION_BOOTSTRAP_ADMIN_PASSWORD?.length ?? 0) < 16) {
+      errors.push("PRODUCTION_BOOTSTRAP_ADMIN_PASSWORD_MIN_LENGTH");
+    }
+  }
+
+  const email = (env.EMAIL_PROVIDER ?? "").toUpperCase();
+  if (email !== "AWS_SES") errors.push("EMAIL_PROVIDER_MUST_BE_AWS_SES");
+  requireConfigured(env, errors, [
+    "AWS_SES_REGION",
+    "AWS_SES_FROM_EMAIL",
+    "AWS_SES_WEBHOOK_SECRET"
+  ]);
+  if (env.AWS_SES_USE_DEFAULT_CREDENTIAL_CHAIN !== "true") {
+    requireConfigured(env, errors, ["AWS_SES_ACCESS_KEY_ID", "AWS_SES_SECRET_ACCESS_KEY"]);
+  }
+
+  const ai = (env.AI_PROVIDER ?? "").toLowerCase();
+  if (ai === "openai") requireConfigured(env, errors, ["OPENAI_API_KEY", "OPENAI_MODEL"]);
+  else if (ai === "gemini") requireConfigured(env, errors, ["GEMINI_API_KEY", "GEMINI_MODEL"]);
+  else errors.push("AI_PROVIDER");
+
+  const messaging = (env.MESSAGING_PROVIDER ?? "none").toLowerCase();
+  if (messaging === "meta_whatsapp") {
+    productionUrl(env, errors, "MESSAGING_WEBHOOK_BASE_URL", ["https:"]);
+    requireConfigured(env, errors, [
+      "WHATSAPP_ACCESS_TOKEN",
+      "WHATSAPP_PHONE_NUMBER_ID",
+      "WHATSAPP_BUSINESS_ACCOUNT_ID",
+      "WHATSAPP_APP_SECRET",
+      "WHATSAPP_WEBHOOK_VERIFY_TOKEN"
+    ]);
+  } else if (messaging === "twilio_whatsapp") {
+    productionUrl(env, errors, "MESSAGING_WEBHOOK_BASE_URL", ["https:"]);
+    requireConfigured(env, errors, [
+      "TWILIO_WHATSAPP_ACCOUNT_SID",
+      "TWILIO_WHATSAPP_AUTH_TOKEN",
+      "TWILIO_WHATSAPP_SANDBOX_FROM"
+    ]);
+  } else if (messaging !== "none") errors.push("MESSAGING_PROVIDER");
+
+  const voice = (env.VOICE_PROVIDER ?? "none").toLowerCase();
+  if (voice === "twilio") {
+    productionUrl(env, errors, "VOICE_WEBHOOK_BASE_URL", ["https:"]);
+    requireConfigured(env, errors, [
+      "TWILIO_ACCOUNT_SID",
+      "TWILIO_AUTH_TOKEN",
+      "TWILIO_FROM_NUMBER"
+    ]);
+  } else if (voice === "exotel") {
+    productionUrl(env, errors, "VOICE_WEBHOOK_BASE_URL", ["https:"]);
+    requireConfigured(env, errors, [
+      "EXOTEL_ACCOUNT_SID",
+      "EXOTEL_API_KEY",
+      "EXOTEL_API_TOKEN",
+      "EXOTEL_CALLER_ID",
+      "EXOTEL_WEBHOOK_SECRET"
+    ]);
+  } else if (voice !== "none") errors.push("VOICE_PROVIDER");
+
+  const calendar = (env.CALENDAR_PROVIDER ?? "none").toLowerCase();
+  if (calendar === "google") {
+    requireConfigured(env, errors, [
+      "GOOGLE_CALENDAR_CLIENT_ID",
+      "GOOGLE_CALENDAR_CLIENT_SECRET",
+      "GOOGLE_CALENDAR_REFRESH_TOKEN",
+      "GOOGLE_CALENDAR_ID"
+    ]);
+  } else if (calendar !== "none") errors.push("CALENDAR_PROVIDER");
+
+  const zohoConfigured = [
+    "ZOHO_BIGIN_CLIENT_ID",
+    "ZOHO_BIGIN_CLIENT_SECRET",
+    "ZOHO_BIGIN_REFRESH_TOKEN"
+  ].some((name) => configured(env, name));
+  if (zohoConfigured) {
+    requireConfigured(env, errors, [
+      "ZOHO_BIGIN_CLIENT_ID",
+      "ZOHO_BIGIN_CLIENT_SECRET",
+      "ZOHO_BIGIN_REFRESH_TOKEN"
+    ]);
+    productionUrl(env, errors, "ZOHO_BIGIN_ACCOUNTS_URL", ["https:"]);
+    productionUrl(env, errors, "ZOHO_BIGIN_API_DOMAIN", ["https:"]);
+  }
+
+  if (configured(env, "OPS_ALERT_WEBHOOK_URL")) {
+    productionUrl(env, errors, "OPS_ALERT_WEBHOOK_URL", ["https:"]);
+    requireConfigured(env, errors, ["OPS_ALERT_WEBHOOK_SECRET"]);
+  }
+
+  if (errors.length) {
+    throw new Error(`Invalid production configuration: ${[...new Set(errors)].sort().join(", ")}`);
+  }
+  return {
+    database: "configured",
+    redis: "configured",
+    webOrigin: webOrigin?.origin ?? "invalid",
+    apiBaseUrl: apiBaseUrl?.origin ?? "invalid",
+    providers: {
+      email,
+      messaging,
+      voice,
+      calendar,
+      ai,
+      zohoBigin: zohoConfigured ? "configured" : "disabled"
+    },
+    alerting: configured(env, "OPS_ALERT_WEBHOOK_URL") ? "configured" : "structured-logs-only"
+  };
+}
+
+export interface OperationalAlert {
+  category: string;
+  severity: "warning" | "error" | "critical";
+  message: string;
+  correlationId?: string | null;
+  executionId?: string | null;
+  metadata?: Record<string, string | number | boolean | null>;
+}
+
+export async function emitOperationalAlert(
+  alert: OperationalAlert,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<void> {
+  const payload = {
+    ...alert,
+    service: env.SERVICE_NAME ?? "shilabs-sales-engine",
+    environment: env.NODE_ENV ?? "development",
+    occurredAt: new Date().toISOString()
+  };
+  console.error(JSON.stringify({ level: alert.severity, event: "operational_alert", ...payload }));
+  const endpoint = env.OPS_ALERT_WEBHOOK_URL?.trim();
+  if (!endpoint) return;
+  try {
+    await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${env.OPS_ALERT_WEBHOOK_SECRET ?? ""}`
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(Number(env.OPS_ALERT_TIMEOUT_MS ?? 5000))
+    });
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        level: "error",
+        event: "operational_alert_delivery_failed",
+        category: alert.category,
+        error: error instanceof Error ? error.message : "Unknown delivery failure"
+      })
+    );
+  }
+}

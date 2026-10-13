@@ -148,7 +148,7 @@ export async function listFollowUpSequencesForLead(
 ): Promise<FollowUpSequenceDto[]> {
   const lead = await prisma.lead.findUnique({
     where: { id: leadId },
-    select: { id: true, ownerId: true }
+    select: { id: true, ownerId: true, workspaceId: true }
   });
   if (!lead) throw new AppError(404, "NOT_FOUND", "Lead not found");
   assertCanAccessLead(actor, lead);
@@ -165,6 +165,7 @@ export async function listFollowUpSequencesForLead(
 }
 
 async function createAttentionSequence(input: {
+  workspaceId: string | null;
   leadId: string;
   contactId: string;
   conversationId: string | null;
@@ -175,6 +176,7 @@ async function createAttentionSequence(input: {
   const sequence = await prisma.followUpSequence.upsert({
     where: { idempotencyKey: input.idempotencyKey },
     create: {
+      workspaceId: input.workspaceId,
       leadId: input.leadId,
       contactId: input.contactId,
       conversationId: input.conversationId,
@@ -221,6 +223,7 @@ export async function startFollowUpSequence(
   const eligibility = await validateOutboundEmailPreSend(actor, { leadId });
   if (!eligibility.allowed) {
     return createAttentionSequence({
+      workspaceId: lead.workspaceId,
       leadId,
       contactId: lead.contactId,
       conversationId: lead.conversations[0]?.id ?? null,
@@ -229,9 +232,17 @@ export async function startFollowUpSequence(
       message: eligibility.message ?? "Follow-up automation is blocked"
     });
   }
+  if (lead.automationOwnershipState !== "AI_ACTIVE") {
+    throw new AppError(
+      409,
+      "CONFLICT",
+      `Follow-up automation requires AI_ACTIVE ownership; current state is ${lead.automationOwnershipState}`
+    );
+  }
   const conversation = lead.conversations[0];
   if (conversation && ["HUMAN", "PAUSED", "CLOSED"].includes(conversation.mode)) {
     return createAttentionSequence({
+      workspaceId: lead.workspaceId,
       leadId,
       contactId: lead.contactId,
       conversationId: conversation.id,
@@ -250,6 +261,7 @@ export async function startFollowUpSequence(
   });
   if (activeTakeover) {
     return createAttentionSequence({
+      workspaceId: lead.workspaceId,
       leadId,
       contactId: lead.contactId,
       conversationId: conversation?.id ?? null,
@@ -297,6 +309,7 @@ export async function startFollowUpSequence(
     }
   } catch (error) {
     return createAttentionSequence({
+      workspaceId: lead.workspaceId,
       leadId,
       contactId: lead.contactId,
       conversationId: conversation?.id ?? null,
@@ -315,6 +328,7 @@ export async function startFollowUpSequence(
         }));
       const created = await tx.followUpSequence.create({
         data: {
+          workspaceId: lead.workspaceId,
           leadId,
           contactId: lead.contactId,
           conversationId: emailConversation.id,

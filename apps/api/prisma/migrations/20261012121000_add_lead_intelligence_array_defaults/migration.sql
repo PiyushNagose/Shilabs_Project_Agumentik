@@ -1,0 +1,4 @@
+ALTER TABLE "LeadIntelligence"
+  ALTER COLUMN "objections" SET DEFAULT ARRAY[]::TEXT[],
+  ALTER COLUMN "commitments" SET DEFAULT ARRAY[]::TEXT[],
+  ALTER COLUMN "customCadenceDays" SET DEFAULT ARRAY[]::INTEGER[];

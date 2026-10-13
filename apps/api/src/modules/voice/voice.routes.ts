@@ -39,13 +39,21 @@ const exotelWebhookParser = express.urlencoded({
 const exotelMultipartWebhookParser = express.raw({
   type: (request) => {
     const contentType = request.headers["content-type"];
-    return typeof contentType === "string" && contentType.toLowerCase().startsWith("multipart/form-data");
+    return (
+      typeof contentType === "string" && contentType.toLowerCase().startsWith("multipart/form-data")
+    );
   },
   limit: apiConfig.webhookBodyLimit
 });
 
-function parseMultipartFormData(buffer: Buffer, contentType: string | undefined): Record<string, string> {
-  const boundary = /boundary=([^;]+)/iu.exec(contentType ?? "")?.[1]?.trim().replace(/^"|"$/gu, "");
+function parseMultipartFormData(
+  buffer: Buffer,
+  contentType: string | undefined
+): Record<string, string> {
+  const boundary = /boundary=([^;]+)/iu
+    .exec(contentType ?? "")?.[1]
+    ?.trim()
+    .replace(/^"|"$/gu, "");
   if (!boundary) return {};
   const raw = buffer.toString("utf8");
   const result: Record<string, string> = {};
@@ -111,11 +119,7 @@ voiceRoutes.post(
   asyncHandler(ingestExotelStatusWebhookController)
 );
 
-voiceRoutes.get(
-  "/exotel/voicebot",
-  webhookRateLimiter,
-  getExotelVoicebotStreamUrlController
-);
+voiceRoutes.get("/exotel/voicebot", webhookRateLimiter, getExotelVoicebotStreamUrlController);
 
 voiceRoutes.post(
   "/exotel/voicebot",
@@ -124,8 +128,4 @@ voiceRoutes.post(
   getExotelVoicebotStreamUrlController
 );
 
-voiceRoutes.get(
-  "/twilio/twiml/test-call",
-  webhookRateLimiter,
-  getTwilioTestCallTwimlController
-);
+voiceRoutes.get("/twilio/twiml/test-call", webhookRateLimiter, getTwilioTestCallTwimlController);

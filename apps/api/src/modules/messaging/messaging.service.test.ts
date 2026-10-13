@@ -160,7 +160,8 @@ async function cleanup(): Promise<void> {
 }
 
 async function createLeadFixture(input?: { workspaceId?: string; phone?: string }) {
-  const workspaceId = input?.workspaceId ??
+  const workspaceId =
+    input?.workspaceId ??
     (await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } })).id;
   const phone = input?.phone ?? "+919999000001";
   const stage = await prisma.pipelineStage.upsert({
@@ -344,13 +345,18 @@ describe("R24 messaging service", () => {
       prisma.followUpSequence.findUnique({ where: { id: fixture.followUp.id } })
     ).resolves.toMatchObject({
       status: "STOPPED",
-      stopReason: "WHATSAPP_REPLY_RECEIVED"
+      stopReason: "MEANINGFUL_CLIENT_REPLY:WHATSAPP"
     });
     await expect(
       prisma.callingSequence.findUnique({ where: { id: fixture.calling.id } })
     ).resolves.toMatchObject({
       status: "STOPPED",
-      stopReason: "WHATSAPP_REPLY_RECEIVED"
+      stopReason: "MEANINGFUL_CLIENT_REPLY:WHATSAPP"
+    });
+    await expect(
+      prisma.lead.findUniqueOrThrow({ where: { id: fixture.lead.id } })
+    ).resolves.toMatchObject({
+      automationOwnershipState: "HUMAN_REQUIRED"
     });
   }, 90000);
 
@@ -425,7 +431,9 @@ describe("R24 messaging service", () => {
   });
 
   it("does not route an inbound provider callback across ambiguous workspaces", async () => {
-    const defaultWorkspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
+    const defaultWorkspace = await prisma.workspace.findUniqueOrThrow({
+      where: { slug: "default" }
+    });
     const otherWorkspace = await prisma.workspace.create({
       data: { name: "R24 Messaging Isolation", slug: isolationWorkspaceSlug }
     });
@@ -436,40 +444,54 @@ describe("R24 messaging service", () => {
     ]);
     const body = {
       object: "whatsapp_business_account",
-      entry: [{
-        id: "r24-isolation-entry",
-        changes: [{
-          value: {
-            messaging_product: "whatsapp",
-            messages: [{
-              id: "r24-test-cross-workspace-inbound",
-              from: phone.replace(/^\+/u, ""),
-              timestamp: "1790200100",
-              type: "text",
-              text: { body: "This must not select a workspace." }
-            }]
-          }
-        }]
-      }]
+      entry: [
+        {
+          id: "r24-isolation-entry",
+          changes: [
+            {
+              value: {
+                messaging_product: "whatsapp",
+                messages: [
+                  {
+                    id: "r24-test-cross-workspace-inbound",
+                    from: phone.replace(/^\+/u, ""),
+                    timestamp: "1790200100",
+                    type: "text",
+                    text: { body: "This must not select a workspace." }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
     };
     const rawBody = JSON.stringify(body);
 
-    await expect(ingestMetaWhatsAppWebhook({
-      body,
-      rawBody,
-      signature: signature(rawBody),
-      env: testEnv()
-    })).resolves.toMatchObject({ processed: 1 });
-    await expect(prisma.message.count({
-      where: { providerMessageId: "r24-test-cross-workspace-inbound" }
-    })).resolves.toBe(0);
-    await expect(prisma.whatsAppProviderEvent.findFirstOrThrow({
-      where: { providerMessageId: "r24-test-cross-workspace-inbound" }
-    })).resolves.toMatchObject({
+    await expect(
+      ingestMetaWhatsAppWebhook({
+        body,
+        rawBody,
+        signature: signature(rawBody),
+        env: testEnv()
+      })
+    ).resolves.toMatchObject({ processed: 1 });
+    await expect(
+      prisma.message.count({
+        where: { providerMessageId: "r24-test-cross-workspace-inbound" }
+      })
+    ).resolves.toBe(0);
+    await expect(
+      prisma.whatsAppProviderEvent.findFirstOrThrow({
+        where: { providerMessageId: "r24-test-cross-workspace-inbound" }
+      })
+    ).resolves.toMatchObject({
       failureCode: "AMBIGUOUS_LEAD_MATCH"
     });
-    await expect(prisma.callingSequence.count({
-      where: { id: { in: [first.calling.id, second.calling.id] }, status: "ACTIVE" }
-    })).resolves.toBe(2);
+    await expect(
+      prisma.callingSequence.count({
+        where: { id: { in: [first.calling.id, second.calling.id] }, status: "ACTIVE" }
+      })
+    ).resolves.toBe(2);
   });
 });

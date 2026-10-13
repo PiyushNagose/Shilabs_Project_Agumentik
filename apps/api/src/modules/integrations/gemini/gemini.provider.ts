@@ -180,7 +180,8 @@ export class GeminiProvider implements AIProvider {
           (item) =>
             !parsedInput.data.messages.some(
               (message) =>
-                message.id === item.messageId && sourceContainsGroundedQuote(message.body, item.quote)
+                message.id === item.messageId &&
+                sourceContainsGroundedQuote(message.body, item.quote)
             )
         )
       )

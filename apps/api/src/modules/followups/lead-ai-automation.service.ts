@@ -10,6 +10,7 @@ export interface LeadAiAutomationOptions {
   env?: NodeJS.ProcessEnv;
   provider?: AIProvider;
   now?: Date;
+  cycleKey?: string;
 }
 
 function envFlagEnabled(value: string | undefined): boolean | null {
@@ -82,11 +83,17 @@ export async function autoStartLeadAiAutomation(
   const env = options?.env ?? process.env;
   if (!shouldAutoStartLeadAiAutomation(env)) return null;
 
+  const lead = await prisma.lead.findUnique({
+    where: { id: leadId },
+    select: { automationOwnershipState: true }
+  });
+  if (lead?.automationOwnershipState !== "AI_ACTIVE") return null;
+
   try {
     const sequence = await startFollowUpSequence(
       actor,
       leadId,
-      { idempotencyKey: `ai-autostart:follow-up:${leadId}` },
+      { idempotencyKey: `ai-autostart:follow-up:${leadId}:${options?.cycleKey ?? "initial"}` },
       { env, provider: options?.provider, now: options?.now }
     );
 

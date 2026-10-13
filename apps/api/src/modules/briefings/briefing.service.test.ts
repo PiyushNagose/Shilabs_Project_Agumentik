@@ -29,7 +29,13 @@ class BriefingTestProvider implements AIProvider {
       evidence: []
     });
   public summarizeLead: AIProvider["summarizeLead"] = () =>
-    Promise.resolve({ summary: "test", buyingSignals: [], objections: [], risks: [], suggestedNextAction: null });
+    Promise.resolve({
+      summary: "test",
+      buyingSignals: [],
+      objections: [],
+      risks: [],
+      suggestedNextAction: null
+    });
   public generateFollowUp: AIProvider["generateFollowUp"] = () =>
     Promise.resolve({ body: "test", requiresHumanReview: true, reason: null });
   public generateProposalDraft: AIProvider["generateProposalDraft"] = () =>
@@ -76,14 +82,20 @@ async function cleanup(): Promise<void> {
   await prisma.user.deleteMany({ where: { email: actorEmail } });
 }
 
-async function seedBase(): Promise<{ actor: Awaited<ReturnType<typeof prisma.user.create>>; leadId: string; kbVersionId: string }> {
+async function seedBase(): Promise<{
+  actor: Awaited<ReturnType<typeof prisma.user.create>>;
+  leadId: string;
+  kbVersionId: string;
+}> {
   const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
   await prisma.pipelineStage.upsert({
     where: { key: "R26_BRIEFING_NEW" },
     update: {},
     create: { key: "R26_BRIEFING_NEW", label: "R26 Briefing New", order: 9260, probability: 10 }
   });
-  const stage = await prisma.pipelineStage.findUniqueOrThrow({ where: { key: "R26_BRIEFING_NEW" } });
+  const stage = await prisma.pipelineStage.findUniqueOrThrow({
+    where: { key: "R26_BRIEFING_NEW" }
+  });
   const actor = await prisma.user.create({
     data: {
       email: actorEmail,
@@ -154,7 +166,8 @@ async function seedBase(): Promise<{ actor: Awaited<ReturnType<typeof prisma.use
       versions: {
         create: {
           version: 1,
-          content: "AI sales automation can qualify leads and draft follow-up content with human approval.",
+          content:
+            "AI sales automation can qualify leads and draft follow-up content with human approval.",
           sourceTitle: "R26 Briefing Test",
           sourceType: "E2E_TEST",
           createdByUserId: actor.id,
@@ -250,9 +263,17 @@ describe("R26 briefing service", () => {
     expect(run.status).toBe("COMPLETED");
     expect(run.summary).toContain("AI automation");
     expect(run.recommendedNextAction).toContain("Prepare");
-    await expect(prisma.activity.count({ where: { leadId, type: "BRIEFING_GENERATED" } })).resolves.toBe(1);
-    await expect(prisma.auditEvent.count({ where: { entityId: run.id, action: "BRIEFING_GENERATED" } })).resolves.toBe(1);
-    await expect(prisma.domainEventOutbox.count({ where: { aggregateId: run.id, eventType: "BRIEFING_GENERATED" } })).resolves.toBe(1);
+    await expect(
+      prisma.activity.count({ where: { leadId, type: "BRIEFING_GENERATED" } })
+    ).resolves.toBe(1);
+    await expect(
+      prisma.auditEvent.count({ where: { entityId: run.id, action: "BRIEFING_GENERATED" } })
+    ).resolves.toBe(1);
+    await expect(
+      prisma.domainEventOutbox.count({
+        where: { aggregateId: run.id, eventType: "BRIEFING_GENERATED" }
+      })
+    ).resolves.toBe(1);
     await expect(listBriefings(actor, { leadId, limit: 10 })).resolves.toHaveLength(1);
   });
 
@@ -363,7 +384,11 @@ describe("R26 briefing service", () => {
 
     expect(run.status).toBe("FAILED");
     expect(run.failureCode).toBe("PROVIDER_ERROR");
-    await expect(prisma.activity.count({ where: { leadId, type: "BRIEFING_GENERATED" } })).resolves.toBe(0);
-    await expect(prisma.auditEvent.count({ where: { entityId: run.id, action: "BRIEFING_FAILED" } })).resolves.toBe(1);
+    await expect(
+      prisma.activity.count({ where: { leadId, type: "BRIEFING_GENERATED" } })
+    ).resolves.toBe(0);
+    await expect(
+      prisma.auditEvent.count({ where: { entityId: run.id, action: "BRIEFING_FAILED" } })
+    ).resolves.toBe(1);
   });
 });

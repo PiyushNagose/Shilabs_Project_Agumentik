@@ -23,23 +23,25 @@ export function leadName(lead: LeadDto): string {
   return `${lead.contact.firstName} ${lead.contact.lastName}`.trim() || lead.company.name;
 }
 
-export function leadAiIntent(
-  lead: LeadDto,
-  qualification: LeadQualificationDto | null
-): string {
+export function leadAiIntent(lead: LeadDto, qualification: LeadQualificationDto | null): string {
   const candidates = [
     qualification?.need?.trim(),
     qualification?.requirement?.trim(),
     lead.serviceInterest?.trim(),
     lead.requirement?.trim()
   ];
-  return candidates.find((candidate) => candidate !== undefined && candidate.length > 0) ?? "Not identified";
+  return (
+    candidates.find((candidate) => candidate !== undefined && candidate.length > 0) ??
+    "Not identified"
+  );
 }
 
 export function leadPriority(tasks: TaskDto[]): TaskDto["priority"] | "NONE" {
   const open = tasks.filter((task) => task.status === "OPEN" || task.status === "IN_PROGRESS");
   const rank: Record<TaskDto["priority"], number> = { LOW: 1, NORMAL: 2, HIGH: 3, URGENT: 4 };
-  return open.sort((left, right) => rank[right.priority] - rank[left.priority])[0]?.priority ?? "NONE";
+  return (
+    open.sort((left, right) => rank[right.priority] - rank[left.priority])[0]?.priority ?? "NONE"
+  );
 }
 
 function formatDate(value: string | null): string {
@@ -92,18 +94,27 @@ export function LeadFactStrip({
 
 export function LeadTimeline({ activities }: { activities: ActivityDto[] }): React.JSX.Element {
   if (activities.length === 0) {
-    return <StateBlock title="No business activity yet" detail="Customer and sales activity will appear here." />;
+    return (
+      <StateBlock
+        title="No business activity yet"
+        detail="Customer and sales activity will appear here."
+      />
+    );
   }
   return (
     <ol className="lead-timeline" aria-label="Lead business activity">
       {activities.map((activity) => (
         <li key={activity.id}>
-          <span className="timeline-marker" aria-hidden="true"><Sparkles size={15} /></span>
+          <span className="timeline-marker" aria-hidden="true">
+            <Sparkles size={15} />
+          </span>
           <article>
             <header>
               <div>
                 <strong>{activity.title}</strong>
-                <span>{actorLabel(activity)} / {activity.sourceType ?? "CRM"}</span>
+                <span>
+                  {actorLabel(activity)} / {activity.sourceType ?? "CRM"}
+                </span>
               </div>
               <time dateTime={activity.occurredAt}>{formatDate(activity.occurredAt)}</time>
             </header>
@@ -129,9 +140,11 @@ export function LeadTaskList({
   error: string | null;
   onComplete: (taskId: string) => Promise<void>;
 }): React.JSX.Element {
-  if (loading) return <StateBlock title="Loading tasks" detail="Fetching assigned and automated work." />;
+  if (loading)
+    return <StateBlock title="Loading tasks" detail="Fetching assigned and automated work." />;
   if (error) return <StateBlock title="Tasks unavailable" detail={error} />;
-  if (tasks.length === 0) return <StateBlock title="No tasks" detail="This lead has no assigned work yet." />;
+  if (tasks.length === 0)
+    return <StateBlock title="No tasks" detail="This lead has no assigned work yet." />;
   return (
     <div className="lead-task-list">
       {tasks.map((task) => {
@@ -157,7 +170,9 @@ export function LeadTaskList({
               </span>
             </div>
             <div className="task-meta">
-              <Badge tone={task.priority === "URGENT" || task.priority === "HIGH" ? "danger" : "neutral"}>
+              <Badge
+                tone={task.priority === "URGENT" || task.priority === "HIGH" ? "danger" : "neutral"}
+              >
                 {task.priority}
               </Badge>
               <time dateTime={task.dueAt ?? undefined}>{formatDate(task.dueAt)}</time>
@@ -210,33 +225,80 @@ export function LeadQuickView({
       ) : (
         <div className="lead-quick-view">
           <header className="quick-lead-header">
-            <span className="lead-avatar" aria-hidden="true">{lead.contact.firstName.slice(0, 1)}{lead.contact.lastName.slice(0, 1)}</span>
+            <span className="lead-avatar" aria-hidden="true">
+              {lead.contact.firstName.slice(0, 1)}
+              {lead.contact.lastName.slice(0, 1)}
+            </span>
             <div>
               <h3>{leadName(lead)}</h3>
-              <p><Building2 size={14} /> {lead.company.name}</p>
+              <p>
+                <Building2 size={14} /> {lead.company.name}
+              </p>
             </div>
             <div className="quick-contact-actions">
-              {lead.contact.email ? <a aria-label={`Email ${leadName(lead)}`} href={`mailto:${lead.contact.email}`}><Mail size={16} /></a> : null}
-              {lead.contact.phone ? <a aria-label={`Call ${leadName(lead)}`} href={`tel:${lead.contact.phone}`}><Phone size={16} /></a> : null}
+              {lead.contact.email ? (
+                <a aria-label={`Email ${leadName(lead)}`} href={`mailto:${lead.contact.email}`}>
+                  <Mail size={16} />
+                </a>
+              ) : null}
+              {lead.contact.phone ? (
+                <a aria-label={`Call ${leadName(lead)}`} href={`tel:${lead.contact.phone}`}>
+                  <Phone size={16} />
+                </a>
+              ) : null}
             </div>
           </header>
 
           <LeadFactStrip lead={lead} qualification={qualification} tasks={tasks} />
 
           <section className="quick-summary-grid" aria-label="Lead summary">
-            <article><Mail size={16} /><span>Last activity</span><strong>{formatDate(lead.lastActivityAt)}</strong></article>
-            <article><Clock3 size={16} /><span>Next action</span><strong>{lead.nextAction ?? "No next action"}</strong></article>
-            <article><CalendarDays size={16} /><span>Meetings</span><strong>{meetings.length}</strong></article>
-            <article><UserRound size={16} /><span>Owner</span><strong>{lead.owner ? `${lead.owner.firstName} ${lead.owner.lastName}` : "Unassigned"}</strong></article>
+            <article>
+              <Mail size={16} />
+              <span>Last activity</span>
+              <strong>{formatDate(lead.lastActivityAt)}</strong>
+            </article>
+            <article>
+              <Clock3 size={16} />
+              <span>Next action</span>
+              <strong>{lead.nextAction ?? "No next action"}</strong>
+            </article>
+            <article>
+              <CalendarDays size={16} />
+              <span>Meetings</span>
+              <strong>{meetings.length}</strong>
+            </article>
+            <article>
+              <UserRound size={16} />
+              <span>Owner</span>
+              <strong>
+                {lead.owner ? `${lead.owner.firstName} ${lead.owner.lastName}` : "Unassigned"}
+              </strong>
+            </article>
           </section>
 
           <section className="quick-section">
-            <header><h4>Upcoming tasks</h4><Badge>{tasks.filter((task) => task.status !== "COMPLETED" && task.status !== "CANCELED").length}</Badge></header>
-            <LeadTaskList tasks={tasks.slice(0, 3)} loading={tasksLoading} error={tasksError} onComplete={onCompleteTask} />
+            <header>
+              <h4>Upcoming tasks</h4>
+              <Badge>
+                {
+                  tasks.filter((task) => task.status !== "COMPLETED" && task.status !== "CANCELED")
+                    .length
+                }
+              </Badge>
+            </header>
+            <LeadTaskList
+              tasks={tasks.slice(0, 3)}
+              loading={tasksLoading}
+              error={tasksError}
+              onComplete={onCompleteTask}
+            />
           </section>
 
           <section className="quick-section">
-            <header><h4>Recent activity</h4><Badge>{activities.length}</Badge></header>
+            <header>
+              <h4>Recent activity</h4>
+              <Badge>{activities.length}</Badge>
+            </header>
             <LeadTimeline activities={activities.slice(0, 4)} />
           </section>
         </div>

@@ -53,10 +53,87 @@ enum LeadTemperature {
   NURTURE
 }
 
+enum LeadAutomationOwnershipState {
+  HUMAN_ACTIVE
+  HUMAN_ACTION_COMPLETED
+  AI_ACTIVE
+  AI_STOPPED
+  HUMAN_REQUIRED
+}
+
+enum LeadAiControlStatus {
+  ON
+  OFF
+  PAUSED
+}
+
+enum LeadFollowUpMode {
+  STANDARD
+  AGGRESSIVE
+  LOW_FREQUENCY
+  HIGH_VALUE
+  CUSTOM
+}
+
+enum LeadPreferredChannel {
+  EMAIL
+  WHATSAPP
+  PHONE
+  MIXED
+}
+
+enum LeadIntelligenceDecisionType {
+  FOLLOW_UP
+  WAIT
+  ESCALATE
+  STOP
+  ASK_HUMAN
+}
+
+enum LeadDocumentKind {
+  AUDIT
+  REPORT
+  PROPOSAL
+  PRICING
+  PRESENTATION
+  RESEARCH
+  OTHER
+}
+
+enum LeadDocumentSourceType {
+  UPLOAD
+  LINK
+  CRM
+}
+
+enum LeadDocumentStatus {
+  INDEXED
+  NEEDS_CONTENT
+  FAILED
+  ARCHIVED
+}
+
 enum DealStatus {
   OPEN
   WON
   LOST
+}
+
+enum PaymentStatus {
+  PENDING
+  PARTIALLY_PAID
+  PAID
+  FAILED
+  REFUNDED
+  CANCELED
+}
+
+enum FulfillmentStatus {
+  UNFULFILLED
+  PROCESSING
+  FULFILLED
+  ON_HOLD
+  CANCELED
 }
 
 enum PipelineStatus {
@@ -137,6 +214,15 @@ enum ActivityType {
   TASK_CREATED
   TASK_UPDATED
   TASK_COMPLETED
+  AUTOMATION_OWNERSHIP_CHANGED
+  LEAD_INTELLIGENCE_UPDATED
+  LEAD_AI_CONTROL_UPDATED
+  LEAD_DOCUMENT_INDEXED
+  FOLLOW_UP_DECISION_RECORDED
+  ORDER_CREATED
+  ORDER_UPDATED
+  ORDER_PAYMENT_STATUS_CHANGED
+  ORDER_FULFILLMENT_STATUS_CHANGED
 }
 
 enum AuditActorType {
@@ -170,6 +256,33 @@ enum AgentExecutionStatus {
   RUNNING
   SUCCEEDED
   FAILED
+  CANCELED
+}
+
+enum WorkflowStatus {
+  DRAFT
+  PUBLISHED
+  PAUSED
+  ARCHIVED
+}
+
+enum WorkflowExecutionStatus {
+  QUEUED
+  RUNNING
+  WAITING
+  HUMAN_REQUIRED
+  SUCCEEDED
+  FAILED
+  CANCELED
+}
+
+enum WorkflowStepExecutionStatus {
+  PENDING
+  RUNNING
+  WAITING
+  SUCCEEDED
+  FAILED
+  SKIPPED
   CANCELED
 }
 
@@ -279,6 +392,8 @@ enum IntegrationProvider {
   MAILPIT
   SEMRUSH
   GOOGLE_CALENDAR
+  OPENAI
+  GEMINI
   TWILIO
   EXOTEL
   META_WHATSAPP
@@ -287,8 +402,26 @@ enum IntegrationProvider {
 enum IntegrationAccountStatus {
   NOT_CONFIGURED
   CONFIGURED
+  CONNECTED
+  SYNCING
+  NEEDS_ATTENTION
+  FAILED
   ERROR
   DISABLED
+}
+
+enum IntegrationHealthStatus {
+  UNKNOWN
+  HEALTHY
+  NEEDS_ATTENTION
+  FAILED
+}
+
+enum IntegrationConnectionSyncStatus {
+  IDLE
+  SYNCING
+  SUCCEEDED
+  FAILED
 }
 
 enum ExternalRecordEntityType {
@@ -636,6 +769,10 @@ model User {
   completedTasks              Task[]                    @relation("TaskCompletedByUser")
   createdAgents               Agent[]                   @relation("AgentCreatedBy")
   publishedAgentVersions      AgentVersion[]            @relation("AgentVersionPublishedBy")
+  createdWorkflows            Workflow[]                @relation("WorkflowCreatedBy")
+  publishedWorkflowVersions   WorkflowVersion[]         @relation("WorkflowVersionPublishedBy")
+  createdLeadDocuments        LeadDocument[]            @relation("LeadDocumentCreatedBy")
+  ownedOrders                 Order[]                   @relation("OrderOwner")
 
   @@index([role])
   @@index([status])
@@ -650,10 +787,16 @@ model Workspace {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  members   WorkspaceMember[]
-  tasks     Task[]
-  pipelines Pipeline[]
-  agents    Agent[]
+  members             WorkspaceMember[]
+  tasks               Task[]
+  pipelines           Pipeline[]
+  agents              Agent[]
+  workflows           Workflow[]
+  integrationAccounts IntegrationAccount[]
+  leadIntelligence    LeadIntelligence[]
+  leadDocuments       LeadDocument[]
+  leadDecisions       LeadIntelligenceDecision[]
+  orders              Order[]
 
   @@index([status])
 }
@@ -734,12 +877,120 @@ model AgentExecution {
   agent   Agent        @relation(fields: [agentId], references: [id], onDelete: Cascade)
   version AgentVersion @relation(fields: [versionId], references: [id], onDelete: Restrict)
 
-  @@unique([workspaceId, agentId, sourceEntityType, sourceEntityId])
+  @@unique([workspaceId, agentId, sourceEntityType, sourceEntityId], map: "AgentExecution_workspaceId_agentId_sourceEntityType_sourceEntit")
   @@index([workspaceId, status, startedAt])
   @@index([agentId, startedAt])
   @@index([versionId])
   @@index([leadId])
   @@index([correlationId])
+}
+
+model Workflow {
+  id               String         @id @default(cuid())
+  workspaceId      String
+  key              String
+  name             String
+  description      String
+  status           WorkflowStatus @default(DRAFT)
+  currentVersionId String?
+  draftVersionId   String?
+  createdByUserId  String?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  workspace      Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy      User?               @relation("WorkflowCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  currentVersion WorkflowVersion?    @relation("WorkflowCurrentVersion", fields: [currentVersionId], references: [id], onDelete: SetNull)
+  draftVersion   WorkflowVersion?    @relation("WorkflowDraftVersion", fields: [draftVersionId], references: [id], onDelete: SetNull)
+  versions       WorkflowVersion[]   @relation("WorkflowVersions")
+  executions     WorkflowExecution[]
+
+  @@unique([workspaceId, key])
+  @@index([workspaceId, status])
+  @@index([currentVersionId])
+  @@index([draftVersionId])
+}
+
+model WorkflowVersion {
+  id                String    @id @default(cuid())
+  workflowId        String
+  version           Int
+  definition        Json
+  policyConfig      Json?
+  publishedAt       DateTime?
+  publishedByUserId String?
+  createdAt         DateTime  @default(now())
+
+  workflow    Workflow            @relation("WorkflowVersions", fields: [workflowId], references: [id], onDelete: Cascade)
+  currentFor  Workflow[]          @relation("WorkflowCurrentVersion")
+  draftFor    Workflow[]          @relation("WorkflowDraftVersion")
+  publishedBy User?               @relation("WorkflowVersionPublishedBy", fields: [publishedByUserId], references: [id], onDelete: SetNull)
+  executions  WorkflowExecution[]
+
+  @@unique([workflowId, version])
+  @@index([workflowId, createdAt])
+  @@index([publishedByUserId])
+}
+
+model WorkflowExecution {
+  id               String                  @id @default(cuid())
+  workspaceId      String
+  workflowId       String
+  versionId        String
+  leadId           String?
+  source           String
+  sourceEntityType String?
+  sourceEntityId   String?
+  status           WorkflowExecutionStatus @default(QUEUED)
+  currentNodeId    String?
+  idempotencyKey   String                  @unique
+  correlationId    String
+  attempts         Int                     @default(0)
+  maxAttempts      Int                     @default(5)
+  nextRunAt        DateTime                @default(now())
+  input            Json?
+  result           Json?
+  failureCode      String?
+  failureMessage   String?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+
+  workflow Workflow                @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  version  WorkflowVersion         @relation(fields: [versionId], references: [id], onDelete: Restrict)
+  lead     Lead?                   @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  steps    WorkflowStepExecution[]
+
+  @@index([workspaceId, status, nextRunAt])
+  @@index([workflowId, createdAt])
+  @@index([versionId])
+  @@index([leadId, createdAt])
+  @@index([correlationId])
+}
+
+model WorkflowStepExecution {
+  id                  String                      @id @default(cuid())
+  workflowExecutionId String
+  nodeId              String
+  nodeType            String
+  status              WorkflowStepExecutionStatus @default(PENDING)
+  attempt             Int                         @default(1)
+  idempotencyKey      String                      @unique
+  input               Json?
+  output              Json?
+  failureCode         String?
+  failureMessage      String?
+  startedAt           DateTime?
+  completedAt         DateTime?
+  nextAttemptAt       DateTime?
+  createdAt           DateTime                    @default(now())
+  updatedAt           DateTime                    @updatedAt
+
+  execution WorkflowExecution @relation(fields: [workflowExecutionId], references: [id], onDelete: Cascade)
+
+  @@index([workflowExecutionId, createdAt])
+  @@index([status, nextAttemptAt])
 }
 
 model WorkspaceMember {
@@ -906,6 +1157,7 @@ model Company {
 
   contacts Contact[]
   leads    Lead[]
+  orders   Order[]
 
   @@index([name])
   @@index([website])
@@ -941,6 +1193,7 @@ model Contact {
   callingAttempts          CallingAttempt[]
   meetingRequests          MeetingRequest[]
   voiceCallAttempts        VoiceCallAttempt[]
+  orders                   Order[]
 
   @@unique([companyId, normalizedEmail])
   @@unique([companyId, normalizedPhone])
@@ -1000,34 +1253,37 @@ model PipelineStage {
 }
 
 model Lead {
-  id                    String          @id @default(cuid())
-  workspaceId           String?
-  companyId             String
-  contactId             String
-  ownerId               String?
-  source                String
-  status                LeadStatus      @default(OPEN)
-  stageId               String
-  requirement           String?
-  serviceInterest       String?
-  score                 Int             @default(0)
-  temperature           LeadTemperature @default(NURTURE)
-  scoreOverrideAt       DateTime?
-  scoreOverrideByUserId String?
-  scoreOverrideReason   String?
-  estimatedValue        Decimal?        @db.Decimal(12, 2)
-  currency              String          @default("INR")
-  nextAction            String?
-  nextActionAt          DateTime?
-  lastActivityAt        DateTime?
-  createdAt             DateTime        @default(now())
-  updatedAt             DateTime        @updatedAt
+  id                           String                       @id @default(cuid())
+  workspaceId                  String?
+  companyId                    String
+  contactId                    String
+  ownerId                      String?
+  source                       String
+  status                       LeadStatus                   @default(OPEN)
+  stageId                      String
+  requirement                  String?
+  serviceInterest              String?
+  score                        Int                          @default(0)
+  temperature                  LeadTemperature              @default(NURTURE)
+  scoreOverrideAt              DateTime?
+  scoreOverrideByUserId        String?
+  scoreOverrideReason          String?
+  estimatedValue               Decimal?                     @db.Decimal(12, 2)
+  currency                     String                       @default("INR")
+  nextAction                   String?
+  nextActionAt                 DateTime?
+  automationOwnershipState     LeadAutomationOwnershipState @default(HUMAN_ACTIVE)
+  automationOwnershipChangedAt DateTime                     @default(now())
+  automationOwnershipReason    String?
+  lastActivityAt               DateTime?
+  createdAt                    DateTime                     @default(now())
+  updatedAt                    DateTime                     @updatedAt
 
-  company                  Company                   @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  contact                  Contact                   @relation(fields: [contactId], references: [id], onDelete: Restrict)
-  owner                    User?                     @relation("LeadOwner", fields: [ownerId], references: [id], onDelete: SetNull)
-  scoreOverrideBy          User?                     @relation("LeadScoreOverrideBy", fields: [scoreOverrideByUserId], references: [id], onDelete: SetNull)
-  stage                    PipelineStage             @relation(fields: [stageId], references: [id], onDelete: Restrict)
+  company                  Company                    @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  contact                  Contact                    @relation(fields: [contactId], references: [id], onDelete: Restrict)
+  owner                    User?                      @relation("LeadOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  scoreOverrideBy          User?                      @relation("LeadScoreOverrideBy", fields: [scoreOverrideByUserId], references: [id], onDelete: SetNull)
+  stage                    PipelineStage              @relation(fields: [stageId], references: [id], onDelete: Restrict)
   deal                     Deal?
   qualification            LeadQualification?
   activities               Activity[]
@@ -1052,6 +1308,10 @@ model Lead {
   outboundWhatsAppMessages OutboundWhatsAppMessage[]
   briefingRuns             BriefingRun[]
   tasks                    Task[]
+  workflowExecutions       WorkflowExecution[]
+  intelligence             LeadIntelligence?
+  intelligenceDocuments    LeadDocument[]
+  intelligenceDecisions    LeadIntelligenceDecision[]
 
   @@index([companyId])
   @@index([contactId])
@@ -1062,8 +1322,104 @@ model Lead {
   @@index([temperature])
   @@index([source])
   @@index([lastActivityAt])
+  @@index([automationOwnershipState])
   @@index([createdAt])
+  @@index([workspaceId, status, score])
   @@index([workspaceId, ownerId])
+}
+
+model LeadIntelligence {
+  id                        String               @id @default(cuid())
+  workspaceId               String
+  leadId                    String               @unique
+  summary                   String?
+  primaryNeed               String?
+  objections                String[]             @default([])
+  commitments               String[]             @default([])
+  nextObjective             String?
+  communicationStyle        String?
+  healthScore               Int                  @default(0)
+  aiControlStatus           LeadAiControlStatus  @default(ON)
+  followUpMode              LeadFollowUpMode     @default(STANDARD)
+  humanInterventionRequired Boolean              @default(false)
+  preferredChannel          LeadPreferredChannel @default(EMAIL)
+  customCadenceDays         Int[]                @default([])
+  contextSnapshot           Json
+  evidence                  Json
+  lastRefreshedAt           DateTime             @default(now())
+  createdAt                 DateTime             @default(now())
+  updatedAt                 DateTime             @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  lead      Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, aiControlStatus])
+  @@index([workspaceId, healthScore])
+  @@index([lastRefreshedAt])
+}
+
+model LeadDocument {
+  id              String                 @id @default(cuid())
+  workspaceId     String
+  leadId          String
+  title           String
+  kind            LeadDocumentKind
+  sourceType      LeadDocumentSourceType
+  sourceUrl       String?
+  mimeType        String?
+  status          LeadDocumentStatus     @default(NEEDS_CONTENT)
+  extractedText   String?
+  checksum        String?
+  failureMessage  String?
+  createdByUserId String?
+  indexedAt       DateTime?
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+
+  workspace Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  lead      Lead                @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  createdBy User?               @relation("LeadDocumentCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  chunks    LeadDocumentChunk[]
+
+  @@index([workspaceId, leadId, status])
+  @@index([leadId, kind])
+  @@index([checksum])
+}
+
+model LeadDocumentChunk {
+  id          String   @id @default(cuid())
+  workspaceId String
+  leadId      String
+  documentId  String
+  position    Int
+  content     String
+  createdAt   DateTime @default(now())
+
+  document LeadDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, position])
+  @@index([workspaceId, leadId])
+}
+
+model LeadIntelligenceDecision {
+  id            String                       @id @default(cuid())
+  workspaceId   String
+  leadId        String
+  decision      LeadIntelligenceDecisionType
+  reason        String
+  nextObjective String?
+  factors       Json
+  evidence      Json
+  guardrailCode String?
+  correlationId String
+  createdAt     DateTime                     @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  lead      Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, decision, createdAt])
+  @@index([leadId, createdAt])
+  @@index([correlationId])
 }
 
 model LeadScoreRun {
@@ -1155,11 +1511,70 @@ model Deal {
   owner                  User?                   @relation("DealOwner", fields: [ownerId], references: [id], onDelete: SetNull)
   proposals              Proposal[]
   proposalGenerationRuns ProposalGenerationRun[]
+  orders                 Order[]
 
   @@index([stageId])
   @@index([pipelineId, stageId])
   @@index([ownerId])
   @@index([status])
+  @@index([workspaceId, status, currency])
+}
+
+model Order {
+  id                String            @id @default(cuid())
+  workspaceId       String
+  orderNumber       String
+  companyId         String
+  contactId         String?
+  dealId            String?
+  ownerId           String?
+  paymentStatus     PaymentStatus     @default(PENDING)
+  fulfillmentStatus FulfillmentStatus @default(UNFULFILLED)
+  currency          String            @default("INR")
+  subtotal          Decimal           @db.Decimal(14, 2)
+  total             Decimal           @db.Decimal(14, 2)
+  notes             String?
+  orderedAt         DateTime          @default(now())
+  paidAt            DateTime?
+  fulfilledAt       DateTime?
+  canceledAt        DateTime?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  workspace Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  company   Company     @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  contact   Contact?    @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  deal      Deal?       @relation(fields: [dealId], references: [id], onDelete: SetNull)
+  owner     User?       @relation("OrderOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  items     OrderItem[]
+
+  @@unique([workspaceId, orderNumber])
+  @@index([workspaceId, updatedAt])
+  @@index([workspaceId, paymentStatus])
+  @@index([workspaceId, fulfillmentStatus])
+  @@index([companyId])
+  @@index([contactId])
+  @@index([dealId])
+  @@index([ownerId])
+  @@index([orderedAt])
+  @@index([paidAt])
+}
+
+model OrderItem {
+  id          String   @id @default(cuid())
+  workspaceId String
+  orderId     String
+  name        String
+  description String?
+  quantity    Int
+  unitPrice   Decimal  @db.Decimal(14, 2)
+  lineTotal   Decimal  @db.Decimal(14, 2)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, orderId])
 }
 
 model Proposal {
@@ -1349,6 +1764,7 @@ model Activity {
   @@index([visibility, occurredAt])
   @@index([createdAt])
   @@index([workspaceId, createdAt])
+  @@index([workspaceId, visibility, type, actorType])
 }
 
 model AuditEvent {
@@ -1822,6 +2238,7 @@ model FollowUpAttempt {
   @@index([domainEventId])
   @@index([outboundEmailId])
   @@index([zohoSyncStatus])
+  @@index([leadId, status, sentAt, kind])
 }
 
 model CallingSequence {
@@ -1992,28 +2409,37 @@ model Message {
   @@index([senderType])
   @@index([deliveryStatus])
   @@index([createdAt])
+  @@index([conversationId, createdAt, direction, senderType])
 }
 
 model IntegrationAccount {
-  id            String                   @id @default(cuid())
+  id            String                          @id @default(cuid())
   workspaceId   String?
   provider      IntegrationProvider
-  key           String                   @default("default")
+  key           String                          @default("default")
   displayName   String
-  status        IntegrationAccountStatus @default(NOT_CONFIGURED)
+  status        IntegrationAccountStatus        @default(NOT_CONFIGURED)
+  healthStatus  IntegrationHealthStatus         @default(UNKNOWN)
+  syncStatus    IntegrationConnectionSyncStatus @default(IDLE)
   secretRef     String?
   publicConfig  Json?
   lastCheckedAt DateTime?
+  lastHealthyAt DateTime?
+  lastSyncAt    DateTime?
   lastError     String?
-  createdAt     DateTime                 @default(now())
-  updatedAt     DateTime                 @updatedAt
+  disabledAt    DateTime?
+  createdAt     DateTime                        @default(now())
+  updatedAt     DateTime                        @updatedAt
 
+  workspace              Workspace?              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   externalRecordMappings ExternalRecordMapping[]
   syncRuns               IntegrationSyncRun[]
 
   @@unique([workspaceId, provider, key])
   @@index([provider])
   @@index([status])
+  @@index([workspaceId, healthStatus])
+  @@index([workspaceId, syncStatus])
 }
 
 model ExternalRecordMapping {

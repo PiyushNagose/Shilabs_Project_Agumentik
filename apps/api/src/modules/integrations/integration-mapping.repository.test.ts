@@ -58,7 +58,11 @@ describe("integration mapping repository", () => {
     expect(JSON.stringify(account.publicConfig)).not.toContain("secret");
 
     await expect(
-      findIntegrationAccount({ workspaceId: await workspaceId(), provider: "ZOHO_BIGIN", key: accountKey })
+      findIntegrationAccount({
+        workspaceId: await workspaceId(),
+        provider: "ZOHO_BIGIN",
+        key: accountKey
+      })
     ).resolves.toMatchObject({
       id: account.id
     });
@@ -199,17 +203,21 @@ describe("integration mapping repository", () => {
       externalRecordId: "r1-shared-external"
     });
 
-    await expect(findMappingByExternalRecord({
-      workspaceId: workspaceA,
-      provider: "ZOHO_BIGIN",
-      entityType: "LEAD",
-      externalRecordId: "r1-shared-external"
-    })).resolves.toMatchObject({ id: first.id, workspaceId: workspaceA });
-    await expect(findMappingByExternalRecord({
-      workspaceId: workspaceB,
-      provider: "ZOHO_BIGIN",
-      entityType: "LEAD",
-      externalRecordId: "r1-shared-external"
-    })).resolves.toMatchObject({ id: second.id, workspaceId: workspaceB });
+    await expect(
+      findMappingByExternalRecord({
+        workspaceId: workspaceA,
+        provider: "ZOHO_BIGIN",
+        entityType: "LEAD",
+        externalRecordId: "r1-shared-external"
+      })
+    ).resolves.toMatchObject({ id: first.id, workspaceId: workspaceA });
+    await expect(
+      findMappingByExternalRecord({
+        workspaceId: workspaceB,
+        provider: "ZOHO_BIGIN",
+        entityType: "LEAD",
+        externalRecordId: "r1-shared-external"
+      })
+    ).resolves.toMatchObject({ id: second.id, workspaceId: workspaceB });
   });
 });

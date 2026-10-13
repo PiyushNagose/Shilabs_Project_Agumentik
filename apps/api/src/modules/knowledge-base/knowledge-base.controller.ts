@@ -46,9 +46,7 @@ export async function createKnowledgeBaseEntryController(
   request: Request<Record<string, never>, KnowledgeBaseEntryDto, CreateKnowledgeBaseEntryInput>,
   response: Response<KnowledgeBaseEntryDto>
 ): Promise<void> {
-  response
-    .status(201)
-    .json(await createKnowledgeBaseEntry(getRequiredUser(request), request.body));
+  response.status(201).json(await createKnowledgeBaseEntry(getRequiredUser(request), request.body));
 }
 
 export async function updateKnowledgeBaseEntryController(
@@ -57,7 +55,9 @@ export async function updateKnowledgeBaseEntryController(
 ): Promise<void> {
   response
     .status(200)
-    .json(await updateKnowledgeBaseEntry(getRequiredUser(request), request.params.id, request.body));
+    .json(
+      await updateKnowledgeBaseEntry(getRequiredUser(request), request.params.id, request.body)
+    );
 }
 
 export async function correctKnowledgeBaseEntryController(
@@ -66,5 +66,7 @@ export async function correctKnowledgeBaseEntryController(
 ): Promise<void> {
   response
     .status(200)
-    .json(await correctKnowledgeBaseEntry(getRequiredUser(request), request.params.id, request.body));
+    .json(
+      await correctKnowledgeBaseEntry(getRequiredUser(request), request.params.id, request.body)
+    );
 }

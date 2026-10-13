@@ -17,7 +17,8 @@ export function getWorkerAwsSesConfig(env: NodeJS.ProcessEnv = process.env): Wor
   const missing: string[] = [];
   if (!env.AWS_SES_REGION) missing.push("AWS_SES_REGION");
   if (!env.AWS_SES_FROM_EMAIL) missing.push("AWS_SES_FROM_EMAIL");
-  if (!useDefaultCredentialChain && !env.AWS_SES_ACCESS_KEY_ID) missing.push("AWS_SES_ACCESS_KEY_ID");
+  if (!useDefaultCredentialChain && !env.AWS_SES_ACCESS_KEY_ID)
+    missing.push("AWS_SES_ACCESS_KEY_ID");
   if (!useDefaultCredentialChain && !env.AWS_SES_SECRET_ACCESS_KEY) {
     missing.push("AWS_SES_SECRET_ACCESS_KEY");
   }

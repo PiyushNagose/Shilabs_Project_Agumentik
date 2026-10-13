@@ -34,6 +34,15 @@ describe("api health endpoints", () => {
       status: "ok",
       service: "api"
     });
+    expect(response.headers["x-request-id"]).toEqual(expect.any(String));
+  });
+
+  it("preserves a valid request ID and replaces an unsafe one", async () => {
+    const accepted = await request(app).get("/health").set("x-request-id", "manager-check-123");
+    expect(accepted.headers["x-request-id"]).toBe("manager-check-123");
+
+    const replaced = await request(app).get("/health").set("x-request-id", "bad");
+    expect(replaced.headers["x-request-id"]).toMatch(/^[0-9a-f-]{36}$/);
   });
 
   it("returns readiness status", async () => {

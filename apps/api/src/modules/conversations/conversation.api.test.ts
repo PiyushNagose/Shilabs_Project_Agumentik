@@ -135,6 +135,16 @@ async function cleanup(): Promise<void> {
     select: { id: true }
   });
   const takeoverIds = takeovers.map((takeover) => takeover.id);
+  const followUpSequences = await prisma.followUpSequence.findMany({
+    where: { leadId: { in: leadIds } },
+    select: { id: true }
+  });
+  const followUpSequenceIds = followUpSequences.map((sequence) => sequence.id);
+  const followUpAttempts = await prisma.followUpAttempt.findMany({
+    where: { leadId: { in: leadIds } },
+    select: { id: true }
+  });
+  const followUpAttemptIds = followUpAttempts.map((attempt) => attempt.id);
 
   await prisma.authSession.deleteMany({ where: { user: { email: adminEmail } } });
   await prisma.message.deleteMany({
@@ -149,6 +159,17 @@ async function cleanup(): Promise<void> {
   await prisma.outboundEmail.deleteMany({
     where: { leadId: { in: leadIds } }
   });
+  await prisma.domainEventOutbox.deleteMany({
+    where: {
+      OR: [
+        { aggregateId: { in: leadIds } },
+        { aggregateId: { in: followUpSequenceIds } },
+        { aggregateId: { in: followUpAttemptIds } }
+      ]
+    }
+  });
+  await prisma.followUpAttempt.deleteMany({ where: { leadId: { in: leadIds } } });
+  await prisma.followUpSequence.deleteMany({ where: { leadId: { in: leadIds } } });
   await prisma.conversation.deleteMany({
     where: { id: { in: conversationIds } }
   });

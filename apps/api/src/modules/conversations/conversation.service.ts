@@ -23,6 +23,13 @@ import {
   leadVisibilityWhere
 } from "../leads/lead.permissions.js";
 import { toLeadDto } from "../leads/lead.service.js";
+import {
+  activateHuman,
+  completeHumanAction,
+  requireHumanAction,
+  stopAi
+} from "../leads/lead-automation-ownership.service.js";
+import { autoStartLeadAiAutomation } from "../followups/lead-ai-automation.service.js";
 import { listProposals } from "../proposals/proposal.service.js";
 import { getQualification } from "../qualification/qualification.service.js";
 import { conversationEvents, messageEvents } from "./conversation.events.js";
@@ -290,13 +297,17 @@ export async function sendHumanReply(
   if (conversation.channel !== "EMAIL") {
     throw new AppError(409, "CONFLICT", "Human replies can only be sent on email conversations");
   }
-  if (conversation.mode !== "HUMAN") {
-    throw new AppError(409, "CONFLICT", "Human replies require conversation mode HUMAN");
-  }
   assertHumanReplyActor(actor, conversation);
 
   const subject = input.subject ?? defaultHumanReplySubject(conversation);
   const idempotencyKey = `human-reply:${conversation.id}:${input.idempotencyKey}`;
+  const existingOutboundEmail = await prisma.outboundEmail.findUnique({
+    where: { idempotencyKey },
+    select: { id: true }
+  });
+  if (conversation.mode !== "HUMAN" && !existingOutboundEmail) {
+    throw new AppError(409, "CONFLICT", "Human replies require conversation mode HUMAN");
+  }
   const outboundEmail = await sendOutboundEmail(
     actor,
     {
@@ -403,6 +414,22 @@ export async function sendHumanReply(
     }
   }
 
+  const ownership = await completeHumanAction({
+    leadId: conversation.leadId,
+    reason: "HUMAN_REPLY_SENT",
+    actorType: "USER",
+    actorId: actor.id,
+    sourceType: "CONVERSATION",
+    sourceId: conversation.id,
+    correlationId: outboundEmail.id
+  });
+  if (ownership.activated) {
+    await autoStartLeadAiAutomation(actor, conversation.leadId, {
+      env: options?.env,
+      cycleKey: `human-reply:${outboundEmail.id}`
+    });
+  }
+
   return { outboundEmail, message: toMessageDto(message), zohoTimeline };
 }
 
@@ -420,6 +447,41 @@ export async function updateConversationMode(
     before: getModeSnapshot(existing),
     action: conversationEvents.modeChanged
   });
+
+  if (input.mode === "AUTO" || input.mode === "DRAFT_ONLY") {
+    const ownership = await completeHumanAction({
+      leadId: existing.leadId,
+      reason: "MANUAL_AUTOMATION_RESUME",
+      actorType: "USER",
+      actorId: actor.id,
+      sourceType: "CONVERSATION",
+      sourceId: conversationId,
+      allowStoppedResume: input.mode === "AUTO"
+    });
+    if (ownership.activated) {
+      await autoStartLeadAiAutomation(actor, existing.leadId, {
+        cycleKey: `conversation-resume:${conversation.updatedAt.toISOString()}`
+      });
+    }
+  } else if (input.mode === "HUMAN") {
+    await activateHuman({
+      leadId: existing.leadId,
+      reason: "MANUAL_HUMAN_CONTROL",
+      actorType: "USER",
+      actorId: actor.id,
+      sourceType: "CONVERSATION",
+      sourceId: conversationId
+    });
+  } else {
+    await stopAi({
+      leadId: existing.leadId,
+      reason: input.mode === "CLOSED" ? "CONVERSATION_CLOSED" : "MANUAL_PAUSE",
+      actorType: "USER",
+      actorId: actor.id,
+      sourceType: "CONVERSATION",
+      sourceId: conversationId
+    });
+  }
 
   return toConversationDto(conversation);
 }
@@ -506,6 +568,15 @@ export async function startHumanTakeover(
     },
     { maxWait: 10000, timeout: 30000 }
   );
+
+  await requireHumanAction({
+    leadId: existing.leadId,
+    reason: "HUMAN_TAKEOVER_STARTED",
+    actorType: "USER",
+    actorId: actor.id,
+    sourceType: "HUMAN_TAKEOVER",
+    sourceId: takeover.id
+  });
 
   return toHumanTakeoverDto(takeover);
 }

@@ -12,6 +12,8 @@ import { publishDomainEvent } from "../domain-events/domain-events.service.js";
 import { toDealDto } from "../deals/deal.service.js";
 import { findLeadById } from "../leads/lead.repository.js";
 import { toLeadDto } from "../leads/lead.service.js";
+import { completeHumanAction } from "../leads/lead-automation-ownership.service.js";
+import { autoStartLeadAiAutomation } from "../followups/lead-ai-automation.service.js";
 import { publishRealtimeEvent } from "../realtime/realtime.service.js";
 import {
   findProposalById,
@@ -114,10 +116,7 @@ async function loadProposal(id: string): Promise<ProposalRecord> {
   return prisma.proposal.findUniqueOrThrow({ where: { id }, include: proposalInclude });
 }
 
-async function ensureLeadAndDeal(input: {
-  leadId: string;
-  dealId?: string;
-}): Promise<string> {
+async function ensureLeadAndDeal(input: { leadId: string; dealId?: string }): Promise<string> {
   const lead = await findLeadById(input.leadId);
   if (!lead) throw new AppError(404, "NOT_FOUND", "Lead not found");
   if (!lead.workspaceId) throw new AppError(409, "CONFLICT", "Lead has no persisted workspace");
@@ -561,6 +560,20 @@ export async function recordProposalSentAfterProviderConfirmation(
     action: "proposal-sent",
     leadId: existing.leadId
   });
+  const ownership = await completeHumanAction({
+    leadId: existing.leadId,
+    reason: "PROPOSAL_SENT",
+    actorType: "USER",
+    actorId: actor.id,
+    sourceType: "PROPOSAL",
+    sourceId: existing.id,
+    correlationId: outboundEmail.id
+  });
+  if (ownership.activated) {
+    await autoStartLeadAiAutomation(actor, existing.leadId, {
+      cycleKey: `proposal:${existing.id}:${outboundEmail.id}`
+    });
+  }
 
   return toProposalDto(await loadProposal(proposal.id));
 }

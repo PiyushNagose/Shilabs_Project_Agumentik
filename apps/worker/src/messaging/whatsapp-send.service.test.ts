@@ -54,11 +54,15 @@ async function cleanup(): Promise<void> {
     where: { provider: "META_WHATSAPP", entityType: "WHATSAPP_MESSAGE" }
   });
   await prisma.outboundWhatsAppMessage.deleteMany({ where: { leadId: { in: leadIds } } });
-  await prisma.domainEventOutbox.deleteMany({ where: { idempotencyKey: { startsWith: "r24-worker" } } });
+  await prisma.domainEventOutbox.deleteMany({
+    where: { idempotencyKey: { startsWith: "r24-worker" } }
+  });
   await prisma.callingAttempt.deleteMany({ where: { leadId: { in: leadIds } } });
   await prisma.callingSequence.deleteMany({ where: { leadId: { in: leadIds } } });
   await prisma.activity.deleteMany({ where: { leadId: { in: leadIds } } });
-  await prisma.auditEvent.deleteMany({ where: { entityType: { in: ["OutboundWhatsAppMessage"] } } });
+  await prisma.auditEvent.deleteMany({
+    where: { entityType: { in: ["OutboundWhatsAppMessage"] } }
+  });
   await prisma.conversation.deleteMany({ where: { leadId: { in: leadIds } } });
   await prisma.lead.deleteMany({ where: { id: { in: leadIds } } });
   await prisma.contact.deleteMany({ where: { company: { name: { startsWith: companyPrefix } } } });
@@ -94,7 +98,8 @@ async function createFixture() {
       contactId: contact.id,
       source: "R24_WORKER_TEST",
       stageId: stage.id,
-      status: "OPEN"
+      status: "OPEN",
+      automationOwnershipState: "AI_ACTIVE"
     }
   });
   const sequence = await prisma.callingSequence.create({
@@ -123,7 +128,12 @@ async function createFixture() {
       eventType: "WHATSAPP_SEND_REQUESTED",
       aggregateType: "CallingAttempt",
       aggregateId: attempt.id,
-      payload: { leadId: lead.id, contactId: contact.id, callingSequenceId: sequence.id, callingAttemptId: attempt.id },
+      payload: {
+        leadId: lead.id,
+        contactId: contact.id,
+        callingSequenceId: sequence.id,
+        callingAttemptId: attempt.id
+      },
       correlationId: sequence.id,
       idempotencyKey: `r24-worker-event:${attempt.id}`
     }
@@ -152,13 +162,27 @@ describe("R24 WhatsApp send worker", () => {
     });
     const timeline = new FakeTimelineSyncer();
     timeline.syncActivityMock
-      .mockResolvedValueOnce({ status: "FAILED", externalRecordId: null, lastError: "Zoho unavailable" })
+      .mockResolvedValueOnce({
+        status: "FAILED",
+        externalRecordId: null,
+        lastError: "Zoho unavailable"
+      })
       .mockResolvedValueOnce({ status: "SYNCED", externalRecordId: "timeline-1", lastError: null });
 
     await expect(
-      executeWhatsAppSend({ event: fixture.event, env: testEnv(), provider, timelineSyncer: timeline })
+      executeWhatsAppSend({
+        event: fixture.event,
+        env: testEnv(),
+        provider,
+        timelineSyncer: timeline
+      })
     ).rejects.toThrow("Zoho unavailable");
-    await executeWhatsAppSend({ event: fixture.event, env: testEnv(), provider, timelineSyncer: timeline });
+    await executeWhatsAppSend({
+      event: fixture.event,
+      env: testEnv(),
+      provider,
+      timelineSyncer: timeline
+    });
 
     expect(provider.sendTemplateMessageMock).toHaveBeenCalledTimes(1);
     await expect(
@@ -211,7 +235,12 @@ describe("R24 WhatsApp send worker", () => {
       lastError: null
     });
 
-    await executeWhatsAppSend({ event: fixture.event, env: testEnv(), provider, timelineSyncer: timeline });
+    await executeWhatsAppSend({
+      event: fixture.event,
+      env: testEnv(),
+      provider,
+      timelineSyncer: timeline
+    });
 
     expect(provider.sendTemplateMessageMock).toHaveBeenCalledTimes(1);
     await expect(
@@ -241,7 +270,9 @@ describe("R24 WhatsApp send worker", () => {
           body: init?.body as URLSearchParams,
           authorization: headers.get("authorization")
         });
-        return Promise.resolve(Response.json({ sid: "SM-r24-worker-twilio-001", status: "queued" }));
+        return Promise.resolve(
+          Response.json({ sid: "SM-r24-worker-twilio-001", status: "queued" })
+        );
       }
     );
 
@@ -257,11 +288,15 @@ describe("R24 WhatsApp send worker", () => {
       providerMessageId: "SM-r24-worker-twilio-001",
       providerStatus: "queued"
     });
-    expect(requests[0]?.url).toBe("https://api.twilio.com/2010-04-01/Accounts/ACtwilio/Messages.json");
+    expect(requests[0]?.url).toBe(
+      "https://api.twilio.com/2010-04-01/Accounts/ACtwilio/Messages.json"
+    );
     expect(requests[0]?.body.get("From")).toBe("whatsapp:+14155238886");
     expect(requests[0]?.body.get("To")).toBe("whatsapp:+919999000002");
     expect(requests[0]?.body.get("Body")).toBe("R24 Twilio sandbox message");
-    expect(requests[0]?.authorization).toBe(`Basic ${Buffer.from("ACtwilio:twilio-auth-token").toString("base64")}`);
+    expect(requests[0]?.authorization).toBe(
+      `Basic ${Buffer.from("ACtwilio:twilio-auth-token").toString("base64")}`
+    );
   });
 
   it("preserves the provider reason when Twilio rejects a WhatsApp request", async () => {
@@ -274,7 +309,13 @@ describe("R24 WhatsApp send worker", () => {
           TWILIO_WHATSAPP_SANDBOX_FROM: "whatsapp:+14155238886"
         })
       ),
-      () => Promise.resolve(Response.json({ code: 63016, message: "The user has not joined the sandbox" }, { status: 400 }))
+      () =>
+        Promise.resolve(
+          Response.json(
+            { code: 63016, message: "The user has not joined the sandbox" },
+            { status: 400 }
+          )
+        )
     );
 
     await expect(
@@ -286,7 +327,8 @@ describe("R24 WhatsApp send worker", () => {
       })
     ).resolves.toMatchObject({
       status: "FAILED",
-      lastError: "WhatsApp provider request failed with status 400: code 63016: The user has not joined the sandbox"
+      lastError:
+        "WhatsApp provider request failed with status 400: code 63016: The user has not joined the sandbox"
     });
   });
 });

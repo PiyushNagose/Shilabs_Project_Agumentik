@@ -54,7 +54,10 @@ class TestEmailProvider implements EmailProvider {
   }
 }
 
-function sign(body: unknown, secret = configuredEnv.AWS_SES_WEBHOOK_SECRET): {
+function sign(
+  body: unknown,
+  secret = configuredEnv.AWS_SES_WEBHOOK_SECRET
+): {
   rawBody: string;
   timestamp: string;
   signature: string;

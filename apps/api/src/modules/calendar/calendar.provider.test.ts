@@ -233,8 +233,7 @@ describe("calendar provider foundation", () => {
       provider: "GOOGLE",
       status: "ERROR",
       slots: [],
-      unavailableReason:
-        "Google Calendar FreeBusy failed with status 500: provider failed"
+      unavailableReason: "Google Calendar FreeBusy failed with status 500: provider failed"
     });
   });
 
@@ -415,7 +414,9 @@ describe("calendar provider foundation", () => {
       const eventBody = parseJsonBody(init?.body);
       const eventId = String(eventBody.id);
       eventIds.push(eventId);
-      return Promise.resolve(Response.json({ id: eventId, htmlLink: `https://calendar.google.test/insert/${eventId}` }));
+      return Promise.resolve(
+        Response.json({ id: eventId, htmlLink: `https://calendar.google.test/insert/${eventId}` })
+      );
     };
     const provider = new GoogleCalendarProvider(buildGoogleConfig(), transport);
     const baseInput = {

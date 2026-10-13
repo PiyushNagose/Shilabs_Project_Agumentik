@@ -196,7 +196,9 @@ describe("SES inbound email ingestion", () => {
       senderType: "PROSPECT",
       body: "Yes, please share more details."
     });
-    await expect(prisma.emailProviderEvent.count({ where: { type: "INBOUND_RECEIVED" } })).resolves.toBe(1);
+    await expect(
+      prisma.emailProviderEvent.count({ where: { type: "INBOUND_RECEIVED" } })
+    ).resolves.toBe(1);
   });
 
   it("deduplicates inbound provider message IDs", async () => {

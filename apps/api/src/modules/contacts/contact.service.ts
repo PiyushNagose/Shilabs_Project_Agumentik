@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import type { ContactDto } from "@shilabs/shared-types";
 import { normalizeEmail, normalizePhone } from "@shilabs/validation";
 import { AppError } from "../../shared/errors.js";
+import { prisma } from "../../shared/prisma.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
 import {
   assertCanAccessCompany,
@@ -9,6 +10,7 @@ import {
   contactVisibilityWhere
 } from "../authorization/crm-record.permissions.js";
 import { findCompanyById } from "../companies/company.repository.js";
+import { stopAi } from "../leads/lead-automation-ownership.service.js";
 import type { CreateContactInput, UpdateContactInput } from "./contact.schemas.js";
 import {
   createContact as createContactRecord,
@@ -147,22 +149,38 @@ export async function updateContact(
   });
 
   try {
-    return toContactDto(
-      await updateContactRecord(contactId, {
-        firstName: input.firstName,
-        lastName: input.lastName,
-        title: "title" in input ? (input.title ?? null) : undefined,
-        email: "email" in input ? (input.email ?? null) : undefined,
-        normalizedEmail,
-        phone: "phone" in input ? (input.phone ?? null) : undefined,
-        normalizedPhone,
-        whatsappId,
-        source: "source" in input ? (input.source ?? null) : undefined,
-        preferredChannel:
-          "preferredChannel" in input ? (input.preferredChannel ?? null) : undefined,
-        doNotContact: input.doNotContact
-      })
-    );
+    const updated = await updateContactRecord(contactId, {
+      firstName: input.firstName,
+      lastName: input.lastName,
+      title: "title" in input ? (input.title ?? null) : undefined,
+      email: "email" in input ? (input.email ?? null) : undefined,
+      normalizedEmail,
+      phone: "phone" in input ? (input.phone ?? null) : undefined,
+      normalizedPhone,
+      whatsappId,
+      source: "source" in input ? (input.source ?? null) : undefined,
+      preferredChannel: "preferredChannel" in input ? (input.preferredChannel ?? null) : undefined,
+      doNotContact: input.doNotContact
+    });
+    if (input.doNotContact === true && !existing.doNotContact) {
+      const leads = await prisma.lead.findMany({
+        where: { contactId, workspaceId: actor.activeWorkspaceId },
+        select: { id: true }
+      });
+      await Promise.all(
+        leads.map((lead) =>
+          stopAi({
+            leadId: lead.id,
+            reason: "DO_NOT_CONTACT",
+            actorType: "USER",
+            actorId: actor.id,
+            sourceType: "CONTACT",
+            sourceId: contactId
+          })
+        )
+      );
+    }
+    return toContactDto(updated);
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
       throw new AppError(404, "NOT_FOUND", "Contact not found");

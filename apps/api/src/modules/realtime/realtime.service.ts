@@ -18,7 +18,10 @@ export type RealtimeEntityType =
   | "operations"
   | "notifications"
   | "domain-event"
-  | "agent";
+  | "agent"
+  | "workflow"
+  | "integration"
+  | "order";
 
 export interface RealtimeEvent {
   type: "realtime:update";
@@ -29,6 +32,7 @@ export interface RealtimeEvent {
   domainEventId?: string | null;
   sourceEventType?: string | null;
   taskId?: string | null;
+  orderId?: string | null;
   workspaceId?: string | null;
   occurredAt: string;
 }
@@ -55,9 +59,10 @@ export async function resolveRealtimeEventScope(input: {
   conversationId?: string | null;
   domainEventId?: string | null;
   taskId?: string | null;
+  orderId?: string | null;
   workspaceId?: string | null;
 }): Promise<{ workspaceId: string; ownerId: string | null } | null> {
-  const [lead, conversation, domainEvent, task] = await Promise.all([
+  const [lead, conversation, domainEvent, task, order] = await Promise.all([
     input.leadId
       ? prisma.lead.findUnique({
           where: { id: input.leadId },
@@ -81,6 +86,16 @@ export async function resolveRealtimeEventScope(input: {
           where: { id: input.taskId },
           select: { workspaceId: true, lead: { select: { workspaceId: true, ownerId: true } } }
         })
+      : null,
+    input.orderId
+      ? prisma.order.findUnique({
+          where: { id: input.orderId },
+          select: {
+            workspaceId: true,
+            ownerId: true,
+            deal: { select: { lead: { select: { workspaceId: true, ownerId: true } } } }
+          }
+        })
       : null
   ]);
   const scopes = [
@@ -89,7 +104,9 @@ export async function resolveRealtimeEventScope(input: {
     conversation?.workspaceId ?? conversation?.lead.workspaceId,
     domainEvent?.workspaceId,
     task?.workspaceId,
-    task?.lead?.workspaceId
+    task?.lead?.workspaceId,
+    order?.workspaceId,
+    order?.deal?.lead.workspaceId
   ].filter((value): value is string => Boolean(value));
   if (scopes.length === 0) return null;
   if (new Set(scopes).size !== 1) return null;
@@ -97,7 +114,13 @@ export async function resolveRealtimeEventScope(input: {
   if (!workspaceId) return null;
   return {
     workspaceId,
-    ownerId: lead?.ownerId ?? conversation?.lead.ownerId ?? task?.lead?.ownerId ?? null
+    ownerId:
+      lead?.ownerId ??
+      conversation?.lead.ownerId ??
+      task?.lead?.ownerId ??
+      order?.ownerId ??
+      order?.deal?.lead.ownerId ??
+      null
   };
 }
 
@@ -131,7 +154,7 @@ export async function publishRealtimeEvent(
         eventWorkspaceId: scope.workspaceId,
         user: client.user,
         ownerId: scope.ownerId,
-        hasLeadScope: Boolean(event.leadId ?? event.conversationId ?? event.taskId)
+        hasLeadScope: Boolean(event.leadId ?? event.conversationId ?? event.taskId ?? event.orderId)
       })
     )
       continue;

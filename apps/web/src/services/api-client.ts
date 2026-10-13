@@ -35,6 +35,16 @@ export { ApiClientError, apiBaseUrl, apiErrorMessage } from "./api/core.js";
 export { completeTask, listTasks, type TaskListParams } from "./api/tasks.js";
 export { listCompanies } from "./api/companies.js";
 export {
+  createOrder,
+  getOrder,
+  getOrderSummary,
+  listOrders,
+  updateOrder,
+  type OrderBody,
+  type OrderItemBody,
+  type OrderListParams
+} from "./api/orders.js";
+export {
   createAgent,
   getAgent,
   listAgents,
@@ -47,6 +57,34 @@ export {
   type AgentBody
 } from "./api/agents.js";
 export { listContacts } from "./api/contacts.js";
+export {
+  connectIntegration,
+  disableIntegration,
+  disconnectIntegration,
+  listIntegrations,
+  reconnectIntegration
+} from "./api/integrations.js";
+export {
+  createLeadIntelligenceDocument,
+  decideLeadFollowUp,
+  deleteLeadIntelligenceDocument,
+  getAiCommandCenter,
+  getLeadIntelligence,
+  refreshLeadIntelligence,
+  updateLeadIntelligenceControls,
+  type LeadDocumentBody,
+  type LeadIntelligenceControlsBody
+} from "./api/lead-intelligence.js";
+export {
+  createWorkflow,
+  getWorkflow,
+  listWorkflows,
+  previewWorkflow,
+  publishWorkflow,
+  saveWorkflowDraft,
+  updateWorkflowStatus,
+  validateWorkflow
+} from "./api/workflows.js";
 export {
   createDeal,
   createPipeline,

@@ -211,8 +211,7 @@ export async function getExecutionContext(input: { event: DomainEventRecord }): 
 }> {
   const payload = input.event.payload as Prisma.JsonObject;
   const leadId = typeof payload.leadId === "string" ? payload.leadId : null;
-  const conversationId =
-    typeof payload.conversationId === "string" ? payload.conversationId : null;
+  const conversationId = typeof payload.conversationId === "string" ? payload.conversationId : null;
 
   const [lead, conversation] = await Promise.all([
     leadId
@@ -248,14 +247,16 @@ export async function getExecutionContext(input: { event: DomainEventRecord }): 
           where: {
             status: "ACTIVE",
             lead: { workspaceId: input.event.workspaceId },
-            OR: [
-              ...(leadId ? [{ leadId }] : []),
-              ...(conversationId ? [{ conversationId }] : [])
-            ]
+            OR: [...(leadId ? [{ leadId }] : []), ...(conversationId ? [{ conversationId }] : [])]
           },
           select: { id: true }
         })
       : null;
 
-  return { lead, conversation, suppressedEmail: suppression !== null, activeHumanTakeover: activeTakeover !== null };
+  return {
+    lead,
+    conversation,
+    suppressedEmail: suppression !== null,
+    activeHumanTakeover: activeTakeover !== null
+  };
 }

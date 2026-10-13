@@ -32,9 +32,22 @@ async function resolvePersistedWorkspaceId(workspaceId?: string | null): Promise
 }
 
 export async function upsertIntegrationAccount(
-  data: Prisma.IntegrationAccountUncheckedCreateInput
+  data: Omit<Prisma.IntegrationAccountUncheckedCreateInput, "workspaceId"> & {
+    workspaceId?: string | null;
+  }
 ): Promise<IntegrationAccountRecord> {
   const workspaceId = await resolvePersistedWorkspaceId(data.workspaceId);
+  const existing = await prisma.integrationAccount.findUnique({
+    where: {
+      workspaceId_provider_key: {
+        workspaceId,
+        provider: data.provider,
+        key: data.key ?? "default"
+      }
+    },
+    select: { status: true }
+  });
+  const status = existing?.status === "DISABLED" ? "DISABLED" : data.status;
   return prisma.integrationAccount.upsert({
     where: {
       workspaceId_provider_key: {
@@ -43,11 +56,11 @@ export async function upsertIntegrationAccount(
         key: data.key ?? "default"
       }
     },
-    create: data,
+    create: { ...data, workspaceId },
     update: {
       displayName: data.displayName,
       workspaceId,
-      status: data.status,
+      status,
       secretRef: data.secretRef,
       publicConfig: data.publicConfig ?? undefined,
       lastCheckedAt: data.lastCheckedAt,

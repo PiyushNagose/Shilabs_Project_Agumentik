@@ -365,7 +365,9 @@ function parseZohoContactRecord(record: Record<string, unknown>): CRMContact {
   const companyRef = readZohoRef(record, ["Account_Name", "Company", "Account"]);
 
   if (!externalRecordId || !firstName) {
-    throw buildProviderError("Zoho Bigin contact is missing required identity fields (id or first name)");
+    throw buildProviderError(
+      "Zoho Bigin contact is missing required identity fields (id or first name)"
+    );
   }
 
   const resolvedLastName = lastName ?? "(unknown)";

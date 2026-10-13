@@ -21,7 +21,7 @@ type ReplyRun = Prisma.ReplyProcessingRunGetPayload<{
     lead: { include: { company: true; contact: true; owner: true } };
     conversation: true;
     message: true;
-  }
+  };
 }>;
 
 const AI_STAGE_BY_INTENT: Partial<Record<NonNullable<ReplyRun["intent"]>, string>> = {
@@ -68,7 +68,11 @@ function responseSubject(run: ReplyRun): string {
   return subject;
 }
 
-async function recordSkipped(input: { run: ReplyRun; code: string; message: string }): Promise<void> {
+async function recordSkipped(input: {
+  run: ReplyRun;
+  code: string;
+  message: string;
+}): Promise<void> {
   await prisma.auditEvent.create({
     data: {
       actorType: "SYSTEM",
@@ -103,9 +107,23 @@ async function advanceLeadStageForAI(input: {
   if (!targetKey) return;
 
   const result = await prisma.$transaction(async (tx) => {
-    const lead = await tx.lead.findUnique({ where: { id: input.leadId }, include: { stage: true } });
+    const lead = await tx.lead.findUnique({
+      where: { id: input.leadId },
+      include: { stage: true }
+    });
     const targetStage = lead?.workspaceId
-      ? await tx.pipelineStage.findFirst({ where: { workspaceId: lead.workspaceId, status: "ACTIVE", pipeline: { status: "ACTIVE" }, OR: [{ key: targetKey }, { semanticKey: targetKey }] } })
+      ? await tx.pipelineStage.findFirst({
+          where: {
+            workspaceId: lead.workspaceId,
+            status: "ACTIVE",
+            AND: [
+              { OR: [{ key: targetKey }, { semanticKey: targetKey }] },
+              {
+                OR: [{ pipelineId: null }, { pipeline: { status: "ACTIVE" } }]
+              }
+            ]
+          }
+        })
       : null;
     if (!lead || !targetStage || ["WON", "LOST", "DISQUALIFIED"].includes(lead.status)) {
       return null;
@@ -114,7 +132,8 @@ async function advanceLeadStageForAI(input: {
     const shouldMove =
       (targetStage.semanticKey ?? targetStage.key) === "NURTURE"
         ? (lead.stage.semanticKey ?? lead.stage.key) !== "NURTURE"
-        : (lead.stage.semanticKey ?? lead.stage.key) === "NURTURE" || targetStage.order > lead.stage.order;
+        : (lead.stage.semanticKey ?? lead.stage.key) === "NURTURE" ||
+          targetStage.order > lead.stage.order;
     if (!shouldMove) return null;
 
     const nextStatus = targetStage.key === "NURTURE" ? "NURTURE" : "OPEN";
@@ -137,14 +156,23 @@ async function advanceLeadStageForAI(input: {
         entityId: lead.id,
         action: "AI_STAGE_CHANGED",
         before: { stageId: lead.stageId, stageKey: lead.stage.key, status: lead.status },
-        after: { stageId: updated.stageId, stageKey: updated.stage.key, status: updated.status, intent: input.intent }
+        after: {
+          stageId: updated.stageId,
+          stageKey: updated.stage.key,
+          status: updated.status,
+          intent: input.intent
+        }
       }
     });
     return updated;
   }, orchestrationTransactionOptions);
 
   if (result) {
-    await publishRealtimeEvent({ entityType: "lead", action: "lead-stage-changed", leadId: input.leadId });
+    await publishRealtimeEvent({
+      entityType: "lead",
+      action: "lead-stage-changed",
+      leadId: input.leadId
+    });
   }
 }
 
@@ -233,7 +261,13 @@ async function buildAIInput(run: ReplyRun) {
       }),
       prisma.meetingRequest.findMany({
         where: { leadId: run.leadId },
-        select: { id: true, status: true, title: true, providerSyncStatus: true, confirmedAt: true },
+        select: {
+          id: true,
+          status: true,
+          title: true,
+          providerSyncStatus: true,
+          confirmedAt: true
+        },
         orderBy: { createdAt: "desc" },
         take: 10
       }),
@@ -320,11 +354,7 @@ async function sendAIEmailReply(input: {
       }
     : await input.provider.generateSalesReply(await buildAIInput(input.run));
   if (reply.requiresHumanReview) {
-    throw new AppError(
-      409,
-      "CONFLICT",
-      reply.reason ?? "AI response requires human review"
-    );
+    throw new AppError(409, "CONFLICT", reply.reason ?? "AI response requires human review");
   }
 
   const idempotencyKey = `phase1-ai-reply:${input.run.id}`;
@@ -340,11 +370,7 @@ async function sendAIEmailReply(input: {
   );
 
   if (outbound.status !== "SENT") {
-    throw new AppError(
-      409,
-      "CONFLICT",
-      outbound.failureMessage ?? "AI reply was not sent"
-    );
+    throw new AppError(409, "CONFLICT", outbound.failureMessage ?? "AI reply was not sent");
   }
 
   const now = new Date();
@@ -424,11 +450,7 @@ async function createProposalForApproval(input: {
   );
   const proposal = generated.proposal;
   if (proposal?.status !== "WAITING_APPROVAL") {
-    throw new AppError(
-      409,
-      "CONFLICT",
-      "AI proposal did not reach WAITING_APPROVAL"
-    );
+    throw new AppError(409, "CONFLICT", "AI proposal did not reach WAITING_APPROVAL");
   }
 
   await prisma.lead.update({
@@ -593,7 +615,8 @@ export async function orchestrateSalesConversationForReply(
         run,
         nextAction: "Review WhatsApp AI response policy",
         selectedAction: "WHATSAPP_POLICY_GATE",
-        reason: "WhatsApp free-form response policy is not resolved in the existing provider boundary"
+        reason:
+          "WhatsApp free-form response policy is not resolved in the existing provider boundary"
       });
       return;
     }

@@ -13,14 +13,16 @@ function sanitizeError(error: unknown): string {
 export async function getZohoBiginHealth(input?: {
   env?: NodeJS.ProcessEnv;
   transport?: FetchTransport;
+  workspaceId?: string;
 }): Promise<IntegrationHealthDto> {
   const checkedAt = new Date();
-  const configResult = await loadConfigForHealth(input?.env, checkedAt);
+  const configResult = await loadConfigForHealth(input?.env, checkedAt, input?.workspaceId);
   if ("health" in configResult) return configResult.health;
   const config = configResult.config;
 
   if (config.status === "NOT_CONFIGURED") {
     const account = await upsertIntegrationAccount({
+      workspaceId: input?.workspaceId,
       provider: "ZOHO_BIGIN",
       key: "default",
       displayName: "Zoho Bigin",
@@ -55,6 +57,7 @@ export async function getZohoBiginHealth(input?: {
     const provider = new ZohoBiginProvider(client);
     const token = await provider.verifyConnection();
     const account = await upsertIntegrationAccount({
+      workspaceId: input?.workspaceId,
       provider: "ZOHO_BIGIN",
       key: "default",
       displayName: "Zoho Bigin",
@@ -85,6 +88,7 @@ export async function getZohoBiginHealth(input?: {
   } catch (error) {
     const lastError = sanitizeError(error);
     const account = await upsertIntegrationAccount({
+      workspaceId: input?.workspaceId,
       provider: "ZOHO_BIGIN",
       key: "default",
       displayName: "Zoho Bigin",
@@ -117,13 +121,15 @@ export async function getZohoBiginHealth(input?: {
 
 async function loadConfigForHealth(
   env: NodeJS.ProcessEnv | undefined,
-  checkedAt: Date
+  checkedAt: Date,
+  workspaceId?: string
 ): Promise<{ config: ReturnType<typeof getZohoBiginConfig> } | { health: IntegrationHealthDto }> {
   try {
     return { config: getZohoBiginConfig(env) };
   } catch (error) {
     const lastError = sanitizeError(error);
     const account = await upsertIntegrationAccount({
+      workspaceId,
       provider: "ZOHO_BIGIN",
       key: "default",
       displayName: "Zoho Bigin",

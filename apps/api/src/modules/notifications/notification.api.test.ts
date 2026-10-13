@@ -115,8 +115,8 @@ describe("R27 notification API", () => {
       .set("Authorization", `Bearer ${otherToken}`)
       .expect(200);
 
-    expect((visible.body as InternalNotificationDto[])).toHaveLength(1);
-    expect((hidden.body as InternalNotificationDto[])).toHaveLength(0);
+    expect(visible.body as InternalNotificationDto[]).toHaveLength(1);
+    expect(hidden.body as InternalNotificationDto[]).toHaveLength(0);
   });
 
   it("marks notifications read and acknowledged idempotently with evidence", async () => {

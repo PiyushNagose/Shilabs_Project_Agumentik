@@ -9,21 +9,29 @@ function hasGlobalCrmAccess(actor: AuthenticatedUser): boolean {
 }
 
 function workspaceScope(actor: AuthenticatedUser): Prisma.StringNullableFilter | undefined {
-  return actor.activeWorkspaceId
-    ? { equals: actor.activeWorkspaceId }
-    : undefined;
+  return actor.activeWorkspaceId ? { equals: actor.activeWorkspaceId } : undefined;
 }
 
 export function companyVisibilityWhere(actor: AuthenticatedUser): Prisma.CompanyWhereInput {
   return hasGlobalCrmAccess(actor)
     ? { workspaceId: workspaceScope(actor) }
-    : { AND: [{ workspaceId: workspaceScope(actor) }, { leads: { some: leadVisibilityWhere(actor) } }] };
+    : {
+        AND: [
+          { workspaceId: workspaceScope(actor) },
+          { leads: { some: leadVisibilityWhere(actor) } }
+        ]
+      };
 }
 
 export function contactVisibilityWhere(actor: AuthenticatedUser): Prisma.ContactWhereInput {
   return hasGlobalCrmAccess(actor)
     ? { workspaceId: workspaceScope(actor) }
-    : { AND: [{ workspaceId: workspaceScope(actor) }, { leads: { some: leadVisibilityWhere(actor) } }] };
+    : {
+        AND: [
+          { workspaceId: workspaceScope(actor) },
+          { leads: { some: leadVisibilityWhere(actor) } }
+        ]
+      };
 }
 
 export async function assertCanAccessCompany(

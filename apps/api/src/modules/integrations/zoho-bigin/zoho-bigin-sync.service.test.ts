@@ -227,7 +227,9 @@ describe("Zoho lead/contact sync", () => {
       .fn<FetchTransport>()
       .mockResolvedValueOnce(tokenResponse())
       .mockResolvedValueOnce(contactsResponse());
-    await expect(syncZohoLeadContacts({ actor, env, transport: firstTransport })).resolves.toMatchObject({
+    await expect(
+      syncZohoLeadContacts({ actor, env, transport: firstTransport })
+    ).resolves.toMatchObject({
       status: "COMPLETED",
       succeededRecords: 1,
       skippedRecords: 0,
@@ -238,7 +240,9 @@ describe("Zoho lead/contact sync", () => {
       .fn<FetchTransport>()
       .mockResolvedValueOnce(tokenResponse())
       .mockResolvedValueOnce(contactsResponse("+91 98765 43210", "r3-zoho-contact-duplicate"));
-    await expect(syncZohoLeadContacts({ actor, env, transport: duplicateTransport })).resolves.toMatchObject({
+    await expect(
+      syncZohoLeadContacts({ actor, env, transport: duplicateTransport })
+    ).resolves.toMatchObject({
       status: "COMPLETED",
       succeededRecords: 0,
       skippedRecords: 1,

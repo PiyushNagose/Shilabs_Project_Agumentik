@@ -405,7 +405,7 @@ describe("R10 reply processing", () => {
     await prisma.$disconnect();
   }, 90000);
 
-  it("sends one grounded AI email reply for safe interested replies", async () => {
+  it("requires human action for a meaningful interested reply without sending AI email", async () => {
     const actorId = await prisma.user
       .findUniqueOrThrow({ where: { email: actorEmail } })
       .then((u) => u.id);
@@ -440,8 +440,7 @@ describe("R10 reply processing", () => {
     expect(first.recommendedAction).toBe("DRAFT_RESPONSE");
     expect(first.draftResponse).toContain("next steps");
     expect(first.requiresHumanReview).toBe(true);
-    expect(emailProvider.calls).toHaveLength(1);
-    expect(emailProvider.calls[0]?.textBody).toBe("Thanks, happy to share the next steps.");
+    expect(emailProvider.calls).toHaveLength(0);
     await expect(
       prisma.message.count({
         where: {
@@ -451,10 +450,10 @@ describe("R10 reply processing", () => {
           metadata: { path: ["replyProcessingRunId"], equals: first.id }
         }
       })
-    ).resolves.toBe(1);
+    ).resolves.toBe(0);
     await expect(
       prisma.lead.findUniqueOrThrow({ where: { id: fixture.lead.id } })
-    ).resolves.toMatchObject({ nextAction: "Await customer response" });
+    ).resolves.toMatchObject({ automationOwnershipState: "HUMAN_REQUIRED" });
     await expect(
       prisma.inboundEmail.findUniqueOrThrow({ where: { id: fixture.inbound.id } })
     ).resolves.toMatchObject({ replyProcessingStatus: "PROCESSED" });
@@ -723,10 +722,10 @@ describe("R10 reply processing", () => {
     await expect(prisma.meetingRequest.count({ where: { leadId: fixture.lead.id } })).resolves.toBe(
       0
     );
-    expect(emailProvider.calls).toHaveLength(1);
+    expect(emailProvider.calls).toHaveLength(0);
     await expect(
       prisma.lead.findUniqueOrThrow({ where: { id: fixture.lead.id } })
-    ).resolves.toMatchObject({ nextAction: "Await customer response" });
+    ).resolves.toMatchObject({ automationOwnershipState: "HUMAN_REQUIRED" });
   }, 45000);
 
   it("does not treat what-should-we-do-next wording as a meeting request", async () => {
@@ -755,10 +754,13 @@ describe("R10 reply processing", () => {
     await expect(prisma.meetingRequest.count({ where: { leadId: fixture.lead.id } })).resolves.toBe(
       0
     );
-    expect(emailProvider.calls).toHaveLength(1);
+    expect(emailProvider.calls).toHaveLength(0);
+    await expect(
+      prisma.lead.findUniqueOrThrow({ where: { id: fixture.lead.id } })
+    ).resolves.toMatchObject({ automationOwnershipState: "HUMAN_REQUIRED" });
   }, 45000);
 
-  it("sends the persisted R10 draft when a second sales-reply generation would request review", async () => {
+  it("preserves the persisted R10 draft for human action without sending it", async () => {
     const body =
       "Thanks. Based on our requirement to automate lead follow-ups while keeping our sales team in control, what solution would you recommend for us?";
     const draftResponse =
@@ -794,11 +796,10 @@ describe("R10 reply processing", () => {
       intent: "QUESTION",
       recommendedAction: "DRAFT_RESPONSE"
     });
-    expect(emailProvider.calls).toHaveLength(1);
-    expect(emailProvider.calls[0]?.textBody).toBe(draftResponse);
-    await expect(
-      prisma.lead.findUniqueOrThrow({ where: { id: fixture.lead.id } })
-    ).resolves.toMatchObject({ nextAction: "Await customer response" });
+    expect(emailProvider.calls).toHaveLength(0);
+    const updatedLead = await prisma.lead.findUniqueOrThrow({ where: { id: fixture.lead.id } });
+    expect(updatedLead.automationOwnershipState).toBe("HUMAN_REQUIRED");
+    expect(updatedLead.nextAction).not.toBe("Await customer response");
     await expect(
       prisma.activity.count({
         where: {
@@ -1114,32 +1115,32 @@ describe("R10 reply processing", () => {
       prisma.followUpSequence.findUniqueOrThrow({ where: { id: followUp.id } })
     ).resolves.toMatchObject({
       status: "STOPPED",
-      stopReason: "CUSTOMER_NOT_INTERESTED"
+      stopReason: "DO_NOT_CONTACT"
     });
     await expect(
       prisma.followUpAttempt.findUniqueOrThrow({ where: { id: followUpAttempt.id } })
     ).resolves.toMatchObject({
       status: "CANCELLED",
-      failureCode: "CUSTOMER_NOT_INTERESTED"
+      failureCode: "DO_NOT_CONTACT"
     });
     await expect(
       prisma.callingSequence.findUniqueOrThrow({ where: { id: calling.id } })
     ).resolves.toMatchObject({
       status: "STOPPED",
-      stopReason: "CUSTOMER_NOT_INTERESTED"
+      stopReason: "DO_NOT_CONTACT"
     });
     await expect(
       prisma.callingAttempt.findUniqueOrThrow({ where: { id: callingAttempt.id } })
     ).resolves.toMatchObject({
       status: "SKIPPED",
-      failureCode: "CUSTOMER_NOT_INTERESTED"
+      failureCode: "DO_NOT_CONTACT"
     });
     await expect(
       prisma.domainEventOutbox.count({
         where: {
           id: { in: [followUpEvent.id, callingEvent.id] },
           status: "ATTENTION_REQUIRED",
-          lastErrorCode: "CUSTOMER_NOT_INTERESTED"
+          lastErrorCode: "DO_NOT_CONTACT"
         }
       })
     ).resolves.toBe(2);

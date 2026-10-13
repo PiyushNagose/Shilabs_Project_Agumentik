@@ -2,6 +2,7 @@ import { AgentType, type DomainEventOutbox, type Prisma } from "@prisma/client";
 import { getMessagingConfig, type MessagingConfig } from "@shilabs/shared-config";
 import { PermanentDomainEventError } from "../domain-events/domain-event.errors.js";
 import { workerPrisma } from "../domain-events/domain-event.repository.js";
+import { assertWorkspaceIntegrationEnabled } from "../integrations/integration-guard.js";
 import {
   WorkerMetaWhatsAppProvider,
   WorkerTwilioWhatsAppProvider,
@@ -230,31 +231,41 @@ export async function executeWhatsAppSend(input: {
         ? ["CONTACT_DO_NOT_CONTACT", "Contact is marked do-not-contact", "BLOCKED"]
         : ["WON", "LOST", "DISQUALIFIED"].includes(lead.status)
           ? ["TERMINAL_LEAD", `Lead status ${lead.status} forbids WhatsApp automation`, "BLOCKED"]
-          : conversation && ["HUMAN", "PAUSED", "CLOSED"].includes(conversation.mode)
+          : lead.automationOwnershipState !== "AI_ACTIVE"
             ? [
-                "AUTOMATION_PAUSED",
-                `Conversation mode ${conversation.mode} blocks WhatsApp automation`,
+                "AI_OWNERSHIP_INACTIVE",
+                `Lead automation ownership is ${lead.automationOwnershipState}`,
                 "BLOCKED"
               ]
-            : activeTakeover
-              ? ["HUMAN_TAKEOVER_ACTIVE", "Human takeover blocks WhatsApp automation", "BLOCKED"]
-              : inboundAfterSequence > 0
-                ? ["INBOUND_REPLY_RECEIVED", "Inbound reply stopped WhatsApp automation", "BLOCKED"]
-                : config.nodeEnv !== "production" &&
-                    config.e2eAllowedToNumbers.length > 0 &&
-                    !config.e2eAllowedToNumbers.includes(to)
+            : conversation && ["HUMAN", "PAUSED", "CLOSED"].includes(conversation.mode)
+              ? [
+                  "AUTOMATION_PAUSED",
+                  `Conversation mode ${conversation.mode} blocks WhatsApp automation`,
+                  "BLOCKED"
+                ]
+              : activeTakeover
+                ? ["HUMAN_TAKEOVER_ACTIVE", "Human takeover blocks WhatsApp automation", "BLOCKED"]
+                : inboundAfterSequence > 0
                   ? [
-                      "E2E_NUMBER_NOT_ALLOWED",
-                      "Destination number is not allowed for local E2E WhatsApp testing",
-                      "FAILED"
+                      "INBOUND_REPLY_RECEIVED",
+                      "Inbound reply stopped WhatsApp automation",
+                      "BLOCKED"
                     ]
-                  : missingMessagingConfig(config).length > 0
+                  : config.nodeEnv !== "production" &&
+                      config.e2eAllowedToNumbers.length > 0 &&
+                      !config.e2eAllowedToNumbers.includes(to)
                     ? [
-                        "WHATSAPP_NOT_CONFIGURED",
-                        `Missing configuration: ${missingMessagingConfig(config).join(", ")}`,
-                        "NOT_CONFIGURED"
+                        "E2E_NUMBER_NOT_ALLOWED",
+                        "Destination number is not allowed for local E2E WhatsApp testing",
+                        "FAILED"
                       ]
-                    : null;
+                    : missingMessagingConfig(config).length > 0
+                      ? [
+                          "WHATSAPP_NOT_CONFIGURED",
+                          `Missing configuration: ${missingMessagingConfig(config).join(", ")}`,
+                          "NOT_CONFIGURED"
+                        ]
+                      : null;
 
   if (block) {
     await markWhatsAppBlocked({
@@ -305,6 +316,11 @@ export async function executeWhatsAppSend(input: {
     update: { status: "PROVIDER_PENDING", failureCode: null, failureMessage: null }
   });
 
+  await assertWorkspaceIntegrationEnabled({
+    workspaceId: eventWorkspaceId,
+    provider: config.provider === "meta_whatsapp" ? "META_WHATSAPP" : "TWILIO",
+    key: config.provider === "meta_whatsapp" ? "default" : "whatsapp"
+  });
   const provider = input.provider ?? createWorkerMessagingProvider(config);
   const result = await provider.sendTemplateMessage({
     to: toWhatsAppId,

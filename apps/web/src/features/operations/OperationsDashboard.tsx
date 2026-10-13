@@ -49,7 +49,12 @@ function providerCategory(item: OperationsProviderHealthDto): ProviderCategory {
   if (text.includes("zoho") || text.includes("crm")) return "CRM";
   if (text.includes("mail") || text.includes("email") || text.includes("ses")) return "Email";
   if (text.includes("calendar") || text.includes("google")) return "Calendar";
-  if (text.includes("voice") || text.includes("call") || text.includes("exotel") || text.includes("twilio")) {
+  if (
+    text.includes("voice") ||
+    text.includes("call") ||
+    text.includes("exotel") ||
+    text.includes("twilio")
+  ) {
     return "Voice";
   }
   if (text.includes("whatsapp") || text.includes("meta")) return "WhatsApp";
@@ -61,7 +66,15 @@ function groupProviderHealth(items: OperationsProviderHealthDto[]): {
   category: ProviderCategory;
   items: OperationsProviderHealthDto[];
 }[] {
-  const order: ProviderCategory[] = ["CRM", "Email", "Calendar", "Voice", "WhatsApp", "AI", "Platform"];
+  const order: ProviderCategory[] = [
+    "CRM",
+    "Email",
+    "Calendar",
+    "Voice",
+    "WhatsApp",
+    "AI",
+    "Platform"
+  ];
   return order
     .map((category) => ({
       category,
@@ -121,7 +134,11 @@ function ProviderHealthCard({
       ) : item.lastError ? (
         <p>{item.lastError}</p>
       ) : (
-        <p>{item.evidence === "CONFIG_ONLY" ? "Configuration evidence only" : "Health check evidence available"}</p>
+        <p>
+          {item.evidence === "CONFIG_ONLY"
+            ? "Configuration evidence only"
+            : "Health check evidence available"}
+        </p>
       )}
       <footer>{formatDate(item.checkedAt)}</footer>
     </article>
@@ -150,7 +167,9 @@ function ProviderErrorCard({
       <p>{error.message}</p>
       <div className="dashboard-card-badges">
         {count > 1 ? <StatusBadge>{String(count)} items</StatusBadge> : null}
-        <StatusBadge tone={errorTone(error.status)}>{error.status.replaceAll("_", " ")}</StatusBadge>
+        <StatusBadge tone={errorTone(error.status)}>
+          {error.status.replaceAll("_", " ")}
+        </StatusBadge>
         {onRetry ? (
           <button onClick={onRetry} type="button" disabled={retrying}>
             <Icon name="refresh" size={14} />
@@ -184,11 +203,16 @@ function UsageCard({ item }: { item: OperationsUsageIndicatorDto }): React.JSX.E
 
 export function OperationsDashboard({ accessToken }: OperationsDashboardProps): React.JSX.Element {
   const {
-    data: dashboard, loading, error: refreshError, updatedAt: lastUpdatedAt, reload: loadDashboard
+    data: dashboard,
+    loading,
+    error: refreshError,
+    updatedAt: lastUpdatedAt,
+    reload: loadDashboard
   } = usePersistedResource<OperationsDashboardDto>({
     scope: accessToken,
     load: () => getOperationsDashboard(accessToken),
-    accepts: (event) => event.type === "realtime:reconnected" ||
+    accepts: (event) =>
+      event.type === "realtime:reconnected" ||
       ["operations", "domain-event", "workspace", "lead"].includes(event.entityType),
     errorMessage: "Operations dashboard could not be loaded"
   });
@@ -229,7 +253,8 @@ export function OperationsDashboard({ accessToken }: OperationsDashboardProps): 
   const unhealthyProviders = useMemo(
     () =>
       dashboard?.providerHealth.filter(
-        (item) => item.status !== "CONFIGURED" || item.lastError !== null || item.missingConfig.length > 0
+        (item) =>
+          item.status !== "CONFIGURED" || item.lastError !== null || item.missingConfig.length > 0
       ).length ?? 0,
     [dashboard]
   );
@@ -259,7 +284,10 @@ export function OperationsDashboard({ accessToken }: OperationsDashboardProps): 
   if (loading && !dashboard) {
     return (
       <section className="operations-dashboard">
-        <StateBlock title="Loading operations" detail="Reading persisted integration and job state." />
+        <StateBlock
+          title="Loading operations"
+          detail="Reading persisted integration and job state."
+        />
       </section>
     );
   }
@@ -283,7 +311,11 @@ export function OperationsDashboard({ accessToken }: OperationsDashboardProps): 
 
   return (
     <section className="operations-dashboard" aria-label="Operations dashboard">
-      {error ? <p className="refresh-error" role="alert">{error}. Showing the last loaded data.</p> : null}
+      {error ? (
+        <p className="refresh-error" role="alert">
+          {error}. Showing the last loaded data.
+        </p>
+      ) : null}
       <header className="dashboard-hero operations-hero">
         <div>
           <p className="eyebrow">Operations</p>
@@ -297,7 +329,9 @@ export function OperationsDashboard({ accessToken }: OperationsDashboardProps): 
         </div>
         <div className="dashboard-total" aria-label="Operational attention items">
           <strong>
-            {unhealthyProviders + dashboard.work.failedCount + dashboard.work.attentionRequiredCount}
+            {unhealthyProviders +
+              dashboard.work.failedCount +
+              dashboard.work.attentionRequiredCount}
           </strong>
           <span>attention items</span>
         </div>
@@ -305,20 +339,20 @@ export function OperationsDashboard({ accessToken }: OperationsDashboardProps): 
 
       <div className="dashboard-summary-grid operations-summary-grid">
         <span>
+          <small>Provider issues</small>
           <strong>{unhealthyProviders}</strong>
-          Provider issues
         </span>
         <span>
+          <small>Queued work</small>
           <strong>{dashboard.work.queuedCount}</strong>
-          Queued work
         </span>
         <span>
+          <small>Failed/attention work</small>
           <strong>{dashboard.work.failedCount + dashboard.work.attentionRequiredCount}</strong>
-          Failed/attention work
         </span>
         <span>
+          <small>Unsynced mappings</small>
           <strong>{dashboard.unsyncedRecords.total}</strong>
-          Unsynced mappings
         </span>
       </div>
 
@@ -331,11 +365,11 @@ export function OperationsDashboard({ accessToken }: OperationsDashboardProps): 
           </button>
         </header>
         <div className="operations-provider-health-grid">
-          {providerHealthGroups.map((group) => (
+          {providerHealthGroups.map((group) =>
             group.items.map((item) => (
               <ProviderHealthCard category={group.category} item={item} key={item.key} />
             ))
-          ))}
+          )}
         </div>
       </section>
 
@@ -345,7 +379,10 @@ export function OperationsDashboard({ accessToken }: OperationsDashboardProps): 
           <StatusBadge>{dashboard.work.recentProblemItems.length}</StatusBadge>
         </header>
         {dashboard.work.recentProblemItems.length === 0 ? (
-          <StateBlock title="No queued or failed work" detail="No persisted worker items need attention." />
+          <StateBlock
+            title="No queued or failed work"
+            detail="No persisted worker items need attention."
+          />
         ) : (
           <>
             <div className="dashboard-card-list">

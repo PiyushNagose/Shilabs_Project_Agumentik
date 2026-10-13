@@ -1,4 +1,5 @@
 import { Redis } from "ioredis";
+import { emitOperationalAlert } from "@shilabs/shared-config";
 import { prisma } from "./prisma.js";
 
 let readinessRedis: Redis | null = null;
@@ -28,8 +29,13 @@ export async function checkReadiness(): Promise<ReadinessResult> {
   let redisStatus: ReadinessResult["dependencies"]["redis"] = "not-required";
   try {
     await prisma.$queryRaw`SELECT 1`;
-  } catch {
+  } catch (error) {
     database = "error";
+    void emitOperationalAlert({
+      category: "database_health_failure",
+      severity: "critical",
+      message: error instanceof Error ? error.message : "Database readiness failed"
+    });
   }
 
   const redis = getReadinessRedis();
@@ -38,8 +44,13 @@ export async function checkReadiness(): Promise<ReadinessResult> {
       if (redis.status === "wait") await redis.connect();
       await redis.ping();
       redisStatus = "ok";
-    } catch {
+    } catch (error) {
       redisStatus = "error";
+      void emitOperationalAlert({
+        category: "redis_health_failure",
+        severity: "critical",
+        message: error instanceof Error ? error.message : "Redis readiness failed"
+      });
     }
   }
 

@@ -25,7 +25,13 @@ export async function createProposalAgentCorrectionController(
 ): Promise<void> {
   response
     .status(201)
-    .json(await createProposalAgentCorrection(getRequiredUser(request), request.params.proposalId, request.body));
+    .json(
+      await createProposalAgentCorrection(
+        getRequiredUser(request),
+        request.params.proposalId,
+        request.body
+      )
+    );
 }
 
 export async function listAgentCorrectionsController(

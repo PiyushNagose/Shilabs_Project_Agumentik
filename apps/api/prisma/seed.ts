@@ -5,8 +5,21 @@ import { bootstrapDefaultWorkspace } from "../src/modules/workspaces/workspace.s
 
 const prisma = new PrismaClient();
 
-const developmentAdminEmail = process.env.DEV_ADMIN_EMAIL ?? "admin@example.local";
-const developmentAdminPassword = process.env.DEV_ADMIN_PASSWORD ?? "ChangeMe123!";
+const production = process.env.NODE_ENV === "production";
+const configuredAdminEmail = production
+  ? process.env.PRODUCTION_BOOTSTRAP_ADMIN_EMAIL
+  : (process.env.DEV_ADMIN_EMAIL ?? "admin@example.local");
+const configuredAdminPassword = production
+  ? process.env.PRODUCTION_BOOTSTRAP_ADMIN_PASSWORD
+  : (process.env.DEV_ADMIN_PASSWORD ?? "ChangeMe123!");
+
+if (!configuredAdminEmail || !configuredAdminPassword) {
+  throw new Error(
+    "Production bootstrap requires PRODUCTION_BOOTSTRAP_ADMIN_EMAIL and PRODUCTION_BOOTSTRAP_ADMIN_PASSWORD"
+  );
+}
+const developmentAdminEmail: string = configuredAdminEmail;
+const developmentAdminPassword: string = configuredAdminPassword;
 const bcryptSaltRounds = Number(process.env.BCRYPT_SALT_ROUNDS ?? 12);
 
 async function seedPipelineStages(): Promise<void> {

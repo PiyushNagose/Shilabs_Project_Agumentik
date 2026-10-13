@@ -44,7 +44,11 @@ class MockWebSocket {
   }
 }
 
-function Subscriber({ onEvent }: { onEvent: (event: RealtimeUpdateEvent) => void }): React.JSX.Element {
+function Subscriber({
+  onEvent
+}: {
+  onEvent: (event: RealtimeUpdateEvent) => void;
+}): React.JSX.Element {
   const realtime = useRealtime();
   React.useEffect(() => realtime.subscribe(onEvent), [onEvent, realtime]);
   return <span>{realtime.status}</span>;
@@ -95,7 +99,9 @@ describe("RealtimeProvider", () => {
     });
 
     await waitFor(() =>
-      expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ entityType: "lead", leadId: "lead_1" }))
+      expect(onEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ entityType: "lead", leadId: "lead_1" })
+      )
     );
 
     act(() => {
@@ -109,7 +115,9 @@ describe("RealtimeProvider", () => {
     });
 
     await waitFor(() =>
-      expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ entityType: "activity", leadId: "lead_1" }))
+      expect(onEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ entityType: "activity", leadId: "lead_1" })
+      )
     );
   });
 });

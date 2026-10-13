@@ -40,6 +40,7 @@ import { ensureWorkspacePipeline } from "../pipeline/pipeline.service.js";
 import { toPipelineStageDto } from "../pipeline/pipeline.service.js";
 import { publishRealtimeEvent } from "../realtime/realtime.service.js";
 import { autoStartLeadAiAutomation } from "../followups/lead-ai-automation.service.js";
+import { isTerminalLeadStatus, stopAi } from "./lead-automation-ownership.service.js";
 import {
   assertCanAccessCompany,
   assertCanAccessContact
@@ -65,6 +66,9 @@ export function toLeadDto(lead: LeadRecord): LeadDto {
     currency: lead.currency,
     nextAction: lead.nextAction,
     nextActionAt: lead.nextActionAt?.toISOString() ?? null,
+    automationOwnershipState: lead.automationOwnershipState,
+    automationOwnershipChangedAt: lead.automationOwnershipChangedAt.toISOString(),
+    automationOwnershipReason: lead.automationOwnershipReason,
     lastActivityAt: lead.lastActivityAt?.toISOString() ?? null,
     createdAt: lead.createdAt.toISOString(),
     updatedAt: lead.updatedAt.toISOString(),
@@ -96,7 +100,9 @@ async function ensureLeadInputs(input: {
       companyId: input.companyId,
       contactId: input.contactId
     }),
-    input.stageId ? findPipelineStageById(input.stageId, input.workspaceId) : findDefaultPipelineStage(input.workspaceId),
+    input.stageId
+      ? findPipelineStageById(input.stageId, input.workspaceId)
+      : findDefaultPipelineStage(input.workspaceId),
     input.ownerId ? findAssignableUserById(input.ownerId) : Promise.resolve({ id: "unassigned" })
   ]);
 
@@ -226,7 +232,8 @@ export async function createLead(
     throw new AppError(403, "AUTHORIZATION_ERROR", "Insufficient lead assignment permissions");
   }
 
-  if (!actor.activeWorkspaceId) throw new AppError(403, "AUTHORIZATION_ERROR", "Active workspace required");
+  if (!actor.activeWorkspaceId)
+    throw new AppError(403, "AUTHORIZATION_ERROR", "Active workspace required");
   await ensureWorkspacePipeline(actor.activeWorkspaceId);
   const defaultStage = await findDefaultPipelineStage(actor.activeWorkspaceId);
   if (!defaultStage) {
@@ -390,6 +397,16 @@ export async function updateLeadStatus(
   });
 
   await publishRealtimeEvent({ entityType: "lead", action: "lead-status-changed", leadId });
+  if (isTerminalLeadStatus(lead.status)) {
+    await stopAi({
+      leadId,
+      reason: `LEAD_${lead.status}`,
+      actorType: "USER",
+      actorId: actor.id,
+      sourceType: "LEAD_STATUS",
+      sourceId: leadId
+    });
+  }
   return toLeadDto(lead);
 }
 
@@ -420,5 +437,15 @@ export async function updateLeadStage(
   });
 
   await publishRealtimeEvent({ entityType: "lead", action: "lead-stage-changed", leadId });
+  if (isTerminalLeadStatus(lead.status)) {
+    await stopAi({
+      leadId,
+      reason: `LEAD_STAGE_${lead.status}`,
+      actorType: "USER",
+      actorId: actor.id,
+      sourceType: "PIPELINE_STAGE",
+      sourceId: targetStage.id
+    });
+  }
   return toLeadDto(lead);
 }

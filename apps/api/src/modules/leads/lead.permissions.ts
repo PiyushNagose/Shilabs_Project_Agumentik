@@ -24,7 +24,10 @@ export function leadVisibilityWhere(actor: AuthenticatedUser): Prisma.LeadWhereI
     : ownership;
 }
 
-export function assertLeadWorkspace(actor: AuthenticatedUser, lead: { workspaceId?: string | null }): void {
+export function assertLeadWorkspace(
+  actor: AuthenticatedUser,
+  lead: { workspaceId?: string | null }
+): void {
   if (actor.activeWorkspaceId && lead.workspaceId !== actor.activeWorkspaceId) {
     throw new AppError(403, "AUTHORIZATION_ERROR", "Lead belongs to another workspace");
   }

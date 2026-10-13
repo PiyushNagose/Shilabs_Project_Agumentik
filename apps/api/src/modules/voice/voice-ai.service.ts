@@ -271,7 +271,13 @@ export async function finalizeVoiceConversationRun(input: {
         orderBy: { createdAt: "desc" }
       })) ??
       (await tx.conversation.create({
-        data: { workspaceId: call.workspaceId, leadId: call.leadId, channel: "INTERNAL", mode: "AUTO", status: "OPEN" }
+        data: {
+          workspaceId: call.workspaceId,
+          leadId: call.leadId,
+          channel: "INTERNAL",
+          mode: "AUTO",
+          status: "OPEN"
+        }
       }));
     const messageRecord = await tx.message.create({
       data: {

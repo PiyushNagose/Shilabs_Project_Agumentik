@@ -131,7 +131,11 @@ async function seedLead(): Promise<{
   ]);
   const stage = await prisma.pipelineStage.findUniqueOrThrow({ where: { key: "NEW" } });
   const company = await prisma.company.create({
-    data: { workspaceId: workspace.id, name: `${companyPrefix} Primary`, website: "https://r21-meeting.example" }
+    data: {
+      workspaceId: workspace.id,
+      name: `${companyPrefix} Primary`,
+      website: "https://r21-meeting.example"
+    }
   });
   const contact = await prisma.contact.create({
     data: {

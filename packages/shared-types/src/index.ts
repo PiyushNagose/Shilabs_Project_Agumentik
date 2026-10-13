@@ -120,6 +120,9 @@ export interface LeadDto {
   currency: string;
   nextAction: string | null;
   nextActionAt: string | null;
+  automationOwnershipState: LeadAutomationOwnershipStateName;
+  automationOwnershipChangedAt: string;
+  automationOwnershipReason: string | null;
   lastActivityAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -128,6 +131,15 @@ export interface LeadDto {
   owner: PublicUser | null;
   stage: PipelineStageDto;
 }
+
+export const LEAD_AUTOMATION_OWNERSHIP_STATES = [
+  "HUMAN_ACTIVE",
+  "HUMAN_ACTION_COMPLETED",
+  "AI_ACTIVE",
+  "AI_STOPPED",
+  "HUMAN_REQUIRED"
+] as const;
+export type LeadAutomationOwnershipStateName = (typeof LEAD_AUTOMATION_OWNERSHIP_STATES)[number];
 
 export interface PaginatedResponse<TItem> {
   items: TItem[];
@@ -199,7 +211,16 @@ export const ACTIVITY_TYPES = [
   "BRIEFING_GENERATED",
   "TASK_CREATED",
   "TASK_UPDATED",
-  "TASK_COMPLETED"
+  "TASK_COMPLETED",
+  "AUTOMATION_OWNERSHIP_CHANGED",
+  "LEAD_INTELLIGENCE_UPDATED",
+  "LEAD_AI_CONTROL_UPDATED",
+  "LEAD_DOCUMENT_INDEXED",
+  "FOLLOW_UP_DECISION_RECORDED",
+  "ORDER_CREATED",
+  "ORDER_UPDATED",
+  "ORDER_PAYMENT_STATUS_CHANGED",
+  "ORDER_FULFILLMENT_STATUS_CHANGED"
 ] as const;
 export type ActivityTypeName = (typeof ACTIVITY_TYPES)[number];
 
@@ -226,6 +247,73 @@ export interface DealDto {
   lead: LeadDto;
   stage: PipelineStageDto;
   owner: PublicUser | null;
+}
+
+export const PAYMENT_STATUSES = [
+  "PENDING",
+  "PARTIALLY_PAID",
+  "PAID",
+  "FAILED",
+  "REFUNDED",
+  "CANCELED"
+] as const;
+export type PaymentStatusName = (typeof PAYMENT_STATUSES)[number];
+
+export const FULFILLMENT_STATUSES = [
+  "UNFULFILLED",
+  "PROCESSING",
+  "FULFILLED",
+  "ON_HOLD",
+  "CANCELED"
+] as const;
+export type FulfillmentStatusName = (typeof FULFILLMENT_STATUSES)[number];
+
+export interface OrderItemDto {
+  id: string;
+  orderId: string;
+  name: string;
+  description: string | null;
+  quantity: number;
+  unitPrice: string;
+  lineTotal: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OrderDto {
+  id: string;
+  orderNumber: string;
+  companyId: string;
+  contactId: string | null;
+  dealId: string | null;
+  ownerId: string | null;
+  paymentStatus: PaymentStatusName;
+  fulfillmentStatus: FulfillmentStatusName;
+  currency: string;
+  subtotal: string;
+  total: string;
+  notes: string | null;
+  orderedAt: string;
+  paidAt: string | null;
+  fulfilledAt: string | null;
+  canceledAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  company: CompanyDto;
+  contact: ContactDto | null;
+  deal: DealDto | null;
+  owner: PublicUser | null;
+  items: OrderItemDto[];
+}
+
+export interface OrderSummaryDto {
+  totalOrders: number;
+  unfulfilled: number;
+  processing: number;
+  fulfilledToday: number;
+  revenueToday: string;
+  averageOrderValue: string;
+  currency: string;
 }
 
 export interface ProposalVersionDto {
@@ -368,6 +456,162 @@ export interface BriefingRunDto {
   idempotencyKey: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export const LEAD_AI_CONTROL_STATUSES = ["ON", "OFF", "PAUSED"] as const;
+export type LeadAiControlStatusName = (typeof LEAD_AI_CONTROL_STATUSES)[number];
+export const LEAD_FOLLOW_UP_MODES = [
+  "STANDARD",
+  "AGGRESSIVE",
+  "LOW_FREQUENCY",
+  "HIGH_VALUE",
+  "CUSTOM"
+] as const;
+export type LeadFollowUpModeName = (typeof LEAD_FOLLOW_UP_MODES)[number];
+export const LEAD_PREFERRED_CHANNELS = ["EMAIL", "WHATSAPP", "PHONE", "MIXED"] as const;
+export type LeadPreferredChannelName = (typeof LEAD_PREFERRED_CHANNELS)[number];
+export const LEAD_INTELLIGENCE_DECISIONS = [
+  "FOLLOW_UP",
+  "WAIT",
+  "ESCALATE",
+  "STOP",
+  "ASK_HUMAN"
+] as const;
+export type LeadIntelligenceDecisionName = (typeof LEAD_INTELLIGENCE_DECISIONS)[number];
+export const LEAD_DOCUMENT_KINDS = [
+  "AUDIT",
+  "REPORT",
+  "PROPOSAL",
+  "PRICING",
+  "PRESENTATION",
+  "RESEARCH",
+  "OTHER"
+] as const;
+export type LeadDocumentKindName = (typeof LEAD_DOCUMENT_KINDS)[number];
+export type LeadDocumentSourceTypeName = "UPLOAD" | "LINK" | "CRM";
+export type LeadDocumentStatusName = "INDEXED" | "NEEDS_CONTENT" | "FAILED" | "ARCHIVED";
+
+export interface IntelligenceEvidenceDto {
+  sourceId: string;
+  sourceType: string;
+  title: string;
+  quote: string;
+  occurredAt: string | null;
+}
+
+export interface LeadDocumentDto {
+  id: string;
+  leadId: string;
+  title: string;
+  kind: LeadDocumentKindName;
+  sourceType: LeadDocumentSourceTypeName;
+  sourceUrl: string | null;
+  mimeType: string | null;
+  status: LeadDocumentStatusName;
+  extractedText: string | null;
+  failureMessage: string | null;
+  indexedAt: string | null;
+  chunkCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LeadIntelligenceDecisionDto {
+  id: string;
+  leadId: string;
+  decision: LeadIntelligenceDecisionName;
+  reason: string;
+  nextObjective: string | null;
+  factors: unknown;
+  evidence: IntelligenceEvidenceDto[];
+  guardrailCode: string | null;
+  correlationId: string;
+  createdAt: string;
+}
+
+export interface LeadIntelligenceDto {
+  id: string;
+  leadId: string;
+  summary: string | null;
+  primaryNeed: string | null;
+  objections: string[];
+  commitments: string[];
+  nextObjective: string | null;
+  communicationStyle: string | null;
+  healthScore: number;
+  aiControlStatus: LeadAiControlStatusName;
+  followUpMode: LeadFollowUpModeName;
+  humanInterventionRequired: boolean;
+  preferredChannel: LeadPreferredChannelName;
+  customCadenceDays: number[];
+  contextSnapshot: unknown;
+  evidence: IntelligenceEvidenceDto[];
+  lastRefreshedAt: string;
+  createdAt: string;
+  updatedAt: string;
+  documents: LeadDocumentDto[];
+  latestDecision: LeadIntelligenceDecisionDto | null;
+}
+
+export interface AiCommandCenterLeadDto {
+  leadId: string;
+  contactName: string;
+  companyName: string;
+  ownerName: string | null;
+  status: LeadStatusName;
+  stage: string;
+  score: number;
+  temperature: LeadTemperatureName;
+  dealValue: string | null;
+  currency: string;
+  automationState: LeadAutomationOwnershipStateName;
+  aiControlStatus: LeadAiControlStatusName;
+  healthScore: number;
+  decision: LeadIntelligenceDecisionName | null;
+  recommendation: string;
+  nextObjective: string | null;
+  lastActivityAt: string | null;
+}
+
+export interface AiCommandCenterDto {
+  generatedAt: string;
+  metrics: {
+    activeLeads: number;
+    humanRequired: number;
+    aiActive: number;
+    hotLeads: number;
+    overdueHumanActions: number;
+    proposalsPending: number;
+    meetingsToday: number;
+    pipelineValue: string;
+  };
+  humanSignals: { required: number; overdue: number; active: number };
+  aiSignals: { active: number; paused: number; stopped: number };
+  humanKpis: {
+    averageResponseMinutes: number | null;
+    averageFirstResponseMinutes: number | null;
+    leadsHandled: number;
+    clientResponses: number;
+    proposalsSent: number;
+    meetingsBooked: number;
+    followUpsCompleted: number;
+    opportunities: number;
+    conversionRate: number;
+    revenue: string;
+    averageDealValue: string;
+    currency: string;
+  };
+  aiKpis: {
+    followUpsSent: number;
+    repliesGenerated: number;
+    meetingsGenerated: number;
+    reengagements: number;
+    followUpConversionRate: number;
+    leadsRevived: number;
+    humanInterventions: number;
+    handovers: number;
+  };
+  recommendations: AiCommandCenterLeadDto[];
 }
 
 export interface ProposalSendResultDto {
@@ -916,6 +1160,8 @@ export const INTEGRATION_PROVIDERS = [
   "MAILPIT",
   "SEMRUSH",
   "GOOGLE_CALENDAR",
+  "OPENAI",
+  "GEMINI",
   "TWILIO",
   "EXOTEL",
   "META_WHATSAPP"
@@ -925,6 +1171,10 @@ export type IntegrationProviderName = (typeof INTEGRATION_PROVIDERS)[number];
 export const INTEGRATION_ACCOUNT_STATUSES = [
   "NOT_CONFIGURED",
   "CONFIGURED",
+  "CONNECTED",
+  "SYNCING",
+  "NEEDS_ATTENTION",
+  "FAILED",
   "ERROR",
   "DISABLED"
 ] as const;
@@ -942,6 +1192,66 @@ export interface IntegrationHealthDto {
   scopes: string[];
   tokenExpiresAt: string | null;
   lastError: string | null;
+}
+
+export const INTEGRATION_CONNECTION_STATUSES = [
+  "CONNECTED",
+  "SYNCING",
+  "NEEDS_ATTENTION",
+  "FAILED",
+  "DISABLED"
+] as const;
+export type IntegrationConnectionStatusName = (typeof INTEGRATION_CONNECTION_STATUSES)[number];
+export const INTEGRATION_CATEGORIES = [
+  "CRM",
+  "EMAIL",
+  "CALENDAR",
+  "AI",
+  "MESSAGING",
+  "VOICE"
+] as const;
+export type IntegrationCategoryName = (typeof INTEGRATION_CATEGORIES)[number];
+
+export interface IntegrationCatalogItemDto {
+  key: string;
+  provider: IntegrationProviderName;
+  name: string;
+  description: string;
+  category: IntegrationCategoryName;
+  configuredByEnvironment: boolean;
+  connected: boolean;
+}
+
+export interface IntegrationConnectionDto {
+  id: string;
+  key: string;
+  provider: IntegrationProviderName;
+  name: string;
+  description: string;
+  category: IntegrationCategoryName;
+  status: IntegrationConnectionStatusName;
+  healthStatus: "UNKNOWN" | "HEALTHY" | "NEEDS_ATTENTION" | "FAILED";
+  syncStatus: "IDLE" | "SYNCING" | "SUCCEEDED" | "FAILED";
+  configured: boolean;
+  lastCheckedAt: string | null;
+  lastHealthyAt: string | null;
+  lastSyncAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface IntegrationDashboardDto {
+  connections: IntegrationConnectionDto[];
+  catalog: IntegrationCatalogItemDto[];
+  summary: {
+    total: number;
+    connected: number;
+    syncing: number;
+    needsAttention: number;
+    failed: number;
+    disabled: number;
+  };
 }
 
 export interface ZohoLeadContactSyncDto {
@@ -1475,6 +1785,148 @@ export interface AgentDashboardDto {
     successfulExecutions: number;
     failedExecutions: number;
     successRate: number | null;
+  };
+}
+
+export const WORKFLOW_STATUSES = ["DRAFT", "PUBLISHED", "PAUSED", "ARCHIVED"] as const;
+export type WorkflowStatusName = (typeof WORKFLOW_STATUSES)[number];
+export const WORKFLOW_NODE_TYPES = [
+  "TRIGGER",
+  "CONDITION",
+  "WAIT",
+  "CRM_ACTION",
+  "TASK",
+  "COMMUNICATION",
+  "AGENT_INVOKE",
+  "INTEGRATION_ACTION",
+  "HUMAN_APPROVAL",
+  "END"
+] as const;
+export type WorkflowNodeType = (typeof WORKFLOW_NODE_TYPES)[number];
+export const WORKFLOW_DECISIONS = ["FOLLOW_UP", "WAIT", "ESCALATE", "STOP", "ASK_HUMAN"] as const;
+export type WorkflowDecisionName = (typeof WORKFLOW_DECISIONS)[number];
+export type WorkflowExecutionStatusName =
+  "QUEUED" | "RUNNING" | "WAITING" | "HUMAN_REQUIRED" | "SUCCEEDED" | "FAILED" | "CANCELED";
+
+export interface WorkflowNodeDto {
+  id: string;
+  type: WorkflowNodeType;
+  label: string;
+  position: { x: number; y: number };
+  config: Record<string, AgentJsonValue>;
+}
+export interface WorkflowEdgeDto {
+  id: string;
+  source: string;
+  target: string;
+  branch: string | null;
+}
+export interface WorkflowDefinitionDto {
+  schemaVersion: 1;
+  kind: "WORKFLOW";
+  nodes: WorkflowNodeDto[];
+  edges: WorkflowEdgeDto[];
+}
+export interface WorkflowPolicyDto {
+  service?: string;
+  leadType?: string;
+  source?: string;
+  country?: string;
+  priority?: string;
+  managerId?: string;
+  campaign?: string;
+  pipelineStageId?: string;
+  cadenceMinutes?: number[];
+}
+export interface WorkflowValidationIssueDto {
+  code: string;
+  message: string;
+  nodeId: string | null;
+}
+export interface WorkflowValidationDto {
+  valid: boolean;
+  issues: WorkflowValidationIssueDto[];
+}
+export interface WorkflowPreviewDto {
+  safe: true;
+  mode: "SANDBOX";
+  validation: WorkflowValidationDto;
+  steps: {
+    order: number;
+    nodeId: string;
+    nodeType: WorkflowNodeType;
+    label: string;
+    outcome: string;
+  }[];
+  blockedActions: string[];
+}
+export interface WorkflowVersionDto {
+  id: string;
+  workflowId: string;
+  version: number;
+  definition: WorkflowDefinitionDto;
+  policyConfig: WorkflowPolicyDto | null;
+  publishedAt: string | null;
+  publishedByUserId: string | null;
+  createdAt: string;
+}
+export interface WorkflowStepExecutionDto {
+  id: string;
+  nodeId: string;
+  nodeType: string;
+  status: string;
+  attempt: number;
+  failureCode: string | null;
+  failureMessage: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  nextAttemptAt: string | null;
+}
+export interface WorkflowExecutionDto {
+  id: string;
+  workflowId: string;
+  versionId: string;
+  leadId: string | null;
+  source: string;
+  status: WorkflowExecutionStatusName;
+  currentNodeId: string | null;
+  correlationId: string;
+  failureCode: string | null;
+  failureMessage: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  steps: WorkflowStepExecutionDto[];
+}
+export interface WorkflowDto {
+  id: string;
+  key: string;
+  name: string;
+  description: string;
+  status: WorkflowStatusName;
+  currentVersionId: string | null;
+  draftVersionId: string | null;
+  createdByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  currentVersion: WorkflowVersionDto | null;
+  draftVersion: WorkflowVersionDto | null;
+  versions: WorkflowVersionDto[];
+  executionCount: number;
+  runningCount: number;
+  lastExecutedAt: string | null;
+}
+export interface WorkflowDetailDto extends WorkflowDto {
+  executions: WorkflowExecutionDto[];
+}
+export interface WorkflowDashboardDto {
+  workflows: WorkflowDto[];
+  summary: {
+    total: number;
+    published: number;
+    paused: number;
+    executions: number;
+    running: number;
   };
 }
 

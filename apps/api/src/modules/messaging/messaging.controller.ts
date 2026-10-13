@@ -17,8 +17,14 @@ export async function getMessagingHealthController(
 export function verifyMetaWhatsAppWebhookController(request: Request, response: Response): void {
   const challenge = verifyMetaWebhookChallenge({
     mode: typeof request.query["hub.mode"] === "string" ? request.query["hub.mode"] : undefined,
-    token: typeof request.query["hub.verify_token"] === "string" ? request.query["hub.verify_token"] : undefined,
-    challenge: typeof request.query["hub.challenge"] === "string" ? request.query["hub.challenge"] : undefined
+    token:
+      typeof request.query["hub.verify_token"] === "string"
+        ? request.query["hub.verify_token"]
+        : undefined,
+    challenge:
+      typeof request.query["hub.challenge"] === "string"
+        ? request.query["hub.challenge"]
+        : undefined
   });
   response.status(200).send(challenge);
 }

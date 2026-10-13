@@ -1,11 +1,12 @@
 import type React from "react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type {
   AgentDetailDto,
   AgentStatusName,
   AgentTypeName,
   PublicUser
 } from "@shilabs/shared-types";
+import type { AgentDetailTab } from "../../app/routing.js";
 import {
   Activity,
   Archive,
@@ -404,14 +405,18 @@ function AgentDetail({
   accessToken,
   agentId,
   currentUser,
-  onBack
+  initialTab,
+  onBack,
+  onTabChange
 }: {
   accessToken: string;
   agentId: string;
   currentUser: PublicUser;
+  initialTab?: AgentDetailTab;
   onBack: () => void;
+  onTabChange: (tab: AgentDetailTab) => void;
 }): React.JSX.Element {
-  const [tab, setTab] = useState<"composer" | "executions" | "versions" | "overview">("executions");
+  const [tab, setTab] = useState<AgentDetailTab>(initialTab ?? "executions");
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const resource = usePersistedResource({
@@ -422,6 +427,11 @@ function AgentDetail({
   });
   const agent = resource.data;
   const canManage = currentUser.role === "ADMIN" || currentUser.role === "SALES_MANAGER";
+  const openTab = (nextTab: AgentDetailTab): void => {
+    setTab(nextTab);
+    onTabChange(nextTab);
+  };
+  useEffect(() => setTab(initialTab ?? "executions"), [agentId, initialTab]);
   const changeStatus = async (next: "ACTIVE" | "PAUSED" | "ARCHIVED"): Promise<void> => {
     setMutationError(null);
     try {
@@ -460,9 +470,12 @@ function AgentDetail({
         </div>
         <div className="agent-detail-actions">
           <Badge tone={statusTone(agent.status)}>{agent.status}</Badge>
+          <Button variant={canManage ? "primary" : "secondary"} onClick={() => openTab("composer")}>
+            <GitBranch size={15} /> {canManage ? "Edit Agent" : "View Composer"}
+          </Button>
           {canManage && agent.status !== "ARCHIVED" ? (
             <Button onClick={() => setEditOpen(true)}>
-              <Pencil size={15} /> Edit
+              <Pencil size={15} /> Edit details
             </Button>
           ) : null}
           {canManage && agent.status === "ACTIVE" ? (
@@ -516,19 +529,19 @@ function AgentDetail({
         </Card>
       </section>
       <nav className="agent-tabs" aria-label="Agent detail">
-        <button className={tab === "composer" ? "active" : ""} onClick={() => setTab("composer")}>
+        <button className={tab === "composer" ? "active" : ""} onClick={() => openTab("composer")}>
           <GitBranch size={15} /> Composer {agent.draftVersion ? <Badge>Draft</Badge> : null}
         </button>
-        <button className={tab === "overview" ? "active" : ""} onClick={() => setTab("overview")}>
+        <button className={tab === "overview" ? "active" : ""} onClick={() => openTab("overview")}>
           <Bot size={15} /> Overview
         </button>
         <button
           className={tab === "executions" ? "active" : ""}
-          onClick={() => setTab("executions")}
+          onClick={() => openTab("executions")}
         >
           <History size={15} /> Executions <Badge>{agent.executions.length}</Badge>
         </button>
-        <button className={tab === "versions" ? "active" : ""} onClick={() => setTab("versions")}>
+        <button className={tab === "versions" ? "active" : ""} onClick={() => openTab("versions")}>
           <Archive size={15} /> Versions <Badge>{agent.versions.length}</Badge>
         </button>
       </nav>
@@ -692,19 +705,23 @@ export function AgentsWorkspace({
   accessToken,
   currentUser,
   initialAgentId,
+  initialTab,
   onRouteChange
 }: {
   accessToken: string;
   currentUser: PublicUser;
   initialAgentId: string | null;
-  onRouteChange: (agentId: string | null) => void;
+  initialTab?: AgentDetailTab;
+  onRouteChange: (agentId: string | null, tab?: AgentDetailTab) => void;
 }): React.JSX.Element {
   return initialAgentId ? (
     <AgentDetail
       accessToken={accessToken}
       agentId={initialAgentId}
       currentUser={currentUser}
+      initialTab={initialTab}
       onBack={() => onRouteChange(null)}
+      onTabChange={(tab) => onRouteChange(initialAgentId, tab)}
     />
   ) : (
     <AgentsList accessToken={accessToken} currentUser={currentUser} onOpen={onRouteChange} />

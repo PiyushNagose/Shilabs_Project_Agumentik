@@ -131,7 +131,11 @@ async function seedApprovedProposal() {
     update: {}
   });
   const company = await prisma.company.create({
-    data: { workspaceId: workspace.id, name: `R16 Proposal ${randomUUID()}`, website: "https://client.example" }
+    data: {
+      workspaceId: workspace.id,
+      name: `R16 Proposal ${randomUUID()}`,
+      website: "https://client.example"
+    }
   });
   const contact = await prisma.contact.create({
     data: {
@@ -156,7 +160,13 @@ async function seedApprovedProposal() {
     }
   });
   const deal = await prisma.deal.create({
-    data: { workspaceId: workspace.id, leadId: lead.id, stageId: stage.id, probability: 70, status: "OPEN" }
+    data: {
+      workspaceId: workspace.id,
+      leadId: lead.id,
+      stageId: stage.id,
+      probability: 70,
+      status: "OPEN"
+    }
   });
   const proposal = await createProposal(actor, {
     leadId: lead.id,

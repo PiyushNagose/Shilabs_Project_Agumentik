@@ -10,6 +10,8 @@ import { createCalendarProvider } from "../calendar/calendar.provider.js";
 import { getCalendarConfig } from "@shilabs/shared-config";
 import { publishDomainEvent } from "../domain-events/domain-events.service.js";
 import { toLeadDto } from "../leads/lead.service.js";
+import { completeHumanAction } from "../leads/lead-automation-ownership.service.js";
+import { autoStartLeadAiAutomation } from "../followups/lead-ai-automation.service.js";
 import type {
   ConfirmMeetingRequestInput,
   CreateMeetingRequestInput,
@@ -853,6 +855,21 @@ export async function confirmMeetingRequest(
     },
     { maxWait: 10000, timeout: 30000 }
   );
+
+  const ownership = await completeHumanAction({
+    leadId: request.leadId,
+    reason: "MEETING_CONFIRMED",
+    actorType: "USER",
+    actorId: actor.id,
+    sourceType: "MEETING_REQUEST",
+    sourceId: request.id,
+    correlationId: externalMeetingId
+  });
+  if (ownership.activated) {
+    await autoStartLeadAiAutomation(actor, request.leadId, {
+      cycleKey: `meeting:${request.id}:${externalMeetingId}`
+    });
+  }
 
   return toMeetingRequestDto(confirmed);
 }

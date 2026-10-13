@@ -7,5 +7,6 @@ declare module "express-serve-static-core" {
     accessToken?: string;
     validatedQuery?: unknown;
     workspace?: WorkspaceContext;
+    requestId: string;
   }
 }

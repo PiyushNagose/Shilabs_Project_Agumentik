@@ -150,6 +150,7 @@ async function seedLead(input?: { doNotContact?: boolean }) {
       contactId: contact.id,
       stageId: stage.id,
       source: "r13-followup-test",
+      automationOwnershipState: "AI_ACTIVE",
       requirement: "Automation project",
       serviceInterest: "AI sales automation"
     }
@@ -182,6 +183,9 @@ describe("R13 follow-up sequence service", () => {
     );
 
     expect(sequence.status).toBe("ACTIVE");
+    expect(
+      await prisma.followUpSequence.findUniqueOrThrow({ where: { id: sequence.id } })
+    ).toMatchObject({ workspaceId: lead.workspaceId });
     expect(sequence.cadenceDays).toEqual([0, 1, 5, 9]);
     expect(sequence.cadenceMode).toBe("PRODUCTION_DAYS");
     expect(sequence.cadenceOffsetsMinutes).toEqual([0, 1440, 7200, 12960]);
@@ -257,7 +261,10 @@ describe("R13 follow-up sequence service", () => {
       }
     );
 
-    const sequences = await listFollowUpSequencesForLead(actor, lead.id);
+    const sequences = await listFollowUpSequencesForLead(
+      { ...actor, activeWorkspaceId: lead.workspaceId ?? undefined },
+      lead.id
+    );
 
     expect(sequences).toHaveLength(1);
     expect(sequences[0]).toMatchObject({

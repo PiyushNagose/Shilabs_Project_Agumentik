@@ -15,10 +15,7 @@ export async function listBriefingsController(
   response
     .status(200)
     .json(
-      await listBriefings(
-        getRequiredUser(request),
-        request.validatedQuery as ListBriefingsQuery
-      )
+      await listBriefings(getRequiredUser(request), request.validatedQuery as ListBriefingsQuery)
     );
 }
 
@@ -28,7 +25,9 @@ export async function generateLeadBriefingController(
 ): Promise<void> {
   response
     .status(201)
-    .json(await generateLeadBriefing(getRequiredUser(request), request.params.leadId, request.body));
+    .json(
+      await generateLeadBriefing(getRequiredUser(request), request.params.leadId, request.body)
+    );
 }
 
 export async function generateMeetingBriefingController(

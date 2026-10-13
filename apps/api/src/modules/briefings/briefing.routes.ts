@@ -15,7 +15,11 @@ export const briefingRoutes = Router();
 briefingRoutes.use(requireAuth);
 briefingRoutes.use(requireRole([UserRole.ADMIN, UserRole.SALES_MANAGER, UserRole.SALES_REP]));
 
-briefingRoutes.get("/", validateQuery(listBriefingsQuerySchema), asyncHandler(listBriefingsController));
+briefingRoutes.get(
+  "/",
+  validateQuery(listBriefingsQuerySchema),
+  asyncHandler(listBriefingsController)
+);
 briefingRoutes.post(
   "/leads/:leadId/generate",
   validateBody(generateBriefingSchema),

@@ -31,7 +31,9 @@ export async function markNotificationReadController(
   request: Request<{ id: string }>,
   response: Response<InternalNotificationDto>
 ): Promise<void> {
-  response.status(200).json(await markNotificationRead(getRequiredUser(request), request.params.id));
+  response
+    .status(200)
+    .json(await markNotificationRead(getRequiredUser(request), request.params.id));
 }
 
 export async function acknowledgeNotificationController(

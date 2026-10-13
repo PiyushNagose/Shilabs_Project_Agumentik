@@ -76,6 +76,7 @@ import {
   type LeadListParams
 } from "../../services/api-client.js";
 import { useRealtime, type RealtimeUpdateEvent } from "../realtime/RealtimeProvider.js";
+import { LeadIntelligencePanel } from "../intelligence/LeadIntelligencePanel.js";
 import {
   LeadFactStrip,
   LeadQuickView,
@@ -547,6 +548,7 @@ export function CrmWorkspace({
   const selectionTargetRef = useRef<string | null>(null);
   const detailRequestsRef = useRef<Record<string, number>>({});
   const listRequestRef = useRef(0);
+  const latestListPageRef = useRef<PaginatedResponse<LeadDto> | null>(null);
   const workspaceRequestRef = useRef(0);
   const conversationStateRef = useRef(conversationState);
   conversationStateRef.current = conversationState;
@@ -612,9 +614,9 @@ export function CrmWorkspace({
 
       if (request !== workspaceRequestRef.current || selection !== selectionRequestRef.current)
         return;
+      if (listRequest === listRequestRef.current) latestListPageRef.current = leadsPage;
       setState((current) => ({
-        leadsPage:
-          listRequest === listRequestRef.current ? leadsPage : (current.leadsPage ?? leadsPage),
+        leadsPage: latestListPageRef.current ?? current.leadsPage ?? leadsPage,
         stages,
         users,
         selectedLead,
@@ -960,6 +962,7 @@ export function CrmWorkspace({
     try {
       const leadsPage = await listLeads(accessToken, nextFilters);
       if (request !== listRequestRef.current) return;
+      latestListPageRef.current = leadsPage;
       setState((current) => ({ ...current, leadsPage, error: null }));
     } catch {
       if (request === listRequestRef.current) {
@@ -2165,6 +2168,7 @@ export function CrmWorkspace({
 
         {isProfile ? (
           <LeadDetail
+            accessToken={accessToken}
             activeTab={activeTab}
             activities={state.activities}
             notifications={state.notifications}
@@ -2480,6 +2484,7 @@ function PipelineBoard({
 }
 
 function LeadDetail({
+  accessToken,
   activeTab,
   activities,
   conversationState,
@@ -2528,6 +2533,7 @@ function LeadDetail({
   onCompleteTask,
   onBack
 }: {
+  accessToken: string;
   activeTab: DetailTab;
   activities: ActivityDto[];
   conversationState: ConversationState;
@@ -2701,6 +2707,7 @@ function LeadDetail({
       </div>
 
       <DetailTabPanel
+        accessToken={accessToken}
         activities={activities}
         conversationState={conversationState}
         currentUser={currentUser}
@@ -2798,6 +2805,7 @@ function NotificationAlerts({
 }
 
 function DetailTabPanel({
+  accessToken,
   activities,
   conversationState,
   currentUser,
@@ -2839,6 +2847,7 @@ function DetailTabPanel({
   onStartHumanTakeover,
   onCompleteTask
 }: {
+  accessToken: string;
   activities: ActivityDto[];
   conversationState: ConversationState;
   currentUser: PublicUser;
@@ -2942,7 +2951,9 @@ function DetailTabPanel({
   if (tab === "AI Insights") {
     return (
       <LeadBriefingPanel
+        accessToken={accessToken}
         briefingState={briefingState}
+        currentUser={currentUser}
         lead={lead}
         onGenerate={onGenerateLeadBriefing}
       />
@@ -3227,11 +3238,15 @@ function BriefingCard({ run }: { run: BriefingRunDto }): React.JSX.Element {
 }
 
 function LeadBriefingPanel({
+  accessToken,
   briefingState,
+  currentUser,
   lead,
   onGenerate
 }: {
+  accessToken: string;
   briefingState: BriefingState;
+  currentUser: PublicUser;
   lead: LeadDto;
   onGenerate: () => Promise<void>;
 }): React.JSX.Element {
@@ -3249,6 +3264,7 @@ function LeadBriefingPanel({
 
   return (
     <div className="tab-panel ai-insights-panel">
+      <LeadIntelligencePanel accessToken={accessToken} currentUser={currentUser} leadId={lead.id} />
       <section className="meeting-editor" aria-label="Lead briefing">
         <header className="proposal-editor-head">
           <div>

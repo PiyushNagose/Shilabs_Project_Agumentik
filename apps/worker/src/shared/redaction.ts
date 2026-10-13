@@ -1,4 +1,5 @@
-const SECRET_KEY_PATTERN = /(secret|token|password|credential|authorization|api[_-]?key|refresh[_-]?token)/iu;
+const SECRET_KEY_PATTERN =
+  /(secret|token|password|credential|authorization|api[_-]?key|refresh[_-]?token)/iu;
 const SECRET_VALUE_PATTERNS = [
   /sk-[A-Za-z0-9_-]{12,}/gu,
   /ya29\.[A-Za-z0-9_-]+/gu,

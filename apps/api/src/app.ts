@@ -18,22 +18,27 @@ import { emailRoutes } from "./modules/email/email.routes.js";
 import { followUpRoutes } from "./modules/followups/followup.routes.js";
 import { knowledgeBaseRoutes } from "./modules/knowledge-base/knowledge-base.routes.js";
 import { leadRoutes } from "./modules/leads/lead.routes.js";
+import { leadIntelligenceRoutes } from "./modules/lead-intelligence/lead-intelligence.routes.js";
 import { meetingRoutes } from "./modules/meetings/meeting.routes.js";
 import { messagingRoutes } from "./modules/messaging/messaging.routes.js";
 import { notificationRoutes } from "./modules/notifications/notification.routes.js";
 import { operationsRoutes } from "./modules/operations/operations.routes.js";
+import { orderRoutes } from "./modules/orders/order.routes.js";
 import { pipelineRoutes } from "./modules/pipeline/pipeline.routes.js";
 import { proposalRoutes } from "./modules/proposals/proposal.routes.js";
 import { replyProcessingRoutes } from "./modules/reply-processing/reply-processing.routes.js";
 import { scoringRoutes } from "./modules/scoring/scoring.routes.js";
 import { zohoBiginRoutes } from "./modules/integrations/zoho-bigin/zoho-bigin.routes.js";
+import { integrationRoutes } from "./modules/integrations/integration.routes.js";
 import { userRoutes } from "./modules/users/user.routes.js";
 import { voiceRoutes } from "./modules/voice/voice.routes.js";
 import { realtimeRoutes } from "./modules/realtime/realtime.routes.js";
 import { workspaceRoutes } from "./modules/workspaces/workspace.routes.js";
 import { taskRoutes } from "./modules/tasks/task.routes.js";
+import { workflowRoutes } from "./modules/workflows/workflow.routes.js";
 import { errorHandler, notFoundHandler } from "./middleware/error.middleware.js";
 import { createGlobalRateLimiter, securityHeaders } from "./middleware/security.middleware.js";
+import { requestContext } from "./middleware/request-context.middleware.js";
 import { checkReadiness, type ReadinessResult } from "./shared/readiness.js";
 
 const startedAt = new Date();
@@ -66,6 +71,7 @@ export function createApp(
 
   app.disable("x-powered-by");
   app.set("trust proxy", config.trustProxy);
+  app.use(requestContext);
   app.use(securityHeaders);
   app.use(createGlobalRateLimiter(config));
   app.use(
@@ -123,6 +129,7 @@ export function createApp(
   app.use("/api/companies", companyRoutes);
   app.use("/api/contacts", contactRoutes);
   app.use("/api/leads", leadRoutes);
+  app.use("/api/lead-intelligence", leadIntelligenceRoutes);
   app.use("/api/meetings", meetingRoutes);
   app.use("/api/messaging", messagingRoutes);
   app.use("/api/deals", dealRoutes);
@@ -131,16 +138,19 @@ export function createApp(
   app.use("/api/knowledge-base", knowledgeBaseRoutes);
   app.use("/api/notifications", notificationRoutes);
   app.use("/api/operations", operationsRoutes);
+  app.use("/api/orders", orderRoutes);
   app.use("/api/pipeline", pipelineRoutes);
   app.use("/api/proposals", proposalRoutes);
   app.use("/api/conversations", conversationRoutes);
   app.use("/api/reply-processing", replyProcessingRoutes);
   app.use("/api/domain-events", domainEventRoutes);
   app.use("/api/scoring", scoringRoutes);
+  app.use("/api/integrations", integrationRoutes);
   app.use("/api/integrations/zoho-bigin", zohoBiginRoutes);
   app.use("/api/voice", voiceRoutes);
   app.use("/api/realtime", realtimeRoutes);
   app.use("/api/tasks", taskRoutes);
+  app.use("/api/workflows", workflowRoutes);
   app.use(notFoundHandler);
   app.use(errorHandler);
 

@@ -72,7 +72,10 @@ export class SemrushProvider implements SEODataProvider {
         const response = await this.transport(url, { method: "GET", redirect: "error", signal });
         if (!response.ok) {
           await response.body?.cancel();
-          throw providerError("SEMrush request failed", response.status === 429 || response.status >= 500);
+          throw providerError(
+            "SEMrush request failed",
+            response.status === 429 || response.status >= 500
+          );
         }
         const text = await response.text();
         if (text.toLowerCase().startsWith("error")) {
@@ -85,7 +88,8 @@ export class SemrushProvider implements SEODataProvider {
           Object.fromEntries(headers.map((header, index) => [header, values[index] ?? null]))
         ];
       } catch (error) {
-        const normalized = error instanceof AppError ? error : providerError("SEMrush unavailable", true);
+        const normalized =
+          error instanceof AppError ? error : providerError("SEMrush unavailable", true);
         if (
           signal.aborted ||
           normalized.code !== "RETRYABLE_PROVIDER_ERROR" ||

@@ -22,7 +22,9 @@ async function cleanup(): Promise<void> {
   await prisma.auditEvent.deleteMany({ where: { action: "AGENT_CORRECTION_RECORDED" } });
   await prisma.activity.deleteMany({ where: { leadId: { in: leadIds } } });
   await prisma.proposalGenerationRun.deleteMany({ where: { leadId: { in: leadIds } } });
-  await prisma.proposalStatusChange.deleteMany({ where: { proposal: { leadId: { in: leadIds } } } });
+  await prisma.proposalStatusChange.deleteMany({
+    where: { proposal: { leadId: { in: leadIds } } }
+  });
   await prisma.proposalVersion.deleteMany({ where: { proposal: { leadId: { in: leadIds } } } });
   await prisma.proposal.deleteMany({ where: { leadId: { in: leadIds } } });
   await prisma.lead.deleteMany({ where: { id: { in: leadIds } } });
@@ -56,17 +58,33 @@ async function createFixture() {
   };
   const stage = await prisma.pipelineStage.upsert({
     where: { key: "R25_CORRECTION_NEW" },
-    create: { key: "R25_CORRECTION_NEW", label: "R25 Correction New", order: 9250, probability: 10 },
+    create: {
+      key: "R25_CORRECTION_NEW",
+      label: "R25 Correction New",
+      order: 9250,
+      probability: 10
+    },
     update: {}
   });
   const company = await prisma.company.create({
     data: { workspaceId: workspace.id, name: `${companyPrefix} ${crypto.randomUUID()}` }
   });
   const contact = await prisma.contact.create({
-    data: { workspaceId: workspace.id, companyId: company.id, firstName: "R25", lastName: "Prospect" }
+    data: {
+      workspaceId: workspace.id,
+      companyId: company.id,
+      firstName: "R25",
+      lastName: "Prospect"
+    }
   });
   const lead = await prisma.lead.create({
-    data: { workspaceId: workspace.id, companyId: company.id, contactId: contact.id, source: "R25_TEST", stageId: stage.id }
+    data: {
+      workspaceId: workspace.id,
+      companyId: company.id,
+      contactId: contact.id,
+      source: "R25_TEST",
+      stageId: stage.id
+    }
   });
   const proposal = await prisma.proposal.create({
     data: {
@@ -130,7 +148,10 @@ describe("R25 agent feedback corrections", () => {
     expect(correction.agentModule).toBe("proposal-generation:GENERAL");
     expect(correction.previousOutput).toMatchObject({ provider: "gemini" });
     await expect(
-      prisma.proposal.findUnique({ where: { id: fixture.proposal.id }, include: { currentVersion: true } })
+      prisma.proposal.findUnique({
+        where: { id: fixture.proposal.id },
+        include: { currentVersion: true }
+      })
     ).resolves.toMatchObject({ currentVersion: { content: "Original AI proposal output" } });
     await expect(prisma.auditEvent.count({ where: { entityId: correction.id } })).resolves.toBe(1);
     await expect(
@@ -155,7 +176,9 @@ describe("R25 agent feedback corrections", () => {
 
     expect(second.version).toBe(2);
     expect(listed).toHaveLength(2);
-    await expect(prisma.agentCorrection.findUnique({ where: { id: first.id } })).resolves.toMatchObject({
+    await expect(
+      prisma.agentCorrection.findUnique({ where: { id: first.id } })
+    ).resolves.toMatchObject({
       status: "SUPERSEDED"
     });
   });

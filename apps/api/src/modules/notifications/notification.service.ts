@@ -80,7 +80,9 @@ function canAccessNotification(
   actor: AuthenticatedUser,
   notification: { assignedToUserId: string | null }
 ): boolean {
-  return canSeeAll(actor) || notification.assignedToUserId === actor.id || !notification.assignedToUserId;
+  return (
+    canSeeAll(actor) || notification.assignedToUserId === actor.id || !notification.assignedToUserId
+  );
 }
 
 async function getVisibleNotificationOrThrow(
@@ -98,7 +100,9 @@ async function getVisibleNotificationOrThrow(
   return notification;
 }
 
-function statusAfterRead(current: InternalNotificationRecord["status"]): InternalNotificationRecord["status"] {
+function statusAfterRead(
+  current: InternalNotificationRecord["status"]
+): InternalNotificationRecord["status"] {
   if (current === "UNREAD") return "READ";
   return current;
 }

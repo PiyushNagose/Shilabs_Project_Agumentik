@@ -39,12 +39,12 @@ export async function claimNextDomainEvents(input: {
   return prisma.$transaction(async (tx) => {
     const candidates = (
       await tx.domainEventOutbox.findMany({
-      where: {
-        status: "PENDING",
-        nextAttemptAt: { lte: input.now },
-        lockedAt: null
-      },
-      orderBy: [{ priority: "desc" }, { nextAttemptAt: "asc" }, { createdAt: "asc" }],
+        where: {
+          status: "PENDING",
+          nextAttemptAt: { lte: input.now },
+          lockedAt: null
+        },
+        orderBy: [{ priority: "desc" }, { nextAttemptAt: "asc" }, { createdAt: "asc" }],
         take: input.limit * 2
       })
     )

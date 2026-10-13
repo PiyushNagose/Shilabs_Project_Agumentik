@@ -46,7 +46,10 @@ async function trustedWorkspaceIdForEvent(input: PublishDomainEventInput): Promi
   const payload = input.payload as Prisma.JsonObject;
   const leadId = typeof payload.leadId === "string" ? payload.leadId : null;
   if (leadId) {
-    const lead = await client.lead.findUnique({ where: { id: leadId }, select: { workspaceId: true } });
+    const lead = await client.lead.findUnique({
+      where: { id: leadId },
+      select: { workspaceId: true }
+    });
     if (!lead) throw new AppError(409, "CONFLICT", "Domain event lead is not persisted");
     if (!lead.workspaceId) {
       throw new AppError(409, "CONFLICT", "Domain event lead has no persisted workspace");
@@ -56,26 +59,41 @@ async function trustedWorkspaceIdForEvent(input: PublishDomainEventInput): Promi
 
   const aggregateWorkspace =
     input.aggregateType === "VoiceCallAttempt"
-      ? await client.voiceCallAttempt.findUnique({
-          where: { id: input.aggregateId },
-          select: { lead: { select: { workspaceId: true } } }
-        }).then((record) => record?.lead.workspaceId ?? null)
-      : input.aggregateType === "MeetingRequest"
-        ? await client.meetingRequest.findUnique({
+      ? await client.voiceCallAttempt
+          .findUnique({
             where: { id: input.aggregateId },
-            select: { workspaceId: true }
-          }).then((record) => record?.workspaceId ?? null)
-        : input.aggregateType === "Proposal"
-          ? await client.proposal.findUnique({
+            select: { lead: { select: { workspaceId: true } } }
+          })
+          .then((record) => record?.lead.workspaceId ?? null)
+      : input.aggregateType === "MeetingRequest"
+        ? await client.meetingRequest
+            .findUnique({
               where: { id: input.aggregateId },
               select: { workspaceId: true }
-            }).then((record) => record?.workspaceId ?? null)
-          : input.aggregateType === "InternalNotification"
-            ? await client.internalNotification.findUnique({
+            })
+            .then((record) => record?.workspaceId ?? null)
+        : input.aggregateType === "Proposal"
+          ? await client.proposal
+              .findUnique({
                 where: { id: input.aggregateId },
                 select: { workspaceId: true }
-              }).then((record) => record?.workspaceId ?? null)
-          : null;
+              })
+              .then((record) => record?.workspaceId ?? null)
+          : input.aggregateType === "InternalNotification"
+            ? await client.internalNotification
+                .findUnique({
+                  where: { id: input.aggregateId },
+                  select: { workspaceId: true }
+                })
+                .then((record) => record?.workspaceId ?? null)
+            : input.aggregateType === "WorkflowExecution"
+              ? await client.workflowExecution
+                  .findUnique({
+                    where: { id: input.aggregateId },
+                    select: { workspaceId: true }
+                  })
+                  .then((record) => record?.workspaceId ?? null)
+              : null;
   if (aggregateWorkspace) return aggregateWorkspace;
 
   return onlyActiveWorkspaceId();

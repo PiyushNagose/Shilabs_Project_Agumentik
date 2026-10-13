@@ -47,6 +47,12 @@ const leadContextInclude = {
     orderBy: { updatedAt: "desc" as const },
     take: 5
   },
+  intelligenceDocuments: {
+    where: { status: "INDEXED" as const },
+    include: { chunks: { orderBy: { position: "asc" as const }, take: 20 } },
+    orderBy: { indexedAt: "desc" as const },
+    take: 20
+  },
   activities: { orderBy: { createdAt: "desc" as const }, take: 12 }
 } satisfies Prisma.LeadInclude;
 
@@ -310,6 +316,18 @@ function buildContext(input: { lead: LeadContext; meetingRequestId?: string | nu
     if (activitySource) sources.push(activitySource);
   }
 
+  for (const document of lead.intelligenceDocuments) {
+    for (const chunk of document.chunks) {
+      const documentSource = source(
+        `document-chunk:${chunk.id}`,
+        "LEAD_DOCUMENT",
+        document.title,
+        chunk.content
+      );
+      if (documentSource) sources.push(documentSource);
+    }
+  }
+
   const inputContext = {
     leadId: lead.id,
     meetingRequestId: meeting?.id ?? null,
@@ -326,6 +344,8 @@ function buildContext(input: { lead: LeadContext; meetingRequestId?: string | nu
       nextActionAt: lead.nextActionAt?.toISOString() ?? null
     },
     unknownPolicy: "Unknown data must stay unknown/null. Briefing is advisory only.",
+    documentPolicy:
+      "Document findings may be used only when quoted from an available LEAD_DOCUMENT source.",
     availableSourceIds: sources.map((item) => item.id)
   } satisfies Prisma.InputJsonObject;
 

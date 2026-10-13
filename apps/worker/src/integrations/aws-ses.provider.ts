@@ -1,8 +1,4 @@
-import {
-  SESv2Client,
-  SendEmailCommand,
-  type SESv2ClientConfig
-} from "@aws-sdk/client-sesv2";
+import { SESv2Client, SendEmailCommand, type SESv2ClientConfig } from "@aws-sdk/client-sesv2";
 import type { WorkerAwsSesConfig } from "./aws-ses.config.js";
 
 export interface WorkerEmailSendInput {
@@ -43,7 +39,10 @@ export class WorkerAwsSesProvider implements WorkerEmailProvider {
   public async sendEmail(input: WorkerEmailSendInput): Promise<{ providerMessageId: string }> {
     let timeout: NodeJS.Timeout | undefined;
     const timeoutPromise = new Promise<never>((_resolve, reject) => {
-      timeout = setTimeout(() => reject(new Error("AWS SES send timed out")), this.config.timeoutMs);
+      timeout = setTimeout(
+        () => reject(new Error("AWS SES send timed out")),
+        this.config.timeoutMs
+      );
     });
     try {
       const response = await Promise.race([

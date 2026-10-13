@@ -20,9 +20,15 @@ export async function listFollowUpSequencesForLeadController(
 
 export async function runCallingAttemptNowForE2EController(
   request: Request<{ leadId: string }>,
-  response: Response<{ status: "ACCELERATED" | "ALREADY_QUEUED"; attemptId: string; scheduledAt: string }>
+  response: Response<{
+    status: "ACCELERATED" | "ALREADY_QUEUED";
+    attemptId: string;
+    scheduledAt: string;
+  }>
 ): Promise<void> {
-  response.status(200).json(await runCallingAttemptNowForE2E(getRequiredUser(request), request.params.leadId));
+  response
+    .status(200)
+    .json(await runCallingAttemptNowForE2E(getRequiredUser(request), request.params.leadId));
 }
 
 export async function startFollowUpSequenceController(

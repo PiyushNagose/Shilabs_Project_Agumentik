@@ -124,7 +124,11 @@ export class ZohoTimelineSyncer implements TimelineSyncer {
     if (!activity)
       return { status: "FAILED", externalRecordId: null, lastError: "Activity not found" };
     if (!activity.workspaceId)
-      return { status: "FAILED", externalRecordId: null, lastError: "Activity workspace not found" };
+      return {
+        status: "FAILED",
+        externalRecordId: null,
+        lastError: "Activity workspace not found"
+      };
     const workspaceId = activity.workspaceId;
 
     const existingMapping = await this.prisma.externalRecordMapping.findUnique({

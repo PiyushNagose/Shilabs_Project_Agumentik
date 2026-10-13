@@ -12,6 +12,10 @@ import { whatsAppDomainEventHandlers } from "../messaging/whatsapp-send.handler.
 import { PermanentDomainEventError } from "./domain-event.errors.js";
 import { publishWorkerRealtimeEvent } from "../realtime/realtime.publisher.js";
 import { meetingDomainEventHandlers } from "../meetings/meeting-confirmed.handler.js";
+import {
+  triggerWorkflowsForDomainEvent,
+  workflowDomainEventHandlers
+} from "../workflows/workflow-execution.handler.js";
 
 const INTERNAL_EVENT_TYPES = new Set([
   "REPLY_UNDERSTOOD",
@@ -114,9 +118,12 @@ async function hydrateCommunicationContext(event: DomainEventOutbox): Promise<Do
         ...payload,
         leadId: attempt.leadId,
         contactId: attempt.contactId,
-        callingAttemptId: typeof payload.callingAttemptId === "string" ? payload.callingAttemptId : attempt.id,
+        callingAttemptId:
+          typeof payload.callingAttemptId === "string" ? payload.callingAttemptId : attempt.id,
         callingSequenceId:
-          typeof payload.callingSequenceId === "string" ? payload.callingSequenceId : attempt.sequenceId
+          typeof payload.callingSequenceId === "string"
+            ? payload.callingSequenceId
+            : attempt.sequenceId
       }
     };
   }
@@ -140,9 +147,13 @@ async function hydrateCommunicationContext(event: DomainEventOutbox): Promise<Do
         followUpAttemptId:
           typeof payload.followUpAttemptId === "string" ? payload.followUpAttemptId : attempt.id,
         followUpSequenceId:
-          typeof payload.followUpSequenceId === "string" ? payload.followUpSequenceId : attempt.sequenceId,
+          typeof payload.followUpSequenceId === "string"
+            ? payload.followUpSequenceId
+            : attempt.sequenceId,
         conversationId:
-          typeof payload.conversationId === "string" ? payload.conversationId : attempt.sequence.conversationId
+          typeof payload.conversationId === "string"
+            ? payload.conversationId
+            : attempt.sequence.conversationId
       }
     };
   }
@@ -168,7 +179,10 @@ async function hydrateCommunicationContext(event: DomainEventOutbox): Promise<Do
   return event;
 }
 
-async function processEvent(event: DomainEventOutbox, handlers: DomainEventHandlerMap): Promise<void> {
+async function processEvent(
+  event: DomainEventOutbox,
+  handlers: DomainEventHandlerMap
+): Promise<void> {
   if (!event.workspaceId) {
     throw new PermanentDomainEventError(
       "WORKSPACE_CONTEXT_MISSING",
@@ -208,12 +222,17 @@ export async function processDomainEventJob(input: {
   if (!event) return "SKIPPED";
 
   try {
-    await processEvent(event, input.handlers ?? {
-      ...followUpDomainEventHandlers,
-      ...callingDomainEventHandlers,
-      ...whatsAppDomainEventHandlers,
-      ...meetingDomainEventHandlers
-    });
+    await processEvent(
+      event,
+      input.handlers ?? {
+        ...followUpDomainEventHandlers,
+        ...callingDomainEventHandlers,
+        ...whatsAppDomainEventHandlers,
+        ...meetingDomainEventHandlers,
+        ...workflowDomainEventHandlers
+      }
+    );
+    await triggerWorkflowsForDomainEvent(event);
     await completeDomainEvent({ eventId: event.id, workerId: input.workerId, now: new Date() });
     await publishWorkerRealtimeEvent({
       event,

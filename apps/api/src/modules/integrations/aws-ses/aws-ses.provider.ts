@@ -38,7 +38,10 @@ function buildSesClientConfig(config: AwsSesConfiguredConfig): SESv2ClientConfig
 export class AwsSesProvider implements EmailProvider {
   private readonly client: SESv2Client;
 
-  public constructor(private readonly config: AwsSesConfiguredConfig, client?: SESv2Client) {
+  public constructor(
+    private readonly config: AwsSesConfiguredConfig,
+    client?: SESv2Client
+  ) {
     this.client = client ?? new SESv2Client(buildSesClientConfig(config));
   }
 

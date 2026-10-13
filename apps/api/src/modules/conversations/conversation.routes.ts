@@ -51,10 +51,7 @@ conversationRoutes.post(
   validateBody(sendHumanReplySchema),
   asyncHandler(sendHumanReplyController)
 );
-conversationRoutes.get(
-  "/:id/takeover/briefing",
-  asyncHandler(getHumanTakeoverBriefingController)
-);
+conversationRoutes.get("/:id/takeover/briefing", asyncHandler(getHumanTakeoverBriefingController));
 conversationRoutes.patch(
   "/:id/mode",
   validateBody(updateConversationModeSchema),

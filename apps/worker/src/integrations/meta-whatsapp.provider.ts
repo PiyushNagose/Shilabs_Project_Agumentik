@@ -112,7 +112,9 @@ export class WorkerMetaWhatsAppProvider implements WorkerMessagingProvider {
     private readonly transport: MessagingTransport = fetch
   ) {}
 
-  public async sendTemplateMessage(input: Parameters<WorkerMessagingProvider["sendTemplateMessage"]>[0]) {
+  public async sendTemplateMessage(
+    input: Parameters<WorkerMessagingProvider["sendTemplateMessage"]>[0]
+  ) {
     const missing = missingMetaConfig(this.config);
     if (missing.length > 0) {
       return {
@@ -152,7 +154,10 @@ export class WorkerMetaWhatsAppProvider implements WorkerMessagingProvider {
         throw new Error(errorMessage(response.status, body));
       }
       const messages = Array.isArray(body?.messages) ? body.messages : [];
-      const first = messages[0] && typeof messages[0] === "object" ? (messages[0] as Record<string, unknown>) : null;
+      const first =
+        messages[0] && typeof messages[0] === "object"
+          ? (messages[0] as Record<string, unknown>)
+          : null;
       const id = typeof first?.id === "string" ? first.id : null;
       if (!id) {
         throw new Error("Meta WhatsApp send response was malformed");
@@ -180,7 +185,9 @@ export class WorkerTwilioWhatsAppProvider implements WorkerMessagingProvider {
     private readonly transport: MessagingTransport = fetch
   ) {}
 
-  public async sendTemplateMessage(input: Parameters<WorkerMessagingProvider["sendTemplateMessage"]>[0]) {
+  public async sendTemplateMessage(
+    input: Parameters<WorkerMessagingProvider["sendTemplateMessage"]>[0]
+  ) {
     const missing = missingTwilioConfig(this.config);
     if (missing.length > 0) {
       return {

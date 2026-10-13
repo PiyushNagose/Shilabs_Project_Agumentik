@@ -26,7 +26,11 @@ export function apiErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
-function isErrorPayload(value: unknown): value is { message?: unknown; code?: unknown } {
+function isErrorPayload(value: unknown): value is {
+  message?: unknown;
+  code?: unknown;
+  error?: { message?: unknown; code?: unknown };
+} {
   return typeof value === "object" && value !== null;
 }
 
@@ -63,9 +67,10 @@ export async function apiRequest<TResponse>(
     try {
       const payload: unknown = await response.json();
       if (isErrorPayload(payload)) {
-        if (typeof payload.message === "string" && payload.message.trim())
-          message = payload.message;
-        if (typeof payload.code === "string" && payload.code.trim()) code = payload.code;
+        const details = isErrorPayload(payload.error) ? payload.error : payload;
+        if (typeof details.message === "string" && details.message.trim())
+          message = details.message;
+        if (typeof details.code === "string" && details.code.trim()) code = details.code;
       }
     } catch {
       // Preserve the safe fallback for non-JSON failures.

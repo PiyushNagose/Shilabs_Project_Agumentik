@@ -44,6 +44,7 @@ The platform must satisfy four non-negotiable goals:
 The client team already uses Zoho Bigin. The new CRM must therefore preserve a familiar CRM mental model while presenting a cleaner, modern, AI-native interface.
 
 The new platform is **not a clone of Zoho Bigin**, but users should immediately understand the concepts:
+
 - Leads
 - Contacts
 - Companies
@@ -69,6 +70,7 @@ The existing system already contains strong foundations that must be preserved.
 ### 2.1 Existing reusable foundations
 
 Reuse and extend:
+
 - Leads
 - Contacts
 - Companies
@@ -94,6 +96,7 @@ Reuse and extend:
 ### 2.2 Existing capabilities that must not be duplicated
 
 Do **not** create parallel systems for:
+
 - Proposal versioning and approval.
 - Provider operation records.
 - Meeting slots.
@@ -107,6 +110,7 @@ Do **not** create parallel systems for:
 ### 2.3 Confirmed missing foundations
 
 The current platform lacks:
+
 - Workspace / organization tenancy.
 - Membership model.
 - Granular permissions.
@@ -206,6 +210,7 @@ This is a prerequisite for full CRM expansion.
 ### 4.1 Workspace model
 
 Introduce:
+
 - `Workspace`
 - `WorkspaceMember`
 - `WorkspaceRole`
@@ -215,6 +220,7 @@ Introduce:
 Every business record must belong to exactly one workspace.
 
 Examples:
+
 - Lead.workspaceId
 - Contact.workspaceId
 - Company.workspaceId
@@ -245,6 +251,7 @@ Do not rely on frontend filtering.
 A user may belong to multiple workspaces.
 
 Workspace membership should contain:
+
 - role
 - status
 - joinedAt
@@ -261,6 +268,7 @@ The current static role enum is insufficient.
 ### 5.1 Recommended role baseline
 
 Default system roles:
+
 - Owner
 - Admin
 - Sales Manager
@@ -271,6 +279,7 @@ Default system roles:
 ### 5.2 Permission categories
 
 Examples:
+
 - leads.read
 - leads.create
 - leads.update
@@ -297,6 +306,7 @@ Examples:
 Every nested resource must inherit/check access to its parent.
 
 Examples:
+
 - deal access must check workspace + record scope
 - conversation access must check related lead/contact/company access
 - proposal access must check deal/lead scope
@@ -313,6 +323,7 @@ The existing free-text Activity model must evolve into a structured timeline.
 ### 6.1 Structured Activity
 
 Recommended fields:
+
 - id
 - workspaceId
 - entityType
@@ -361,11 +372,13 @@ Recommended fields:
 ### 6.3 Separation from technical logs
 
 User-facing timeline:
+
 - meaningful business events
 - human-readable
 - safe for CRM users
 
 Hidden internal logs:
+
 - stack traces
 - provider payloads
 - queue internals
@@ -413,6 +426,7 @@ Introduce a first-class Task entity.
 Do not remove existing fields immediately.
 
 Use compatibility migration:
+
 1. keep current fields
 2. introduce Task
 3. sync new tasks to nextAction projection
@@ -426,6 +440,7 @@ Use compatibility migration:
 ### 8.1 Pipeline model
 
 Separate:
+
 - Pipeline
 - PipelineStage
 - Deal
@@ -433,6 +448,7 @@ Separate:
 Pipeline stages must be workspace-scoped.
 
 Recommended:
+
 - Pipeline
   - id
   - workspaceId
@@ -454,6 +470,7 @@ Recommended:
 These are separate concepts.
 
 Do not merge:
+
 - Lead lifecycle status
 - Deal/pipeline stage
 - AI intent
@@ -476,6 +493,7 @@ Introduce Orders only after CRM foundations are stable.
 - FulfillmentStatus
 
 Order should connect to:
+
 - workspace
 - company
 - contact
@@ -486,6 +504,7 @@ Order should connect to:
 ### 9.2 Keep scope controlled
 
 The current reference confirms an Order Queue, but does not yet prove the need for:
+
 - inventory
 - shipping labels
 - tax engine
@@ -504,6 +523,7 @@ AI Agents are reusable automation capabilities.
 ### 10.1 Agent entity
 
 Recommended:
+
 - Agent
   - workspaceId
   - name
@@ -536,6 +556,7 @@ Recommended:
 ### 10.2 Candidate agent types
 
 Existing functionality can map into agents such as:
+
 - Outreach Agent
 - Reply Understanding Agent
 - Qualification Agent
@@ -555,6 +576,7 @@ These should reuse existing services rather than duplicate them.
 - ARCHIVED
 
 Pause semantics must be safe:
+
 - no new executions
 - existing in-flight executions complete/cancel according to policy
 - no silent data corruption
@@ -568,6 +590,7 @@ The visual Agent Composer defines the behavior inside a single agent.
 ### 11.1 Node categories
 
 Potential nodes:
+
 - Trigger
 - Message
 - Question
@@ -601,12 +624,14 @@ A Workflow coordinates business processes across CRM records and agents.
 ### 12.1 Workflow vs Agent
 
 **Workflow**
+
 - business/process orchestration
 - record-level automation
 - multi-step logic
 - triggers and branching
 
 **Agent**
+
 - intelligent behavior
 - reusable AI capability
 - conversation/reasoning/action logic
@@ -616,6 +641,7 @@ A workflow may invoke an agent.
 ### 12.2 Workflow model
 
 Recommended:
+
 - Workflow
 - WorkflowVersion
 - WorkflowNode
@@ -649,6 +675,7 @@ Published versions immutable.
 ### 12.5 Execution requirements
 
 Every execution must support:
+
 - durable status
 - retries
 - idempotency
@@ -713,6 +740,7 @@ AI must not have unrestricted authority.
 Move AI decision authority into one reusable policy layer.
 
 Policy inputs:
+
 - intent
 - confidence
 - source channel
@@ -725,6 +753,7 @@ Policy inputs:
 - risk category
 
 Policy outputs:
+
 - allowed action
 - requires human review
 - blocked reason
@@ -733,6 +762,7 @@ Policy outputs:
 ### 14.2 Human review required for
 
 At minimum:
+
 - commercial commitments
 - final pricing
 - discounts
@@ -759,6 +789,7 @@ Integrations must be workspace-scoped and centrally managed.
 ### 15.1 Integration entity
 
 Recommended:
+
 - IntegrationConnection
 - IntegrationCredentialRef
 - IntegrationHealth
@@ -770,6 +801,7 @@ Do not expose credentials to frontend.
 ### 15.2 Existing integrations
 
 Reuse/consolidate:
+
 - Zoho Bigin
 - Google Calendar
 - Gemini
@@ -782,6 +814,7 @@ Reuse/consolidate:
 ### 15.3 Integration status
 
 UI states:
+
 - Connected
 - Syncing
 - Needs Attention
@@ -793,6 +826,7 @@ Status must derive from real provider/configuration state.
 ### 15.4 Zoho/Bigin strategy
 
 Because the client already uses Bigin:
+
 - support Bigin import/sync as a migration/integration path
 - preserve external connector capability
 - do not make the new CRM dependent on Bigin internally
@@ -858,6 +892,7 @@ Before broad CRM expansion, fix the known release blockers.
 ### 17.2 Additional hardening
 
 Plan for:
+
 - CSP
 - HSTS
 - secure cookie/session strategy
@@ -877,6 +912,7 @@ Keep the domain-event/outbox foundation but harden it.
 ### 18.1 Required fixes
 
 Current race:
+
 ```text
 BullMQ job added
 before
@@ -888,6 +924,7 @@ Must be corrected so a worker never sees a stale database state.
 ### 18.2 Retry policy
 
 Retry only:
+
 - FAILED
 - ATTENTION_REQUIRED
 - explicitly recoverable states
@@ -897,6 +934,7 @@ Do not allow arbitrary replay of successful or in-progress events.
 ### 18.3 Separate event categories
 
 Prefer separation between:
+
 - executable command events
 - informational domain events
 - analytics/audit events
@@ -1010,6 +1048,7 @@ Pixel-perfectness requires a design system.
 ### 21.2 Shared patterns
 
 Build once:
+
 - App Shell
 - Sidebar
 - Top Bar
@@ -1065,7 +1104,9 @@ User profile popup remains at sidebar bottom.
 ## 23. Reference Screen Mapping
 
 ### Screen 1 — Agents
+
 Purpose:
+
 - Agent management
 - status
 - performance
@@ -1075,7 +1116,9 @@ Purpose:
 - AI Copilot panel
 
 ### Screen 2 — Visual Pipeline / Workflow Builder
+
 Purpose:
+
 - visual automation canvas
 - branching
 - conditions
@@ -1084,7 +1127,9 @@ Purpose:
 - configuration inspector
 
 ### Screen 3 — Leads AI Overview
+
 Purpose:
+
 - AI briefing
 - lead health
 - KPI strip
@@ -1092,13 +1137,17 @@ Purpose:
 - recommended actions
 
 ### Screen 4 — Agent Shortcuts / Composer
+
 Purpose:
+
 - configure internal agent behavior
 - trigger/message/question/condition/action nodes
 - preview/test/publish
 
 ### Screen 5 — Agent Workflow Execution / Evaluation
+
 Purpose:
+
 - internal agent composition
 - executions
 - evaluation
@@ -1106,20 +1155,26 @@ Purpose:
 - business-visible execution summaries
 
 ### Screen 6 — Global Sidebar
+
 Purpose:
+
 - common application shell
 - clean icon/text navigation
 - collapsed state
 
 ### Screen 7 — Profile Popup
+
 Purpose:
+
 - identity
 - profile/settings
 - member/admin options by permission
 - logout
 
 ### Screen 8 — Integrations
+
 Purpose:
+
 - provider connections
 - health/status
 - enable/disable
@@ -1127,7 +1182,9 @@ Purpose:
 - disconnect
 
 ### Screen 9 — Leads List
+
 Purpose:
+
 - operational lead table
 - bulk actions
 - filtering
@@ -1135,7 +1192,9 @@ Purpose:
 - pagination
 
 ### Screen 10 — Lead Profile
+
 Purpose:
+
 - 360-degree lead workspace
 - quick actions
 - tabs
@@ -1146,7 +1205,9 @@ Purpose:
 - automation
 
 ### Screen 11 — Lead Sessions
+
 Purpose:
+
 - chronological business history
 - notes
 - conversations
@@ -1156,7 +1217,9 @@ Purpose:
 - actor/timestamp
 
 ### Screen 12 — Order Queue
+
 Purpose:
+
 - order operations
 - payment state
 - fulfillment state
@@ -1164,7 +1227,9 @@ Purpose:
 - search/filter
 
 ### Screen 13 — Leads & CRM Command Center
+
 Purpose:
+
 - KPI metrics
 - score
 - intent
@@ -1174,7 +1239,9 @@ Purpose:
 - manager/sales intelligence
 
 ### Screen 14 — Lead Contacts Workspace
+
 Purpose:
+
 - rich lead cards
 - saved filters
 - lead segments
@@ -1183,14 +1250,18 @@ Purpose:
 - details drawer
 
 ### Screen 15 — Lead Quick View
+
 Purpose:
+
 - non-navigating right-side preview
 - summary cards
 - activity/tasks/meetings/deals
 - full-details transition
 
 ### Screen 16 — Companies
+
 Purpose:
+
 - company/account cards
 - owners
 - quick actions
@@ -1208,25 +1279,32 @@ Do not build duplicate concepts.
 Keep separate responsibilities:
 
 **Leads List**
+
 - dense operational table
 - bulk management
 
 **Lead Contacts Workspace**
+
 - rich card-based browsing
 
 **Lead Quick View**
+
 - contextual side drawer
 
 **Lead Profile**
+
 - full workspace
 
 **Lead Sessions**
+
 - detailed activity history
 
 **AI Lead Overview**
+
 - briefing/recommendations
 
 **CRM Command Center**
+
 - manager/sales intelligence
 
 All must read from the same canonical data model.
@@ -1236,9 +1314,11 @@ All must read from the same canonical data model.
 Do not merge these into one generic canvas.
 
 Workflow Builder:
+
 - business process orchestration
 
 Agent Composer:
+
 - internal AI agent behavior
 
 ---
@@ -1246,6 +1326,7 @@ Agent Composer:
 ## 25. UI Familiarity With Bigin
 
 The platform should feel familiar to Bigin users by preserving:
+
 - record lists
 - owners
 - statuses
@@ -1328,6 +1409,7 @@ Use isolated database/schema per test run.
 Add Playwright.
 
 For every reference screen:
+
 - fixed viewport snapshots
 - loading state
 - empty state
@@ -1363,6 +1445,7 @@ Production platform must include:
 ## 29. Data Privacy and Retention
 
 Required policy layer for:
+
 - email content
 - message content
 - call transcripts
@@ -1373,6 +1456,7 @@ Required policy layer for:
 - deleted CRM records
 
 Support:
+
 - configurable retention
 - export
 - deletion
@@ -1403,6 +1487,7 @@ Codex must follow these rules:
 ## 31. Robustness Rules for Codex
 
 Every implementation must consider:
+
 - idempotency
 - retry safety
 - partial failure
@@ -1423,6 +1508,7 @@ Every implementation must consider:
 ## 32. Pixel-Perfect Implementation Rules
 
 For each screen:
+
 - attach the corresponding reference image
 - match layout proportions
 - match spacing rhythm
@@ -1473,6 +1559,7 @@ This is the minimum standard for “complete.”
 Implementation should use vertical slices.
 
 Each phase must include:
+
 - schema/domain
 - migration
 - service/API
@@ -1491,6 +1578,7 @@ Do not build “all frontend first” or “all backend first.”
 ## 35. Proposed Phase Order
 
 ### Phase 0 — Baseline and safety
+
 - clean checkpoint/commit
 - document current branch/state
 - secure Exotel
@@ -1500,6 +1588,7 @@ Do not build “all frontend first” or “all backend first.”
 - isolated DB tests
 
 ### Phase 1 — Workspace + RBAC foundation
+
 - Workspace
 - Membership
 - tenant-scoped repositories
@@ -1508,6 +1597,7 @@ Do not build “all frontend first” or “all backend first.”
 - workspace-aware realtime/events
 
 ### Phase 2 — Activity + Audit + Tasks
+
 - structured timeline
 - task entity
 - actor/source model
@@ -1515,6 +1605,7 @@ Do not build “all frontend first” or “all backend first.”
 - activity UI primitive
 
 ### Phase 3 — Frontend platform shell
+
 - route architecture
 - design system
 - sidebar
@@ -1523,6 +1614,7 @@ Do not build “all frontend first” or “all backend first.”
 - common table/drawer/modal/timeline
 
 ### Phase 4 — Core CRM records
+
 - Leads
 - Contacts
 - Companies
@@ -1533,6 +1625,7 @@ Do not build “all frontend first” or “all backend first.”
 - saved filters
 
 ### Phase 5 — Deals + Pipelines
+
 - workspace pipelines
 - stage management
 - deal lifecycle
@@ -1540,6 +1633,7 @@ Do not build “all frontend first” or “all backend first.”
 - existing proposal/meeting reuse
 
 ### Phase 6 — Agents
+
 - agent entity/versioning
 - agent management page
 - agent pause/resume
@@ -1547,6 +1641,7 @@ Do not build “all frontend first” or “all backend first.”
 - execution records
 
 ### Phase 7 — Agent Composer
+
 - visual canvas
 - nodes
 - validation
@@ -1554,6 +1649,7 @@ Do not build “all frontend first” or “all backend first.”
 - publish/versioning
 
 ### Phase 8 — Workflows
+
 - workflow model/versioning
 - node engine
 - durable execution
@@ -1562,6 +1658,7 @@ Do not build “all frontend first” or “all backend first.”
 - reuse existing automation actions
 
 ### Phase 9 — Integrations
+
 - workspace-scoped integration management
 - health model
 - UI
@@ -1569,6 +1666,7 @@ Do not build “all frontend first” or “all backend first.”
 - Bigin sync path
 
 ### Phase 10 — AI lead intelligence
+
 - lead briefing
 - command center
 - recommendations
@@ -1576,12 +1674,14 @@ Do not build “all frontend first” or “all backend first.”
 - actionable AI insights
 
 ### Phase 11 — Orders
+
 - order model
 - queue UI
 - payment/fulfillment states
 - deal linkage
 
 ### Phase 12 — Analytics / scale / production hardening
+
 - multi-instance realtime
 - observability
 - retention
@@ -1635,6 +1735,7 @@ For each future Codex task:
 Do **not** begin all CRM screens.
 
 The next implementation task should be **Phase 0 — Baseline and Safety**, because the current assessment found:
+
 - a dirty/untracked production workspace
 - Exotel endpoint security risk
 - inconsistent authorization
@@ -1676,14 +1777,9 @@ Shilabs should become:
 
 The target product must combine:
 
-**Bigin familiarity**
-+
-**modern reference-image UI**
-+
-**existing Shilabs automation**
-+
-**production-grade CRM architecture**
-+
-**reusable AI agents/workflows**
-+
+**Bigin familiarity** +
+**modern reference-image UI** +
+**existing Shilabs automation** +
+**production-grade CRM architecture** +
+**reusable AI agents/workflows** +
 **full end-to-end correctness**

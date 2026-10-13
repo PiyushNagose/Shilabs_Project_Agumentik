@@ -14,10 +14,14 @@ const workspaceSlugs = ["realtime-a", "realtime-b"];
 
 function waitForSocketMessage(socket: WebSocket): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("Timed out waiting for websocket message")), 5000);
+    const timer = setTimeout(
+      () => reject(new Error("Timed out waiting for websocket message")),
+      5000
+    );
     socket.once("message", (data) => {
       clearTimeout(timer);
-      const message = typeof data === "string" ? data : Buffer.isBuffer(data) ? data.toString("utf8") : "";
+      const message =
+        typeof data === "string" ? data : Buffer.isBuffer(data) ? data.toString("utf8") : "";
       resolve(JSON.parse(message) as unknown);
     });
   });
@@ -43,7 +47,9 @@ describe("realtime websocket API", () => {
   let stopRealtime: (() => Promise<void>) | undefined;
 
   beforeEach(async () => {
-    await prisma.authSession.deleteMany({ where: { user: { email: { in: [adminEmail, repEmail] } } } });
+    await prisma.authSession.deleteMany({
+      where: { user: { email: { in: [adminEmail, repEmail] } } }
+    });
     await prisma.lead.deleteMany({ where: { source: "realtime-test" } });
     await prisma.contact.deleteMany({ where: { source: "realtime-test" } });
     await prisma.company.deleteMany({ where: { name: { startsWith: "Realtime Test" } } });
@@ -74,8 +80,12 @@ describe("realtime websocket API", () => {
       prisma.user.findUniqueOrThrow({ where: { email: repEmail } })
     ]);
     const [workspaceA, workspaceB] = await Promise.all([
-      prisma.workspace.create({ data: { name: "Realtime A", slug: workspaceSlugs[0] ?? "realtime-a" } }),
-      prisma.workspace.create({ data: { name: "Realtime B", slug: workspaceSlugs[1] ?? "realtime-b" } })
+      prisma.workspace.create({
+        data: { name: "Realtime A", slug: workspaceSlugs[0] ?? "realtime-a" }
+      }),
+      prisma.workspace.create({
+        data: { name: "Realtime B", slug: workspaceSlugs[1] ?? "realtime-b" }
+      })
     ]);
     await prisma.workspaceMember.createMany({
       data: [
@@ -97,7 +107,9 @@ describe("realtime websocket API", () => {
   });
 
   afterAll(async () => {
-    await prisma.authSession.deleteMany({ where: { user: { email: { in: [adminEmail, repEmail] } } } });
+    await prisma.authSession.deleteMany({
+      where: { user: { email: { in: [adminEmail, repEmail] } } }
+    });
     await prisma.lead.deleteMany({ where: { source: "realtime-test" } });
     await prisma.contact.deleteMany({ where: { source: "realtime-test" } });
     await prisma.company.deleteMany({ where: { name: { startsWith: "Realtime Test" } } });
@@ -112,13 +124,23 @@ describe("realtime websocket API", () => {
       .send({ email: adminEmail, password: "CorrectHorse123!" })
       .expect(200);
     const accessToken = (login.body as AuthResponse).accessToken;
-    const workspaceA = await prisma.workspace.findUniqueOrThrow({ where: { slug: workspaceSlugs[0] } });
-    const socket = new WebSocket(`${baseUrl.replace("http:", "ws:")}/realtime?token=${encodeURIComponent(accessToken)}&workspaceId=${workspaceA.id}`);
+    const workspaceA = await prisma.workspace.findUniqueOrThrow({
+      where: { slug: workspaceSlugs[0] }
+    });
+    const socket = new WebSocket(
+      `${baseUrl.replace("http:", "ws:")}/realtime?token=${encodeURIComponent(accessToken)}&workspaceId=${workspaceA.id}`
+    );
     await waitForSocketMessage(socket);
 
     const stage = await prisma.pipelineStage.upsert({
       where: { key: "REALTIME_TEST_NEW" },
-      create: { workspaceId: workspaceA.id, key: "REALTIME_TEST_NEW", label: "New", order: 9901, probability: 0 },
+      create: {
+        workspaceId: workspaceA.id,
+        key: "REALTIME_TEST_NEW",
+        label: "New",
+        order: 9901,
+        probability: 0
+      },
       update: { workspaceId: workspaceA.id }
     });
     const admin = await prisma.user.findUniqueOrThrow({ where: { email: adminEmail } });
@@ -158,8 +180,12 @@ describe("realtime websocket API", () => {
 
   it("does not deliver a lead invalidation to a client in another workspace", async () => {
     const [adminLogin, repLogin] = await Promise.all([
-      request(createApp()).post("/api/auth/login").send({ email: adminEmail, password: "CorrectHorse123!" }),
-      request(createApp()).post("/api/auth/login").send({ email: repEmail, password: "CorrectHorse123!" })
+      request(createApp())
+        .post("/api/auth/login")
+        .send({ email: adminEmail, password: "CorrectHorse123!" }),
+      request(createApp())
+        .post("/api/auth/login")
+        .send({ email: repEmail, password: "CorrectHorse123!" })
     ]);
     const [workspaceA, workspaceB] = await Promise.all(
       workspaceSlugs.map((slug) => prisma.workspace.findUniqueOrThrow({ where: { slug } }))
@@ -176,7 +202,13 @@ describe("realtime websocket API", () => {
     const [stage, admin] = await Promise.all([
       prisma.pipelineStage.upsert({
         where: { key: "REALTIME_TEST_NEW" },
-        create: { workspaceId: workspaceA.id, key: "REALTIME_TEST_NEW", label: "New", order: 9901, probability: 0 },
+        create: {
+          workspaceId: workspaceA.id,
+          key: "REALTIME_TEST_NEW",
+          label: "New",
+          order: 9901,
+          probability: 0
+        },
         update: { workspaceId: workspaceA.id }
       }),
       prisma.user.findUniqueOrThrow({ where: { email: adminEmail } })

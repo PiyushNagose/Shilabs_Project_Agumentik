@@ -28,14 +28,18 @@ services:
         generateValue: true
       - key: WEB_ORIGIN
         sync: false
-      - key: DEV_ADMIN_EMAIL
+      - key: WORKER_API_BASE_URL
         sync: false
-      - key: DEV_ADMIN_PASSWORD
+      - key: PRODUCTION_BOOTSTRAP_ADMIN_EMAIL
+        sync: false
+      - key: PRODUCTION_BOOTSTRAP_ADMIN_PASSWORD
         sync: false
       - key: AI_PROVIDER
         value: gemini
       - key: GEMINI_API_KEY
         sync: false
+      - key: GEMINI_MODEL
+        value: gemini-flash-lite-latest
       - key: CALENDAR_PROVIDER
         value: google
       - key: GOOGLE_CALENDAR_CLIENT_ID
@@ -62,8 +66,26 @@ services:
         value: none
       - key: EMAIL_PROVIDER
         value: AWS_SES
+      - key: AWS_SES_REGION
+        sync: false
+      - key: AWS_SES_FROM_EMAIL
+        sync: false
+      - key: AWS_SES_REPLY_TO_EMAIL
+        sync: false
+      - key: AWS_SES_WEBHOOK_SECRET
+        sync: false
+      - key: AWS_SES_USE_DEFAULT_CREDENTIAL_CHAIN
+        value: "false"
+      - key: AWS_SES_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SES_SECRET_ACCESS_KEY
+        sync: false
       - key: AI_AUTOSTART_ON_LEAD_CREATE
         value: "false"
+      - key: OPS_ALERT_WEBHOOK_URL
+        sync: false
+      - key: OPS_ALERT_WEBHOOK_SECRET
+        sync: false
 
   - type: keyvalue
     name: shilabs-sales-redis

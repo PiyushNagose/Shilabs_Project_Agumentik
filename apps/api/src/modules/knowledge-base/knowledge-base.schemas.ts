@@ -1,11 +1,6 @@
 import { z } from "zod";
 
-const nullableSourceUrl = z
-  .url()
-  .trim()
-  .max(1000)
-  .nullable()
-  .optional();
+const nullableSourceUrl = z.url().trim().max(1000).nullable().optional();
 
 export const knowledgeBaseCategorySchema = z.enum([
   "COMPANY",

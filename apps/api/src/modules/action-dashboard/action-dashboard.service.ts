@@ -65,7 +65,10 @@ function failureDetail(code: string | null, message: string | null): string {
   return message ?? code ?? "Attention is required before automation can continue.";
 }
 
-function domainEventPayloadString(event: { payload: Prisma.JsonValue }, key: string): string | null {
+function domainEventPayloadString(
+  event: { payload: Prisma.JsonValue },
+  key: string
+): string | null {
   const payload = event.payload as Prisma.JsonObject;
   const value = payload[key];
   return typeof value === "string" ? value : null;
@@ -393,19 +396,19 @@ export async function getSalesActionDashboard(
         )
     )
     .map((event) => ({
-    id: `domain-event:${event.id}`,
-    type: "FAILURE",
-    severity: event.status === "ATTENTION_REQUIRED" ? "CRITICAL" : "WARNING",
-    title: domainEventTitle(event.eventType, event.aggregateType),
-    detail: failureDetail(event.lastErrorCode, event.lastErrorMessage),
-    status: event.status,
-    leadId: null,
-    conversationId: null,
-    proposalId: null,
-    sourceEntityType: `DomainEventOutbox:${event.eventType}`,
-    sourceEntityId: event.id,
-    occurredAt: event.updatedAt.toISOString(),
-    lead: null
+      id: `domain-event:${event.id}`,
+      type: "FAILURE",
+      severity: event.status === "ATTENTION_REQUIRED" ? "CRITICAL" : "WARNING",
+      title: domainEventTitle(event.eventType, event.aggregateType),
+      detail: failureDetail(event.lastErrorCode, event.lastErrorMessage),
+      status: event.status,
+      leadId: null,
+      conversationId: null,
+      proposalId: null,
+      sourceEntityType: `DomainEventOutbox:${event.eventType}`,
+      sourceEntityId: event.id,
+      occurredAt: event.updatedAt.toISOString(),
+      lead: null
     }));
 
   const negotiationAndTakeoverAlerts = sortItems([

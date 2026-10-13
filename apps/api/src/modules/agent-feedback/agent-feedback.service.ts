@@ -15,7 +15,9 @@ const correctionInclude = {
   correctedBy: true
 } satisfies Prisma.AgentCorrectionInclude;
 
-type AgentCorrectionRecord = Prisma.AgentCorrectionGetPayload<{ include: typeof correctionInclude }>;
+type AgentCorrectionRecord = Prisma.AgentCorrectionGetPayload<{
+  include: typeof correctionInclude;
+}>;
 
 interface CorrectionSourceContext {
   sourceEntityType: AgentCorrectionSourceType;
@@ -142,7 +144,9 @@ async function resolveSource(input: {
   return sourceFromReplyProcessingRun(input.sourceEntityId);
 }
 
-async function resolveLatestProposalGenerationRun(proposalId: string): Promise<CorrectionSourceContext> {
+async function resolveLatestProposalGenerationRun(
+  proposalId: string
+): Promise<CorrectionSourceContext> {
   const run = await prisma.proposalGenerationRun.findFirst({
     where: { proposalId },
     orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }]
@@ -188,7 +192,11 @@ async function createCorrectionRecord(input: {
           superseded.sourceEntityType !== input.source.sourceEntityType ||
           superseded.sourceEntityId !== input.source.sourceEntityId
         ) {
-          throw new AppError(400, "VALIDATION_ERROR", "Superseded correction must match the same source");
+          throw new AppError(
+            400,
+            "VALIDATION_ERROR",
+            "Superseded correction must match the same source"
+          );
         }
         await tx.agentCorrection.update({
           where: { id: input.supersedesCorrectionId },

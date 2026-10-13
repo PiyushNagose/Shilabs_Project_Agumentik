@@ -41,8 +41,15 @@ const NON_ACTIONABLE_DOMAIN_EVENT_TYPES = [
   "PROPOSAL_SENT"
 ] as const;
 
-function isDuplicateWhatsAppJob(event: { eventType: string; payload: unknown }, attemptIds: Set<string>): boolean {
-  if (event.eventType !== "WHATSAPP_SEND_REQUESTED" || !event.payload || typeof event.payload !== "object") {
+function isDuplicateWhatsAppJob(
+  event: { eventType: string; payload: unknown },
+  attemptIds: Set<string>
+): boolean {
+  if (
+    event.eventType !== "WHATSAPP_SEND_REQUESTED" ||
+    !event.payload ||
+    typeof event.payload !== "object"
+  ) {
     return false;
   }
   const attemptId = (event.payload as Record<string, unknown>).callingAttemptId;
@@ -218,7 +225,12 @@ async function getProviderHealth(): Promise<OperationsProviderHealthDto[]> {
     ),
     safely(
       (error) =>
-        failedHealth({ key: "whatsapp", label: "WhatsApp Messaging", provider: "META_WHATSAPP", error }),
+        failedHealth({
+          key: "whatsapp",
+          label: "WhatsApp Messaging",
+          provider: "META_WHATSAPP",
+          error
+        }),
       () => getMessagingHealth(),
       (health) =>
         liveHealth({
@@ -277,15 +289,13 @@ async function getWorkSummary(): Promise<OperationsDashboardDto["work"]> {
     queuedCount: countFor("QUEUED"),
     failedCount: countFor("FAILED"),
     attentionRequiredCount: countFor("ATTENTION_REQUIRED"),
-    recentProblemItems: recent.map(
-      (event): OperationsWorkItemDto => ({
-        id: event.id,
-        type: event.eventType,
-        status: event.status,
-        detail: workDetail(event),
-        occurredAt: event.updatedAt.toISOString()
-      })
-    )
+    recentProblemItems: recent.map((event): OperationsWorkItemDto => ({
+      id: event.id,
+      type: event.eventType,
+      status: event.status,
+      detail: workDetail(event),
+      occurredAt: event.updatedAt.toISOString()
+    }))
   };
 }
 

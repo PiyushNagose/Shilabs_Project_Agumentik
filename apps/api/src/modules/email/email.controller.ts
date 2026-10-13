@@ -76,7 +76,8 @@ export async function ingestSesFeedbackEventController(
   request: Request,
   response: Response<SesFeedbackEventDto>
 ): Promise<void> {
-  const rawBody = (request as Request & { rawBody?: string }).rawBody ?? JSON.stringify(request.body);
+  const rawBody =
+    (request as Request & { rawBody?: string }).rawBody ?? JSON.stringify(request.body);
   response.status(200).json(
     await ingestSesFeedbackEvent({
       body: request.body,
@@ -93,7 +94,8 @@ export async function ingestSesInboundEmailController(
   request: Request,
   response: Response<SesInboundEmailDto>
 ): Promise<void> {
-  const rawBody = (request as Request & { rawBody?: string }).rawBody ?? JSON.stringify(request.body);
+  const rawBody =
+    (request as Request & { rawBody?: string }).rawBody ?? JSON.stringify(request.body);
   response.status(200).json(
     await ingestSesInboundEmail({
       body: request.body,

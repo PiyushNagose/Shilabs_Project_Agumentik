@@ -1,6 +1,10 @@
 import request from "supertest";
 import { UserRole, UserStatus } from "@prisma/client";
-import type { ApprovedKnowledgeDto, AuthResponse, KnowledgeBaseEntryDto } from "@shilabs/shared-types";
+import type {
+  ApprovedKnowledgeDto,
+  AuthResponse,
+  KnowledgeBaseEntryDto
+} from "@shilabs/shared-types";
 import { createApp } from "../../app.js";
 import { prisma } from "../../shared/prisma.js";
 import { hashPassword } from "../auth/auth.service.js";

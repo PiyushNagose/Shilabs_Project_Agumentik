@@ -81,7 +81,9 @@ async function createLead(): Promise<string> {
     }
   });
   const stage = await prisma.pipelineStage.findFirstOrThrow({ where: { key: "NEW" } });
-  const company = await prisma.company.create({ data: { workspaceId: workspace.id, name: "R6 API Company" } });
+  const company = await prisma.company.create({
+    data: { workspaceId: workspace.id, name: "R6 API Company" }
+  });
   const contact = await prisma.contact.create({
     data: {
       workspaceId: workspace.id,

@@ -269,7 +269,9 @@ describe("M11 scoring API", () => {
 
     expect(result.score).toBe(42);
     expect(result.persisted).toBe(false);
-    expect(result.skippedReason).toBe("Active human score override prevents automatic recalculation");
+    expect(result.skippedReason).toBe(
+      "Active human score override prevents automatic recalculation"
+    );
     await expect(prisma.lead.findUniqueOrThrow({ where: { id: leadId } })).resolves.toMatchObject({
       score: 42,
       scoreOverrideReason: "Manual sales review"

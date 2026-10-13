@@ -3,12 +3,16 @@ import type { LucideIcon } from "lucide-react";
 import {
   BarChart3,
   Bot,
+  BrainCircuit,
   BriefcaseBusiness,
   Building2,
   ContactRound,
   Handshake,
   LayoutDashboard,
   Settings,
+  Plug,
+  ShoppingBag,
+  Workflow,
   Users
 } from "lucide-react";
 import type { DetailTab } from "../features/leads/CrmWorkspace.js";
@@ -20,6 +24,10 @@ export type AppRouteId =
   | "contacts"
   | "companies"
   | "agents"
+  | "workflows"
+  | "integrations"
+  | "command-center"
+  | "orders"
   | "operations"
   | "users"
   | "settings"
@@ -39,9 +47,16 @@ export interface AppRouteState {
   id: AppRouteId;
   leadId: string | null;
   dealId?: string | null;
+  orderId?: string | null;
   agentId?: string | null;
+  agentTab?: AgentDetailTab;
+  workflowId?: string | null;
+  workflowTab?: WorkflowDetailTab;
   tab?: DetailTab;
 }
+
+export type AgentDetailTab = "composer" | "executions" | "versions" | "overview";
+export type WorkflowDetailTab = "builder" | "executions" | "versions" | "overview";
 
 export const appRoutes: Readonly<Record<AppRouteId, AppRouteDefinition>> = {
   dashboard: {
@@ -85,6 +100,34 @@ export const appRoutes: Readonly<Record<AppRouteId, AppRouteDefinition>> = {
     title: "AI Agents",
     path: "/agents",
     icon: Bot
+  },
+  workflows: {
+    id: "workflows",
+    label: "Workflows",
+    title: "Workflow Automation",
+    path: "/workflows",
+    icon: Workflow
+  },
+  integrations: {
+    id: "integrations",
+    label: "Integrations",
+    title: "Integrations",
+    path: "/integrations",
+    icon: Plug
+  },
+  "command-center": {
+    id: "command-center",
+    label: "AI Command",
+    title: "AI Command Center",
+    path: "/ai-command-center",
+    icon: BrainCircuit
+  },
+  orders: {
+    id: "orders",
+    label: "Orders",
+    title: "Order Queue",
+    path: "/orders",
+    icon: ShoppingBag
   },
   operations: {
     id: "operations",
@@ -138,6 +181,10 @@ export const navigationByRole: Readonly<Record<UserRoleName, readonly AppRouteId
     "contacts",
     "companies",
     "agents",
+    "workflows",
+    "integrations",
+    "command-center",
+    "orders",
     "operations",
     "users",
     "settings"
@@ -149,11 +196,25 @@ export const navigationByRole: Readonly<Record<UserRoleName, readonly AppRouteId
     "contacts",
     "companies",
     "agents",
+    "workflows",
+    "integrations",
+    "command-center",
+    "orders",
     "operations",
     "team",
     "reports"
   ],
-  SALES_REP: ["dashboard", "crm", "deals", "contacts", "companies", "agents", "workspace"]
+  SALES_REP: [
+    "dashboard",
+    "crm",
+    "deals",
+    "contacts",
+    "companies",
+    "agents",
+    "workflows",
+    "orders",
+    "workspace"
+  ]
 };
 
 function isDetailTab(value: string | null): value is DetailTab {
@@ -167,6 +228,17 @@ function isDetailTab(value: string | null): value is DetailTab {
     value === "Meetings" ||
     value === "Deal" ||
     value === "AI Insights"
+  );
+}
+
+function isAgentDetailTab(value: string | null): value is AgentDetailTab {
+  return (
+    value === "composer" || value === "executions" || value === "versions" || value === "overview"
+  );
+}
+function isWorkflowDetailTab(value: string | null): value is WorkflowDetailTab {
+  return (
+    value === "builder" || value === "executions" || value === "versions" || value === "overview"
   );
 }
 
@@ -187,12 +259,30 @@ export function parseAppRoute(allowedRoutes: readonly AppRouteId[]): AppRouteSta
   if (path.startsWith("/deals/") && canOpen("deals")) {
     return { id: "deals", leadId: null, dealId: decodeURIComponent(path.slice("/deals/".length)) };
   }
+  if (path.startsWith("/orders/") && canOpen("orders")) {
+    return {
+      id: "orders",
+      leadId: null,
+      orderId: decodeURIComponent(path.slice("/orders/".length))
+    };
+  }
 
   if (path.startsWith("/agents/") && canOpen("agents")) {
+    const agentTab = new URLSearchParams(window.location.search).get("tab");
     return {
       id: "agents",
       leadId: null,
-      agentId: decodeURIComponent(path.slice("/agents/".length))
+      agentId: decodeURIComponent(path.slice("/agents/".length)),
+      agentTab: isAgentDetailTab(agentTab) ? agentTab : undefined
+    };
+  }
+  if (path.startsWith("/workflows/") && canOpen("workflows")) {
+    const workflowTab = new URLSearchParams(window.location.search).get("tab");
+    return {
+      id: "workflows",
+      leadId: null,
+      workflowId: decodeURIComponent(path.slice("/workflows/".length)),
+      workflowTab: isWorkflowDetailTab(workflowTab) ? workflowTab : undefined
     };
   }
 
@@ -203,8 +293,20 @@ export function parseAppRoute(allowedRoutes: readonly AppRouteId[]): AppRouteSta
 }
 
 export function appPath(input: AppRouteState): string {
-  if (input.id === "agents" && input.agentId) return `/agents/${encodeURIComponent(input.agentId)}`;
+  if (input.id === "workflows" && input.workflowId) {
+    const params = new URLSearchParams();
+    if (input.workflowTab) params.set("tab", input.workflowTab);
+    const query = params.toString();
+    return `/workflows/${encodeURIComponent(input.workflowId)}${query ? `?${query}` : ""}`;
+  }
+  if (input.id === "agents" && input.agentId) {
+    const params = new URLSearchParams();
+    if (input.agentTab) params.set("tab", input.agentTab);
+    const query = params.toString();
+    return `/agents/${encodeURIComponent(input.agentId)}${query ? `?${query}` : ""}`;
+  }
   if (input.id === "deals" && input.dealId) return `/deals/${encodeURIComponent(input.dealId)}`;
+  if (input.id === "orders" && input.orderId) return `/orders/${encodeURIComponent(input.orderId)}`;
   if ((input.id === "crm" || input.id === "workspace") && input.leadId) {
     const params = new URLSearchParams();
     if (input.tab) params.set("tab", input.tab);

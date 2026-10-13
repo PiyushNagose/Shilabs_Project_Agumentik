@@ -24,7 +24,13 @@ class TestVoiceProvider implements WorkerVoiceProvider {
 class TestTimelineSyncer implements TimelineSyncer {
   public calls: string[] = [];
 
-  public constructor(private readonly result: TimelineSyncResult = { status: "SYNCED", externalRecordId: "zoho-note-1", lastError: null }) {}
+  public constructor(
+    private readonly result: TimelineSyncResult = {
+      status: "SYNCED",
+      externalRecordId: "zoho-note-1",
+      lastError: null
+    }
+  ) {}
 
   public syncActivity(input: { activityId: string }) {
     this.calls.push(input.activityId);
@@ -68,12 +74,22 @@ async function clean(): Promise<void> {
       ]
     }
   });
-  await workerPrisma.voiceProviderEvent.deleteMany({ where: { callAttempt: { lead: { source: "r23-calling-test" } } } });
+  await workerPrisma.voiceProviderEvent.deleteMany({
+    where: { callAttempt: { lead: { source: "r23-calling-test" } } }
+  });
   await workerPrisma.callingAttempt.deleteMany({ where: { lead: { source: "r23-calling-test" } } });
-  await workerPrisma.callingSequence.deleteMany({ where: { lead: { source: "r23-calling-test" } } });
-  await workerPrisma.voiceCallAttempt.deleteMany({ where: { lead: { source: "r23-calling-test" } } });
-  await workerPrisma.followUpAttempt.deleteMany({ where: { lead: { source: "r23-calling-test" } } });
-  await workerPrisma.followUpSequence.deleteMany({ where: { lead: { source: "r23-calling-test" } } });
+  await workerPrisma.callingSequence.deleteMany({
+    where: { lead: { source: "r23-calling-test" } }
+  });
+  await workerPrisma.voiceCallAttempt.deleteMany({
+    where: { lead: { source: "r23-calling-test" } }
+  });
+  await workerPrisma.followUpAttempt.deleteMany({
+    where: { lead: { source: "r23-calling-test" } }
+  });
+  await workerPrisma.followUpSequence.deleteMany({
+    where: { lead: { source: "r23-calling-test" } }
+  });
   await workerPrisma.inboundEmail.deleteMany({ where: { lead: { source: "r23-calling-test" } } });
   await workerPrisma.conversation.deleteMany({ where: { lead: { source: "r23-calling-test" } } });
   await workerPrisma.activity.deleteMany({ where: { lead: { source: "r23-calling-test" } } });
@@ -110,7 +126,8 @@ async function createCompletedFollowUp() {
       companyId: company.id,
       contactId: contact.id,
       stageId: stage.id,
-      source: "r23-calling-test"
+      source: "r23-calling-test",
+      automationOwnershipState: "AI_ACTIVE"
     }
   });
   const sequence = await workerPrisma.followUpSequence.create({
@@ -214,13 +231,19 @@ describe("R23 calling automation", () => {
     await executeCallingAutomationAttempt({ event, env, provider, timelineSyncer: timeline });
 
     expect(provider.calls).toHaveLength(1);
-    const updated = await workerPrisma.callingAttempt.findUniqueOrThrow({ where: { id: attempt.id } });
+    const updated = await workerPrisma.callingAttempt.findUniqueOrThrow({
+      where: { id: attempt.id }
+    });
     expect(updated.status).toBe("ACCEPTED");
     expect(updated.voiceCallAttemptId).toBeTruthy();
     expect(updated.zohoSyncStatus).toBe("SYNCED");
     await expect(
       workerPrisma.externalRecordMapping.count({
-        where: { provider: "TWILIO", entityType: "CALL", localEntityId: updated.voiceCallAttemptId ?? "" }
+        where: {
+          provider: "TWILIO",
+          entityType: "CALL",
+          localEntityId: updated.voiceCallAttemptId ?? ""
+        }
       })
     ).resolves.toBe(1);
   });
@@ -237,7 +260,10 @@ describe("R23 calling automation", () => {
       EXOTEL_APP_URL: "https://voice-e2e.example.test/exotel-flow"
     } as NodeJS.ProcessEnv;
     const { sequence } = await createCompletedFollowUp();
-    await scheduleCallingSequenceAfterFailedEmailSequence({ followUpSequenceId: sequence.id, env: exotelEnv });
+    await scheduleCallingSequenceAfterFailedEmailSequence({
+      followUpSequenceId: sequence.id,
+      env: exotelEnv
+    });
     const attempt = await workerPrisma.callingAttempt.findFirstOrThrow({
       where: { sequence: { followUpSequenceId: sequence.id }, attemptIndex: 0 }
     });
@@ -252,7 +278,12 @@ describe("R23 calling automation", () => {
     });
     const timeline = new TestTimelineSyncer();
 
-    await executeCallingAutomationAttempt({ event, env: exotelEnv, provider, timelineSyncer: timeline });
+    await executeCallingAutomationAttempt({
+      event,
+      env: exotelEnv,
+      provider,
+      timelineSyncer: timeline
+    });
 
     expect(provider.calls).toHaveLength(1);
     expect(provider.calls[0]).toMatchObject({
@@ -269,7 +300,11 @@ describe("R23 calling automation", () => {
     expect(updated.voiceCallAttempt?.providerCallId).toBe("exotel-r23-accepted");
     await expect(
       workerPrisma.externalRecordMapping.count({
-        where: { provider: "EXOTEL", entityType: "CALL", localEntityId: updated.voiceCallAttemptId ?? "" }
+        where: {
+          provider: "EXOTEL",
+          entityType: "CALL",
+          localEntityId: updated.voiceCallAttemptId ?? ""
+        }
       })
     ).resolves.toBe(1);
   }, 90000);
@@ -287,12 +322,20 @@ describe("R23 calling automation", () => {
       EXOTEL_APP_URL: "https://voice-e2e.example.test/exotel-flow"
     } as NodeJS.ProcessEnv;
     const { contact, sequence } = await createCompletedFollowUp();
-    await workerPrisma.contact.update({ where: { id: contact.id }, data: { phone: "07724960195" } });
-    await scheduleCallingSequenceAfterFailedEmailSequence({ followUpSequenceId: sequence.id, env: exotelEnv });
+    await workerPrisma.contact.update({
+      where: { id: contact.id },
+      data: { phone: "07724960195" }
+    });
+    await scheduleCallingSequenceAfterFailedEmailSequence({
+      followUpSequenceId: sequence.id,
+      env: exotelEnv
+    });
     const attempt = await workerPrisma.callingAttempt.findFirstOrThrow({
       where: { sequence: { followUpSequenceId: sequence.id }, attemptIndex: 0 }
     });
-    const event = await workerPrisma.domainEventOutbox.findUniqueOrThrow({ where: { id: attempt.domainEventId ?? "" } });
+    const event = await workerPrisma.domainEventOutbox.findUniqueOrThrow({
+      where: { id: attempt.domainEventId ?? "" }
+    });
     const provider = new TestVoiceProvider({
       status: "ACCEPTED",
       providerCallId: `exotel-local-phone-${crypto.randomUUID()}`,
@@ -332,7 +375,9 @@ describe("R23 calling automation", () => {
     );
 
     expect(provider.calls).toHaveLength(0);
-    await expect(workerPrisma.callingAttempt.findUniqueOrThrow({ where: { id: attempt.id } })).resolves.toMatchObject({
+    await expect(
+      workerPrisma.callingAttempt.findUniqueOrThrow({ where: { id: attempt.id } })
+    ).resolves.toMatchObject({
       status: "BLOCKED",
       failureCode: "CONTACT_DO_NOT_CONTACT"
     });

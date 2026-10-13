@@ -10,7 +10,9 @@ function payloadString(event: { payload: unknown }, key: string): string | null 
   return typeof value === "string" && value.trim() ? value : null;
 }
 
-async function syncConfirmedMeeting(event: Parameters<NonNullable<DomainEventHandlerMap["MEETING_CONFIRMED"]>["handle"]>[0]): Promise<void> {
+async function syncConfirmedMeeting(
+  event: Parameters<NonNullable<DomainEventHandlerMap["MEETING_CONFIRMED"]>["handle"]>[0]
+): Promise<void> {
   const activityId = payloadString(event, "activityId");
   if (!activityId) {
     throw new PermanentDomainEventError(
@@ -25,7 +27,8 @@ async function syncConfirmedMeeting(event: Parameters<NonNullable<DomainEventHan
     where: { id: event.aggregateId },
     data: {
       zohoSyncStatus: result.status === "SKIPPED" ? "SYNCED" : result.status,
-      zohoLastError: result.status === "SYNCED" || result.status === "SKIPPED" ? null : result.lastError
+      zohoLastError:
+        result.status === "SYNCED" || result.status === "SKIPPED" ? null : result.lastError
     }
   });
 

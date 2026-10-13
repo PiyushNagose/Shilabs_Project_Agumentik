@@ -47,7 +47,10 @@ function missingTwilioConfig(config: MessagingConfig): string[] {
   return missing;
 }
 
-function baseHealth(config: MessagingConfig, status: MessagingHealthDto["status"]): MessagingHealthDto {
+function baseHealth(
+  config: MessagingConfig,
+  status: MessagingHealthDto["status"]
+): MessagingHealthDto {
   return {
     provider:
       config.provider === "meta_whatsapp"
@@ -59,7 +62,9 @@ function baseHealth(config: MessagingConfig, status: MessagingHealthDto["status"
     configured: status === "CONFIGURED",
     checkedAt: new Date().toISOString(),
     missingConfig: [],
-    webhookConfigured: Boolean(config.metaWhatsApp.webhookVerifyToken && config.metaWhatsApp.appSecret),
+    webhookConfigured: Boolean(
+      config.metaWhatsApp.webhookVerifyToken && config.metaWhatsApp.appSecret
+    ),
     templatePolicyMode: config.templatePolicyMode,
     defaultTemplateConfigured: Boolean(config.metaWhatsApp.defaultTemplateName),
     lastError: null
@@ -177,7 +182,10 @@ export class MetaWhatsAppProvider implements MessagingProvider {
     }
   }
 
-  public verifyWebhookSignature(input: { rawBody: string; signature: string | undefined }): boolean {
+  public verifyWebhookSignature(input: {
+    rawBody: string;
+    signature: string | undefined;
+  }): boolean {
     if (!this.config.metaWhatsApp.appSecret || !input.signature?.startsWith("sha256=")) {
       return false;
     }

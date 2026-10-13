@@ -858,13 +858,15 @@ function crmFetch(input: RequestInfo | URL): Promise<Response> {
 
   if (url.includes("/api/tasks")) {
     if (url.endsWith("/api/tasks/task_1/complete")) {
-      return Promise.resolve(jsonResponse({
-        ...leadTask,
-        status: "COMPLETED",
-        completedAt: new Date().toISOString(),
-        completedByType: "USER",
-        completedByUserId: adminUser.id
-      }));
+      return Promise.resolve(
+        jsonResponse({
+          ...leadTask,
+          status: "COMPLETED",
+          completedAt: new Date().toISOString(),
+          completedByType: "USER",
+          completedByUserId: adminUser.id
+        })
+      );
     }
     return Promise.resolve(jsonResponse([leadTask]));
   }
@@ -874,16 +876,25 @@ function crmFetch(input: RequestInfo | URL): Promise<Response> {
   }
 
   if (url.endsWith("/api/notifications/notification_1/read")) {
-    return Promise.resolve(jsonResponse({ ...negotiationNotification, status: "READ", readAt: new Date().toISOString(), readByUserId: adminUser.id }));
+    return Promise.resolve(
+      jsonResponse({
+        ...negotiationNotification,
+        status: "READ",
+        readAt: new Date().toISOString(),
+        readByUserId: adminUser.id
+      })
+    );
   }
 
   if (url.endsWith("/api/notifications/notification_1/acknowledge")) {
-    return Promise.resolve(jsonResponse({
-      ...negotiationNotification,
-      status: "ACKNOWLEDGED",
-      acknowledgedAt: new Date().toISOString(),
-      acknowledgedByUserId: adminUser.id
-    }));
+    return Promise.resolve(
+      jsonResponse({
+        ...negotiationNotification,
+        status: "ACKNOWLEDGED",
+        acknowledgedAt: new Date().toISOString(),
+        acknowledgedByUserId: adminUser.id
+      })
+    );
   }
 
   if (url.includes("/api/briefings?")) {
@@ -974,16 +985,20 @@ describe("web app", () => {
     storeAuth();
     window.history.replaceState(null, "", "/crm");
     let finishStages!: (response: Response) => void;
-    const stagesResponse = new Promise<Response>((resolve) => { finishStages = resolve; });
+    const stagesResponse = new Promise<Response>((resolve) => {
+      finishStages = resolve;
+    });
     let filtered = false;
     vi.spyOn(window, "fetch").mockImplementation((input) => {
       const url = requestUrl(input);
       if (url.endsWith("/api/pipeline/stages")) return stagesResponse;
       if (url.includes("/api/leads?") && new URL(url).searchParams.get("search") === "filtered") {
         filtered = true;
-        return Promise.resolve(jsonResponse(leadPage([
-          { ...lead, company: { ...lead.company, name: "Filtered company" } }
-        ])));
+        return Promise.resolve(
+          jsonResponse(
+            leadPage([{ ...lead, company: { ...lead.company, name: "Filtered company" } }])
+          )
+        );
       }
       return crmFetch(input);
     });
@@ -994,7 +1009,9 @@ describe("web app", () => {
     await waitFor(() => expect(filtered).toBe(true));
     finishStages(jsonResponse([newStage, qualifiedStage]));
     await waitFor(() => expect(screen.queryByText("Loading CRM")).toBeNull());
-    expect(within(screen.getByRole("table", { name: "Leads list" })).getByText("Filtered company")).toBeTruthy();
+    expect(
+      within(screen.getByRole("table", { name: "Leads list" })).getByText("Filtered company")
+    ).toBeTruthy();
     expect(screen.getByRole("table", { name: "Leads list" })).toBeTruthy();
   });
 
@@ -1061,7 +1078,7 @@ describe("web app", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Collapse sidebar" }));
     expect(screen.getByRole("button", { name: "Expand sidebar" })).toBeTruthy();
     expect(window.localStorage.getItem("shilabs.sidebar.collapsed")).toBe("true");
-    expect(screen.getByRole("heading", { name: "Sales Engineer Action Dashboard" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Sales Engineer Actions" })).toBeTruthy();
   });
 
   it("clears stored auth and returns to login when session validation returns 401", async () => {
@@ -1135,7 +1152,7 @@ describe("web app", () => {
 
     render(<App />);
 
-    expect(await screen.findByText("Operations Dashboard")).toBeTruthy();
+    expect(await screen.findByText("Integration Health")).toBeTruthy();
     expect(screen.getByRole("link", { name: /Operations/i }).className).toContain("active-nav");
   });
 
@@ -1367,9 +1384,15 @@ describe("web app", () => {
     expect(await screen.findByText("No proposals")).toBeTruthy();
     fireEvent.click(await screen.findByRole("button", { name: "Generate grounded proposal" }));
 
-    expect(await screen.findByRole("heading", { name: "AI Sales Automation Proposal" })).toBeTruthy();
+    expect(
+      await screen.findByRole("heading", { name: "AI Sales Automation Proposal" })
+    ).toBeTruthy();
     expect(screen.getAllByText("WAITING APPROVAL").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText("Grounded proposal content from persisted qualification and approved knowledge.")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Grounded proposal content from persisted qualification and approved knowledge."
+      )
+    ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Approve" })).toBeTruthy();
     expect(
       fetchSpy.mock.calls.some(
@@ -1385,10 +1408,14 @@ describe("web app", () => {
       )
     ).toBe(true);
     expect(
-      fetchSpy.mock.calls.some(([input]) => requestUrl(input).endsWith("/api/proposals/proposal_generated_1/approve"))
+      fetchSpy.mock.calls.some(([input]) =>
+        requestUrl(input).endsWith("/api/proposals/proposal_generated_1/approve")
+      )
     ).toBe(false);
     expect(
-      fetchSpy.mock.calls.some(([input]) => requestUrl(input).endsWith("/api/proposals/proposal_generated_1/send"))
+      fetchSpy.mock.calls.some(([input]) =>
+        requestUrl(input).endsWith("/api/proposals/proposal_generated_1/send")
+      )
     ).toBe(false);
   });
 
@@ -1429,7 +1456,9 @@ describe("web app", () => {
     render(<App />);
 
     expect(await screen.findByText("No proposals")).toBeTruthy();
-    const generateButton = await screen.findByRole("button", { name: "Generate grounded proposal" });
+    const generateButton = await screen.findByRole("button", {
+      name: "Generate grounded proposal"
+    });
 
     fireEvent.click(generateButton);
     const toast = await screen.findByRole("alert");
@@ -1446,7 +1475,8 @@ describe("web app", () => {
     });
     expect(
       fetchSpy.mock.calls.filter(
-        ([input, init]) => requestUrl(input).endsWith("/api/proposals/generate") && init?.method === "POST"
+        ([input, init]) =>
+          requestUrl(input).endsWith("/api/proposals/generate") && init?.method === "POST"
       )
     ).toHaveLength(2);
   });
@@ -1628,12 +1658,18 @@ describe("web app", () => {
     render(<App />);
     expect(await screen.findByText("No proposals")).toBeTruthy();
     fireEvent.click(await screen.findByRole("button", { name: "Generate grounded proposal" }));
-    expect(await screen.findByRole("heading", { name: "AI Sales Automation Proposal" })).toBeTruthy();
-    expect((await screen.findByRole("status")).textContent).toContain("Grounded proposal generated");
+    expect(
+      await screen.findByRole("heading", { name: "AI Sales Automation Proposal" })
+    ).toBeTruthy();
+    expect((await screen.findByRole("status")).textContent).toContain(
+      "Grounded proposal generated"
+    );
 
     cleanup();
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "AI Sales Automation Proposal" })).toBeTruthy();
+    expect(
+      await screen.findByRole("heading", { name: "AI Sales Automation Proposal" })
+    ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Generate grounded proposal" })).toBeNull();
 
     fireEvent.change(screen.getByLabelText("Title"), {
@@ -1674,7 +1710,9 @@ describe("web app", () => {
     expect(sendCalls).toBe(1);
     expect(
       fetchSpy.mock.calls.filter(
-        ([input, init]) => requestUrl(input).endsWith("/api/proposals/proposal_generated_1/send") && init?.method === "POST"
+        ([input, init]) =>
+          requestUrl(input).endsWith("/api/proposals/proposal_generated_1/send") &&
+          init?.method === "POST"
       )
     ).toHaveLength(1);
   });
@@ -1685,20 +1723,20 @@ describe("web app", () => {
     const fetchSpy = vi
       .spyOn(window, "fetch")
       .mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
-      const url = requestUrl(input);
+        const url = requestUrl(input);
 
-      if (url.endsWith("/api/conversations/conversation_1/messages") && init?.method === "POST") {
-        return Promise.resolve(
-          jsonResponse({
-            ...inboundMessage,
-            id: "message_2",
-            body: "Can you build our property sales site?"
-          })
-        );
-      }
+        if (url.endsWith("/api/conversations/conversation_1/messages") && init?.method === "POST") {
+          return Promise.resolve(
+            jsonResponse({
+              ...inboundMessage,
+              id: "message_2",
+              body: "Can you build our property sales site?"
+            })
+          );
+        }
 
-      return crmFetch(input);
-    });
+        return crmFetch(input);
+      });
 
     render(<App />);
     await openFirstLeadProfile();
@@ -1808,7 +1846,9 @@ describe("web app", () => {
       }
 
       if (url.endsWith("/api/conversations/conversation_1/messages")) {
-        return Promise.resolve(jsonResponse(submitted ? [inboundMessage, e2eMessage] : [inboundMessage]));
+        return Promise.resolve(
+          jsonResponse(submitted ? [inboundMessage, e2eMessage] : [inboundMessage])
+        );
       }
 
       return crmFetch(input);
@@ -1825,9 +1865,9 @@ describe("web app", () => {
     fireEvent.click(within(e2eReplyPanel).getByRole("button", { name: "Submit inbound reply" }));
 
     await waitFor(() => {
-      expect(fetchSpy.mock.calls.some(([input]) => requestUrl(input).endsWith("/api/leads/lead_1"))).toBe(
-        true
-      );
+      expect(
+        fetchSpy.mock.calls.some(([input]) => requestUrl(input).endsWith("/api/leads/lead_1"))
+      ).toBe(true);
       expect(
         fetchSpy.mock.calls.filter(([input]) =>
           requestUrl(input).endsWith("/api/conversations/conversation_1/messages")
@@ -1859,7 +1899,9 @@ describe("web app", () => {
       ])
     );
     expect(await screen.findByText("Negotiation handoff required")).toBeTruthy();
-    expect(screen.getByText("Prospect is negotiating price and needs the assigned owner to respond.")).toBeTruthy();
+    expect(
+      screen.getByText("Prospect is negotiating price and needs the assigned owner to respond.")
+    ).toBeTruthy();
   });
 
   it("hydrates current meeting slots ahead of historical scheduling failures", async () => {
@@ -1889,7 +1931,10 @@ describe("web app", () => {
         );
       }
 
-      if (url.endsWith("/api/meetings/requests/meeting_current/confirm") && init?.method === "POST") {
+      if (
+        url.endsWith("/api/meetings/requests/meeting_current/confirm") &&
+        init?.method === "POST"
+      ) {
         confirmed = true;
         return Promise.resolve(
           jsonResponse({
@@ -1910,7 +1955,9 @@ describe("web app", () => {
 
     render(<App />);
 
-    expect((await screen.findByRole("button", { name: "Slots available" })).hasAttribute("disabled")).toBe(true);
+    expect(
+      (await screen.findByRole("button", { name: "Slots available" })).hasAttribute("disabled")
+    ).toBe(true);
     expect(screen.getByText("Historical meeting request evidence (1)")).toBeTruthy();
     const slotButtons = await screen.findAllByRole("button", { name: /Confirm / });
     expect(slotButtons).toHaveLength(2);
@@ -1984,19 +2031,27 @@ describe("web app", () => {
       }
 
       if (url.endsWith("/api/conversations/conversation_1/messages")) {
-        return Promise.resolve(jsonResponse(humanReplySent ? [inboundMessage, humanReplyMessage] : [inboundMessage]));
+        return Promise.resolve(
+          jsonResponse(humanReplySent ? [inboundMessage, humanReplyMessage] : [inboundMessage])
+        );
       }
 
       if (url.endsWith("/api/conversations/conversation_1/takeover/briefing")) {
         return Promise.resolve(
-          new Response(JSON.stringify({ code: "NOT_FOUND", message: "Active human takeover not found" }), {
-            status: 404,
-            headers: { "Content-Type": "application/json" }
-          })
+          new Response(
+            JSON.stringify({ code: "NOT_FOUND", message: "Active human takeover not found" }),
+            {
+              status: 404,
+              headers: { "Content-Type": "application/json" }
+            }
+          )
         );
       }
 
-      if (url.endsWith("/api/conversations/conversation_1/human-reply") && init?.method === "POST") {
+      if (
+        url.endsWith("/api/conversations/conversation_1/human-reply") &&
+        init?.method === "POST"
+      ) {
         humanReplySent = true;
         return Promise.resolve(
           jsonResponse({
@@ -2042,11 +2097,17 @@ describe("web app", () => {
     fireEvent.click(within(humanReplyPanel).getByRole("button", { name: "Send human reply" }));
 
     await waitFor(() => {
-      expect(fetchSpy.mock.calls.some(([input]) => requestUrl(input).endsWith("/api/conversations/conversation_1/human-reply"))).toBe(
-        true
-      );
+      expect(
+        fetchSpy.mock.calls.some(([input]) =>
+          requestUrl(input).endsWith("/api/conversations/conversation_1/human-reply")
+        )
+      ).toBe(true);
     });
-    expect(await screen.findByText("Thanks, I will review commercials and respond with a revised option.")).toBeTruthy();
+    expect(
+      await screen.findByText(
+        "Thanks, I will review commercials and respond with a revised option."
+      )
+    ).toBeTruthy();
   });
 
   it("starts production follow-up automation from the conversation tab and shows persisted state", async () => {
@@ -2296,7 +2357,6 @@ describe("web app", () => {
     }
     fireEvent.click(openWorkspaceButton);
 
-    expect(await screen.findByText("Sales Workspace")).toBeTruthy();
     expect(await screen.findByLabelText("Lead profile")).toBeTruthy();
     expect(
       fetchSpy.mock.calls.some(([input]) => requestUrl(input).endsWith("/api/leads/lead_1"))
@@ -2316,11 +2376,15 @@ describe("web app", () => {
     const quickView = await screen.findByRole("dialog", { name: "Lead quick view" });
     expect(await within(quickView).findByText("Lead stage changed")).toBeTruthy();
     expect(window.location.pathname).toBe("/crm");
-    expect(screen.getByRole<HTMLInputElement>("searchbox", { name: "Search leads" }).value).toBe("Priya");
+    expect(screen.getByRole<HTMLInputElement>("searchbox", { name: "Search leads" }).value).toBe(
+      "Priya"
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Close Lead quick view" }));
     expect(screen.queryByRole("dialog", { name: "Lead quick view" })).toBeNull();
-    expect(screen.getByRole<HTMLInputElement>("searchbox", { name: "Search leads" }).value).toBe("Priya");
+    expect(screen.getByRole<HTMLInputElement>("searchbox", { name: "Search leads" }).value).toBe(
+      "Priya"
+    );
   });
 
   it("uses persisted task and business activity APIs in the routed lead profile", async () => {
@@ -2333,11 +2397,14 @@ describe("web app", () => {
     expect(await screen.findByText("Prepare discovery summary")).toBeTruthy();
     expect(screen.getAllByText("HIGH").length).toBeGreaterThanOrEqual(2);
     fireEvent.click(screen.getByRole("button", { name: "Complete Prepare discovery summary" }));
-    await waitFor(() => expect(
-      fetchSpy.mock.calls.some(([input, init]) =>
-        requestUrl(input).endsWith("/api/tasks/task_1/complete") && init?.method === "POST"
-      )
-    ).toBe(true));
+    await waitFor(() =>
+      expect(
+        fetchSpy.mock.calls.some(
+          ([input, init]) =>
+            requestUrl(input).endsWith("/api/tasks/task_1/complete") && init?.method === "POST"
+        )
+      ).toBe(true)
+    );
 
     fireEvent.click(screen.getByRole("tab", { name: "Sessions" }));
     expect(await screen.findByText("Lead stage changed")).toBeTruthy();
@@ -2354,9 +2421,13 @@ describe("web app", () => {
     const contactsHeading = await screen.findByRole("heading", { name: "Lead contacts", level: 2 });
     expect(contactsHeading.closest(".app-page-content")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /Needs follow-up/ }));
-    expect(screen.getByRole("button", { name: /Needs follow-up/ }).getAttribute("aria-pressed")).toBe("true");
+    expect(
+      screen.getByRole("button", { name: /Needs follow-up/ }).getAttribute("aria-pressed")
+    ).toBe("true");
     fireEvent.click(screen.getByRole("button", { name: "Save current view" }));
-    expect(JSON.parse(window.localStorage.getItem("shilabs.lead-contacts.saved-view") ?? "{}")).toMatchObject({
+    expect(
+      JSON.parse(window.localStorage.getItem("shilabs.lead-contacts.saved-view") ?? "{}")
+    ).toMatchObject({
       segment: "follow-up",
       sort: "activity"
     });
@@ -2366,7 +2437,9 @@ describe("web app", () => {
     expect(await within(contactQuickView).findByText("Lead stage changed")).toBeTruthy();
     expect(window.location.pathname).toBe("/contacts");
     fireEvent.click(screen.getByRole("button", { name: "Close Lead quick view" }));
-    expect(screen.getByRole("button", { name: /Needs follow-up/ }).getAttribute("aria-pressed")).toBe("true");
+    expect(
+      screen.getByRole("button", { name: /Needs follow-up/ }).getAttribute("aria-pressed")
+    ).toBe("true");
   });
 
   it("renders company cards and links account relationships to lead and deal workspaces", async () => {
@@ -2399,7 +2472,9 @@ describe("web app", () => {
     expect(screen.getByText("Queued And Failed Work")).toBeTruthy();
     expect(screen.getByText("Provider And Retry Errors")).toBeTruthy();
     expect(screen.getByText("Usage And Cost Evidence")).toBeTruthy();
-    expect(screen.getByText("No provider billing feed or token-cost evidence is persisted for R28")).toBeTruthy();
+    expect(
+      screen.getByText("No provider billing feed or token-cost evidence is persisted for R28")
+    ).toBeTruthy();
     expect(
       fetchSpy.mock.calls.some(([input]) => requestUrl(input).endsWith("/api/operations/dashboard"))
     ).toBe(true);

@@ -52,7 +52,7 @@ async function createEvent(input?: {
   maxAttempts?: number;
   workspaceId?: string;
 }) {
-  const workspaceId = input?.workspaceId ?? await defaultWorkspaceId();
+  const workspaceId = input?.workspaceId ?? (await defaultWorkspaceId());
   return workerPrisma.domainEventOutbox.create({
     data: {
       workspaceId,
@@ -356,16 +356,19 @@ describe("R12 domain event worker", () => {
     const jobId = queue.added.find((job) => job.jobId.startsWith(`${event.id}:`))?.jobId;
     if (!jobId) throw new Error("Expected queued process job");
 
-    await expect(processDomainEventJob({
-      eventId: event.id,
-      queueJobId: jobId,
-      workerId: "r12-isolation-worker"
-    })).rejects.toThrow("current lead context");
-    await expect(workerPrisma.domainEventOutbox.findUniqueOrThrow({ where: { id: event.id } }))
-      .resolves.toMatchObject({
-        status: "ATTENTION_REQUIRED",
-        lastErrorCode: "LEAD_CONTEXT_MISSING"
-      });
+    await expect(
+      processDomainEventJob({
+        eventId: event.id,
+        queueJobId: jobId,
+        workerId: "r12-isolation-worker"
+      })
+    ).rejects.toThrow("current lead context");
+    await expect(
+      workerPrisma.domainEventOutbox.findUniqueOrThrow({ where: { id: event.id } })
+    ).resolves.toMatchObject({
+      status: "ATTENTION_REQUIRED",
+      lastErrorCode: "LEAD_CONTEXT_MISSING"
+    });
   });
 
   it("recovers stale queued events and dispatches a fresh BullMQ job id", async () => {

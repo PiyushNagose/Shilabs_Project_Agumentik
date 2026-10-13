@@ -17,6 +17,10 @@ import { recalculateQualification } from "../qualification/qualification.service
 import { orchestrateSalesConversationForReply } from "../sales-conversation/sales-conversation-orchestrator.service.js";
 import { recalculateLeadScoreForSystem } from "../scoring/scoring.service.js";
 import {
+  requireHumanActionInTransaction,
+  stopAiInTransaction
+} from "../leads/lead-automation-ownership.service.js";
+import {
   explicitNegotiationSignals,
   hasExplicitDncStopSignal,
   intentRequiresHumanReviewGate,
@@ -442,98 +446,6 @@ async function createMeetingRequestForMeetingIntent(input: {
   }
 }
 
-async function stopLeadAutomationForCustomerIntent(input: {
-  client: Prisma.TransactionClient;
-  leadId: string;
-  reason: string;
-}): Promise<void> {
-  const stoppedAt = new Date();
-  const followUps = await input.client.followUpSequence.findMany({
-    where: { leadId: input.leadId, status: "ACTIVE" },
-    include: { attempts: { where: { status: "SCHEDULED" } } }
-  });
-  for (const sequence of followUps) {
-    const eventIds = sequence.attempts
-      .map((attempt) => attempt.domainEventId)
-      .filter((id): id is string => Boolean(id));
-    await input.client.followUpSequence.update({
-      where: { id: sequence.id },
-      data: { status: "STOPPED", stopReason: input.reason, stoppedAt }
-    });
-    await input.client.followUpAttempt.updateMany({
-      where: { sequenceId: sequence.id, status: "SCHEDULED" },
-      data: {
-        status: "CANCELLED",
-        failedAt: stoppedAt,
-        failureCode: input.reason,
-        failureMessage: "Customer intent stopped pending follow-up automation"
-      }
-    });
-    await input.client.domainEventOutbox.updateMany({
-      where: { id: { in: eventIds }, status: { in: ["PENDING", "QUEUED", "PROCESSING"] } },
-      data: {
-        status: "ATTENTION_REQUIRED",
-        deadLetteredAt: stoppedAt,
-        lastErrorCode: input.reason,
-        lastErrorMessage: "Customer intent stopped pending follow-up automation"
-      }
-    });
-    await input.client.auditEvent.create({
-      data: {
-        actorType: "SYSTEM",
-        entityType: "FollowUpSequence",
-        entityId: sequence.id,
-        action: "FOLLOW_UP_SEQUENCE_STOPPED",
-        after: { leadId: input.leadId, reason: input.reason }
-      }
-    });
-  }
-
-  const callingSequences = await input.client.callingSequence.findMany({
-    where: { leadId: input.leadId, status: "ACTIVE" },
-    include: { attempts: { where: { status: "SCHEDULED" } } }
-  });
-  for (const sequence of callingSequences) {
-    const eventIds = sequence.attempts
-      .map((attempt) => attempt.domainEventId)
-      .filter((id): id is string => Boolean(id));
-    await input.client.callingSequence.update({
-      where: { id: sequence.id },
-      data: { status: "STOPPED", stopReason: input.reason, stoppedAt }
-    });
-    await input.client.callingAttempt.updateMany({
-      where: { sequenceId: sequence.id, status: "SCHEDULED" },
-      data: {
-        status: "SKIPPED",
-        completedAt: stoppedAt,
-        failureCode: input.reason,
-        failureMessage: "Customer intent stopped pending calling automation"
-      }
-    });
-    await input.client.domainEventOutbox.updateMany({
-      where: {
-        OR: [{ id: { in: eventIds } }, { correlationId: sequence.id }],
-        status: { in: ["PENDING", "QUEUED", "PROCESSING"] }
-      },
-      data: {
-        status: "ATTENTION_REQUIRED",
-        deadLetteredAt: stoppedAt,
-        lastErrorCode: input.reason,
-        lastErrorMessage: "Customer intent stopped pending calling/WhatsApp automation"
-      }
-    });
-    await input.client.auditEvent.create({
-      data: {
-        actorType: "SYSTEM",
-        entityType: "CallingSequence",
-        entityId: sequence.id,
-        action: "CALLING_SEQUENCE_STOPPED",
-        after: { leadId: input.leadId, reason: input.reason }
-      }
-    });
-  }
-}
-
 async function createFailedRun(input: {
   inbound: EligibleReplyInboundRecord;
   idempotencyKey: string;
@@ -661,17 +573,13 @@ async function persistSuccessfulRun(input: {
       where: { id: input.inbound.id },
       data: { replyProcessingStatus: "PROCESSED" }
     });
+    const explicitDnc =
+      input.output.intent === "NOT_INTERESTED" && hasExplicitDncStopSignal(input.inbound.textBody);
     if (input.output.intent === "NOT_INTERESTED") {
       await tx.conversation.update({
         where: { id: conversationId },
         data: { mode: "PAUSED" }
       });
-      await stopLeadAutomationForCustomerIntent({
-        client: tx,
-        leadId: input.inbound.lead.id,
-        reason: "CUSTOMER_NOT_INTERESTED"
-      });
-      const explicitDnc = hasExplicitDncStopSignal(input.inbound.textBody);
       if (explicitDnc) {
         await tx.contact.update({
           where: { id: input.inbound.lead.contactId },
@@ -697,6 +605,27 @@ async function persistSuccessfulRun(input: {
           });
         }
       }
+    }
+    if (explicitDnc) {
+      await stopAiInTransaction({
+        client: tx,
+        leadId: input.inbound.lead.id,
+        reason: "DO_NOT_CONTACT",
+        actorType: "SYSTEM",
+        sourceType: "REPLY_PROCESSING",
+        sourceId: run.id,
+        correlationId: input.inbound.id
+      });
+    } else if (input.output.intent !== "UNCLEAR") {
+      await requireHumanActionInTransaction({
+        client: tx,
+        leadId: input.inbound.lead.id,
+        reason: `MEANINGFUL_CLIENT_REPLY:${input.output.intent}`,
+        actorType: "SYSTEM",
+        sourceType: "REPLY_PROCESSING",
+        sourceId: run.id,
+        correlationId: input.inbound.id
+      });
     }
     if (humanHandoffRequired) {
       await tx.conversation.update({

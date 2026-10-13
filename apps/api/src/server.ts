@@ -1,10 +1,15 @@
 import { createApp } from "./app.js";
-import { getApiConfig } from "@shilabs/shared-config";
+import {
+  assertProductionEnvironment,
+  emitOperationalAlert,
+  getApiConfig
+} from "@shilabs/shared-config";
 import { installExotelVoiceAiWebSocketServer } from "./modules/voice/voice-ai.realtime.js";
 import { installRealtimeWebSocketServer } from "./modules/realtime/realtime.service.js";
 import { prisma } from "./shared/prisma.js";
 import { closeReadinessDependencies } from "./shared/readiness.js";
 
+assertProductionEnvironment();
 const config = getApiConfig();
 const app = createApp();
 
@@ -29,6 +34,11 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
     process.exitCode = 0;
   } catch (error) {
     console.error("API shutdown failed", error);
+    await emitOperationalAlert({
+      category: "api_shutdown_failure",
+      severity: "critical",
+      message: error instanceof Error ? error.message : "API shutdown failed"
+    });
     process.exitCode = 1;
   }
 }

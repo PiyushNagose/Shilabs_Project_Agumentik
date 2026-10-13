@@ -7,6 +7,7 @@ import {
 } from "@shilabs/shared-config";
 import { PermanentDomainEventError } from "../domain-events/domain-event.errors.js";
 import { workerPrisma } from "../domain-events/domain-event.repository.js";
+import { assertWorkspaceIntegrationEnabled } from "../integrations/integration-guard.js";
 import {
   WorkerExotelVoiceProvider,
   WorkerTwilioVoiceProvider,
@@ -441,44 +442,54 @@ export async function executeCallingAutomationAttempt(input: {
         ? ["CONTACT_DO_NOT_CONTACT", "Contact is marked do-not-contact", "STOPPED"]
         : ["WON", "LOST", "DISQUALIFIED"].includes(lead.status)
           ? ["TERMINAL_LEAD", `Lead status ${lead.status} forbids calling`, "STOPPED"]
-          : conversation && ["HUMAN", "PAUSED", "CLOSED"].includes(conversation.mode)
+          : lead.automationOwnershipState !== "AI_ACTIVE"
             ? [
-                "AUTOMATION_PAUSED",
-                `Conversation mode ${conversation.mode} blocks calling`,
+                "AI_OWNERSHIP_INACTIVE",
+                `Lead automation ownership is ${lead.automationOwnershipState}`,
                 "STOPPED"
               ]
-            : activeTakeover
-              ? ["HUMAN_TAKEOVER_ACTIVE", "Human takeover blocks calling automation", "STOPPED"]
-              : inboundAfterSequence
-                ? ["INBOUND_REPLY_RECEIVED", "Inbound reply stopped calling automation", "STOPPED"]
-                : voiceConfig.nodeEnv === "production" && !voiceConfig.productionCallingEnabled
+            : conversation && ["HUMAN", "PAUSED", "CLOSED"].includes(conversation.mode)
+              ? [
+                  "AUTOMATION_PAUSED",
+                  `Conversation mode ${conversation.mode} blocks calling`,
+                  "STOPPED"
+                ]
+              : activeTakeover
+                ? ["HUMAN_TAKEOVER_ACTIVE", "Human takeover blocks calling automation", "STOPPED"]
+                : inboundAfterSequence
                   ? [
-                      "PRODUCTION_CALLING_DISABLED",
-                      "Production voice calling is disabled",
-                      "ATTENTION_REQUIRED"
+                      "INBOUND_REPLY_RECEIVED",
+                      "Inbound reply stopped calling automation",
+                      "STOPPED"
                     ]
-                  : voiceConfig.nodeEnv === "production" &&
-                      voiceConfig.complianceConsentMode !== "confirmed"
+                  : voiceConfig.nodeEnv === "production" && !voiceConfig.productionCallingEnabled
                     ? [
-                        "VOICE_CONSENT_NOT_CONFIRMED",
-                        "Production calling consent/compliance is not confirmed",
+                        "PRODUCTION_CALLING_DISABLED",
+                        "Production voice calling is disabled",
                         "ATTENTION_REQUIRED"
                       ]
-                    : voiceConfig.nodeEnv !== "production" &&
-                        voiceConfig.e2eAllowedToNumbers.length > 0 &&
-                        !voiceConfig.e2eAllowedToNumbers.includes(normalizedToPhone)
+                    : voiceConfig.nodeEnv === "production" &&
+                        voiceConfig.complianceConsentMode !== "confirmed"
                       ? [
-                          "E2E_NUMBER_NOT_ALLOWED",
-                          "Destination number is not allowed for local E2E voice testing",
+                          "VOICE_CONSENT_NOT_CONFIRMED",
+                          "Production calling consent/compliance is not confirmed",
                           "ATTENTION_REQUIRED"
                         ]
-                      : missingVoiceConfig(voiceConfig).length > 0
+                      : voiceConfig.nodeEnv !== "production" &&
+                          voiceConfig.e2eAllowedToNumbers.length > 0 &&
+                          !voiceConfig.e2eAllowedToNumbers.includes(normalizedToPhone)
                         ? [
-                            "VOICE_NOT_CONFIGURED",
-                            `Missing configuration: ${missingVoiceConfig(voiceConfig).join(", ")}`,
+                            "E2E_NUMBER_NOT_ALLOWED",
+                            "Destination number is not allowed for local E2E voice testing",
                             "ATTENTION_REQUIRED"
                           ]
-                        : null;
+                        : missingVoiceConfig(voiceConfig).length > 0
+                          ? [
+                              "VOICE_NOT_CONFIGURED",
+                              `Missing configuration: ${missingVoiceConfig(voiceConfig).join(", ")}`,
+                              "ATTENTION_REQUIRED"
+                            ]
+                          : null;
 
   if (block) {
     await markAttemptBlocked({
@@ -525,6 +536,11 @@ export async function executeCallingAutomationAttempt(input: {
       data: { status: "CALLING", startedAt: new Date(), voiceCallAttemptId: voiceCall.id }
     });
 
+    await assertWorkspaceIntegrationEnabled({
+      workspaceId: eventWorkspaceId,
+      provider: voiceConfig.provider === "exotel" ? "EXOTEL" : "TWILIO",
+      key: "voice"
+    });
     const provider = input.provider ?? createConfiguredVoiceProvider(voiceConfig);
     const result = await provider.createOutboundCall({
       to: normalizedToPhone ?? "",

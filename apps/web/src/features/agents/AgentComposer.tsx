@@ -370,6 +370,7 @@ export function AgentComposer({
               <button
                 aria-pressed={selectedId === node.id}
                 className={`composer-node${selectedId === node.id ? " selected" : ""}${issuesByNode.has(node.id) ? " invalid" : ""}`}
+                data-node-type={node.type}
                 draggable={canManage}
                 key={node.id}
                 onClick={() => setSelectedId(node.id)}

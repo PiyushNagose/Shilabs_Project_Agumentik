@@ -13,6 +13,7 @@ import {
   type ProcessReplyOptions
 } from "../reply-processing/reply-processing.service.js";
 import { publishRealtimeEvent } from "../realtime/realtime.service.js";
+import { requireHumanActionInTransaction } from "../leads/lead-automation-ownership.service.js";
 
 type PersistedWhatsAppProvider = "META_WHATSAPP" | "TWILIO";
 type PublicWhatsAppProvider = "META_WHATSAPP" | "TWILIO_WHATSAPP";
@@ -114,10 +115,14 @@ function publicProvider(provider: PersistedWhatsAppProvider): PublicWhatsAppProv
   return provider === "META_WHATSAPP" ? "META_WHATSAPP" : "TWILIO_WHATSAPP";
 }
 
-async function findLeadForInboundWhatsApp(
-  waId: string
-): Promise<
-  | { ok: true; workspaceId: string; leadId: string; contactId: string; conversationId: string | null }
+async function findLeadForInboundWhatsApp(waId: string): Promise<
+  | {
+      ok: true;
+      workspaceId: string;
+      leadId: string;
+      contactId: string;
+      conversationId: string | null;
+    }
   | { ok: false; code: string; message: string }
 > {
   const normalized = normalizePhone(waId);
@@ -179,64 +184,14 @@ async function stopIncompatibleAutomation(
   leadId: string,
   workspaceId: string
 ): Promise<void> {
-  const stoppedAt = new Date();
-  const activeFollowUps = await tx.followUpSequence.findMany({
-    where: { leadId, workspaceId, status: "ACTIVE" },
-    include: { attempts: { where: { status: "SCHEDULED" } } }
+  await requireHumanActionInTransaction({
+    client: tx,
+    leadId,
+    reason: "MEANINGFUL_CLIENT_REPLY:WHATSAPP",
+    actorType: "PROVIDER",
+    sourceType: "WHATSAPP_WEBHOOK",
+    sourceId: workspaceId
   });
-  for (const sequence of activeFollowUps) {
-    await tx.followUpSequence.update({
-      where: { id: sequence.id },
-      data: { status: "STOPPED", stopReason: "WHATSAPP_REPLY_RECEIVED", stoppedAt }
-    });
-    await tx.followUpAttempt.updateMany({
-      where: { sequenceId: sequence.id, status: "SCHEDULED" },
-      data: {
-        status: "CANCELLED",
-        failedAt: stoppedAt,
-        failureCode: "WHATSAPP_REPLY_RECEIVED",
-        failureMessage: "WhatsApp reply received before scheduled follow-up executed"
-      }
-    });
-    await tx.domainEventOutbox.updateMany({
-      where: { workspaceId, correlationId: sequence.id, status: { in: ["PENDING", "QUEUED", "PROCESSING"] } },
-      data: {
-        status: "ATTENTION_REQUIRED",
-        deadLetteredAt: stoppedAt,
-        lastErrorCode: "WHATSAPP_REPLY_RECEIVED",
-        lastErrorMessage: "WhatsApp reply stopped pending follow-up automation"
-      }
-    });
-  }
-
-  const activeCallingSequences = await tx.callingSequence.findMany({
-    where: { leadId, workspaceId, status: "ACTIVE" },
-    include: { attempts: { where: { status: "SCHEDULED" } } }
-  });
-  for (const sequence of activeCallingSequences) {
-    await tx.callingSequence.update({
-      where: { id: sequence.id },
-      data: { status: "STOPPED", stopReason: "WHATSAPP_REPLY_RECEIVED", stoppedAt }
-    });
-    await tx.callingAttempt.updateMany({
-      where: { sequenceId: sequence.id, status: "SCHEDULED" },
-      data: {
-        status: "SKIPPED",
-        completedAt: stoppedAt,
-        failureCode: "WHATSAPP_REPLY_RECEIVED",
-        failureMessage: "WhatsApp reply received before scheduled call executed"
-      }
-    });
-    await tx.domainEventOutbox.updateMany({
-      where: { workspaceId, correlationId: sequence.id, status: { in: ["PENDING", "QUEUED", "PROCESSING"] } },
-      data: {
-        status: "ATTENTION_REQUIRED",
-        deadLetteredAt: stoppedAt,
-        lastErrorCode: "WHATSAPP_REPLY_RECEIVED",
-        lastErrorMessage: "WhatsApp reply stopped pending calling/WhatsApp automation"
-      }
-    });
-  }
 }
 
 export async function getMessagingHealth(input?: {

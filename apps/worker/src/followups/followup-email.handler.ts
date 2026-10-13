@@ -2,6 +2,7 @@ import type { DomainEventOutbox, Prisma } from "@prisma/client";
 import type { DomainEventHandlerMap } from "../domain-events/domain-event.processor.js";
 import { PermanentDomainEventError } from "../domain-events/domain-event.errors.js";
 import { workerPrisma } from "../domain-events/domain-event.repository.js";
+import { assertWorkspaceIntegrationEnabled } from "../integrations/integration-guard.js";
 import {
   WorkerAwsSesProvider,
   type WorkerEmailProvider
@@ -52,7 +53,9 @@ function followUpLeadNextAction(attempt: { stepIndex: number; scheduledAt: Date 
 }
 
 function isFollowUpLeadAction(value: string | null): boolean {
-  return value === "Send first follow-up email" || value?.startsWith("Send follow-up email ") === true;
+  return (
+    value === "Send first follow-up email" || value?.startsWith("Send follow-up email ") === true
+  );
 }
 
 async function hasProspectInboundAfter(input: { leadId: string; since: Date }): Promise<boolean> {
@@ -227,7 +230,10 @@ async function sendFollowUpEmail(input: {
 }): Promise<void> {
   const eventWorkspaceId = input.event.workspaceId;
   if (!eventWorkspaceId) {
-    throw new PermanentDomainEventError("WORKSPACE_CONTEXT_MISSING", "Follow-up event has no persisted workspace");
+    throw new PermanentDomainEventError(
+      "WORKSPACE_CONTEXT_MISSING",
+      "Follow-up event has no persisted workspace"
+    );
   }
   const attemptId = payloadString(input.event, "followUpAttemptId");
   if (!attemptId) {
@@ -241,7 +247,13 @@ async function sendFollowUpEmail(input: {
     where: { id: attemptId, sequence: { workspaceId: eventWorkspaceId } },
     include: {
       sequence: true,
-      lead: { include: { contact: true, conversations: { where: { channel: "EMAIL" }, take: 1 } } }
+      lead: {
+        include: {
+          contact: true,
+          intelligence: true,
+          conversations: { where: { channel: "EMAIL" }, take: 1 }
+        }
+      }
     }
   });
   if (!attempt) {
@@ -288,15 +300,29 @@ async function sendFollowUpEmail(input: {
       ? ["CONTACT_DO_NOT_CONTACT", "Contact is marked doNotContact"]
       : ["WON", "LOST", "DISQUALIFIED"].includes(lead.status)
         ? ["LEAD_STATUS_FORBIDS_OUTREACH", `Lead status ${lead.status} forbids outreach`]
-        : suppression
-          ? ["EMAIL_SUPPRESSED", `Email address is suppressed: ${suppression.reason}`]
-          : conversation && ["HUMAN", "PAUSED", "CLOSED"].includes(conversation.mode)
-            ? ["AUTOMATION_PAUSED", `Conversation mode ${conversation.mode} blocks automation`]
-            : activeTakeover
-              ? ["HUMAN_TAKEOVER_ACTIVE", "Human takeover blocks follow-up automation"]
-              : inboundAfterSequence
-                ? ["INBOUND_REPLY_RECEIVED", "Inbound reply stopped follow-up automation"]
-                : null;
+        : lead.automationOwnershipState !== "AI_ACTIVE"
+          ? [
+              "AI_OWNERSHIP_INACTIVE",
+              `Lead automation ownership is ${lead.automationOwnershipState}`
+            ]
+          : lead.intelligence?.aiControlStatus === "OFF"
+            ? ["AI_CONTROL_OFF", "Lead-level AI is switched off"]
+            : lead.intelligence?.aiControlStatus === "PAUSED"
+              ? ["AI_CONTROL_PAUSED", "Lead-level AI is paused"]
+              : lead.intelligence?.humanInterventionRequired
+                ? ["HUMAN_INTERVENTION_REQUIRED", "Lead-level controls require human intervention"]
+                : suppression
+                  ? ["EMAIL_SUPPRESSED", `Email address is suppressed: ${suppression.reason}`]
+                  : conversation && ["HUMAN", "PAUSED", "CLOSED"].includes(conversation.mode)
+                    ? [
+                        "AUTOMATION_PAUSED",
+                        `Conversation mode ${conversation.mode} blocks automation`
+                      ]
+                    : activeTakeover
+                      ? ["HUMAN_TAKEOVER_ACTIVE", "Human takeover blocks follow-up automation"]
+                      : inboundAfterSequence
+                        ? ["INBOUND_REPLY_RECEIVED", "Inbound reply stopped follow-up automation"]
+                        : null;
   if (blocked) {
     await markAttemptFailed({
       attemptId,
@@ -366,6 +392,11 @@ async function sendFollowUpEmail(input: {
     }
 
     try {
+      await assertWorkspaceIntegrationEnabled({
+        workspaceId: eventWorkspaceId,
+        provider: config.provider,
+        key: "default"
+      });
       const provider = input.provider ?? buildWorkerEmailProvider(config);
       const sent = await provider.sendEmail({
         to: outbound.toEmail,
@@ -386,7 +417,13 @@ async function sendFollowUpEmail(input: {
           const messageConversation =
             conversation ??
             (await tx.conversation.create({
-              data: { workspaceId: eventWorkspaceId, leadId: lead.id, channel: "EMAIL", mode: "AUTO", status: "OPEN" }
+              data: {
+                workspaceId: eventWorkspaceId,
+                leadId: lead.id,
+                channel: "EMAIL",
+                mode: "AUTO",
+                status: "OPEN"
+              }
             }));
           await tx.message.create({
             data: {

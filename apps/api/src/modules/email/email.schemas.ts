@@ -1,11 +1,7 @@
 import { z } from "zod";
 
 const optionalEmailBodySchema = z.string().trim().min(1).max(20000).optional();
-const emailAddressSchema = z
-  .email()
-  .trim()
-  .toLowerCase()
-  .max(320);
+const emailAddressSchema = z.email().trim().toLowerCase().max(320);
 
 export const sendEmailSchema = z
   .object({

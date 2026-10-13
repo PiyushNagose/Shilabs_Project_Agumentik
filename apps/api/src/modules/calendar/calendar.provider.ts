@@ -516,7 +516,9 @@ export class GoogleCalendarProvider implements CalendarProvider {
       throw new Error("Google Calendar event get response was malformed");
     }
     if (parsed.data.status === "cancelled") {
-      throw new Error("Google Calendar event read-after-write verification returned a cancelled event");
+      throw new Error(
+        "Google Calendar event read-after-write verification returned a cancelled event"
+      );
     }
     return parsed.data;
   }

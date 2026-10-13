@@ -82,6 +82,7 @@ const admin = {
   createdAt: agent.createdAt,
   updatedAt: agent.updatedAt
 } satisfies PublicUser;
+const salesRep = { ...admin, id: "user_2", role: "SALES_REP" } satisfies PublicUser;
 
 vi.mock("../../hooks/usePersistedResource.js", () => ({
   usePersistedResource: ({ scope }: { scope: string }) => ({
@@ -126,16 +127,18 @@ describe("AgentsWorkspace", () => {
   });
 
   it("opens the shared Agent Composer with the complete node palette", () => {
+    const onRouteChange = vi.fn();
     render(
       <AgentsWorkspace
         accessToken="token"
         currentUser={admin}
         initialAgentId="agent_1"
-        onRouteChange={vi.fn()}
+        onRouteChange={onRouteChange}
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Composer/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit Agent" }));
+    expect(onRouteChange).toHaveBeenCalledWith("agent_1", "composer");
     expect(screen.getByText("Visual behavior")).toBeTruthy();
     const palette = screen.getByLabelText("Composer nodes");
     for (const label of [
@@ -155,5 +158,25 @@ describe("AgentsWorkspace", () => {
     expect(screen.getAllByText("Evaluate context").length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: /Tool \/ CRM Action Proposal Agent/i }));
     expect(screen.getByText("Existing capability")).toBeTruthy();
+  });
+
+  it("opens a deep-linked Composer read-only for sales reps", () => {
+    render(
+      <AgentsWorkspace
+        accessToken="token"
+        currentUser={salesRep}
+        initialAgentId="agent_1"
+        initialTab="composer"
+        onRouteChange={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: "View Composer" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "Publish" }).hasAttribute("disabled")).toBe(true);
+    expect(
+      within(screen.getByLabelText("Composer nodes")).getByRole("button", { name: /Trigger/i })
+    ).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: "Preview" }).hasAttribute("disabled")).toBe(false);
   });
 });

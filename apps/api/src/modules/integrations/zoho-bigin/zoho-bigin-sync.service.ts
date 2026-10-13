@@ -112,6 +112,9 @@ export async function syncZohoLeadContacts(input: {
     lastCheckedAt: startedAt,
     lastError: null
   });
+  if (account.status === "DISABLED") {
+    throw new AppError(409, "CONFLICT", "Zoho Bigin integration is disabled");
+  }
 
   const run = await prisma.integrationSyncRun.create({
     data: {

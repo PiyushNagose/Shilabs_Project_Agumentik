@@ -15,7 +15,10 @@ const legacyRoleMap: Record<string, WorkspaceRole> = {
   SALES_REP: WorkspaceRole.SALES_REP
 };
 
-export async function resolveWorkspaceContext(userId: string, requestedWorkspaceId?: string): Promise<WorkspaceContext> {
+export async function resolveWorkspaceContext(
+  userId: string,
+  requestedWorkspaceId?: string
+): Promise<WorkspaceContext> {
   const membership = await prisma.workspaceMember.findFirst({
     where: {
       userId,
@@ -30,11 +33,13 @@ export async function resolveWorkspaceContext(userId: string, requestedWorkspace
     throw new AppError(403, "AUTHORIZATION_ERROR", "You are not a member of this workspace");
   }
 
-  let selected = membership ?? await prisma.workspaceMember.findFirst({
-    where: { userId, status: WorkspaceMemberStatus.ACTIVE },
-    include: { workspace: true },
-    orderBy: { joinedAt: "asc" }
-  });
+  let selected =
+    membership ??
+    (await prisma.workspaceMember.findFirst({
+      where: { userId, status: WorkspaceMemberStatus.ACTIVE },
+      include: { workspace: true },
+      orderBy: { joinedAt: "asc" }
+    }));
 
   if (!selected) {
     if (requestedWorkspaceId) {
@@ -46,16 +51,18 @@ export async function resolveWorkspaceContext(userId: string, requestedWorkspace
       create: { name: "Default Workspace", slug: "default", status: "ACTIVE" },
       update: {}
     });
-    selected = await prisma.workspaceMember.upsert({
-      where: { workspaceId_userId: { workspaceId: workspace.id, userId } },
-      create: {
-        workspaceId: workspace.id,
-        userId,
-        role: legacyRoleMap[user?.role ?? ""] ?? WorkspaceRole.VIEWER,
-        status: WorkspaceMemberStatus.ACTIVE
-      },
-      update: { status: WorkspaceMemberStatus.ACTIVE }
-    }).then((member) => ({ ...member, workspace }));
+    selected = await prisma.workspaceMember
+      .upsert({
+        where: { workspaceId_userId: { workspaceId: workspace.id, userId } },
+        create: {
+          workspaceId: workspace.id,
+          userId,
+          role: legacyRoleMap[user?.role ?? ""] ?? WorkspaceRole.VIEWER,
+          status: WorkspaceMemberStatus.ACTIVE
+        },
+        update: { status: WorkspaceMemberStatus.ACTIVE }
+      })
+      .then((member) => ({ ...member, workspace }));
   }
 
   if (!selected) {
@@ -81,32 +88,56 @@ export async function bootstrapDefaultWorkspace(): Promise<void> {
   });
 
   await prisma.$transaction(
-    users.map((user) => prisma.workspaceMember.upsert({
-      where: { workspaceId_userId: { workspaceId: workspace.id, userId: user.id } },
-      create: {
-        workspaceId: workspace.id,
-        userId: user.id,
-        role: legacyRoleMap[user.role] ?? WorkspaceRole.VIEWER,
-        status: WorkspaceMemberStatus.ACTIVE
-      },
-      update: { status: WorkspaceMemberStatus.ACTIVE }
-    }))
+    users.map((user) =>
+      prisma.workspaceMember.upsert({
+        where: { workspaceId_userId: { workspaceId: workspace.id, userId: user.id } },
+        create: {
+          workspaceId: workspace.id,
+          userId: user.id,
+          role: legacyRoleMap[user.role] ?? WorkspaceRole.VIEWER,
+          status: WorkspaceMemberStatus.ACTIVE
+        },
+        update: { status: WorkspaceMemberStatus.ACTIVE }
+      })
+    )
   );
 
   const scopedModels: (keyof typeof prisma)[] = [
-    "company", "contact", "pipelineStage", "lead", "deal", "activity", "auditEvent",
-    "conversation", "internalNotification", "meetingRequest", "proposal", "followUpSequence",
-    "callingSequence", "outboundWhatsAppMessage", "message", "integrationAccount",
-    "externalRecordMapping", "integrationSyncRun", "domainEventOutbox",
-    "voiceCallAttempt", "voiceProviderEvent", "whatsAppProviderEvent", "outboundEmail",
-    "emailProviderEvent", "inboundEmail"
+    "company",
+    "contact",
+    "pipelineStage",
+    "lead",
+    "deal",
+    "activity",
+    "auditEvent",
+    "conversation",
+    "internalNotification",
+    "meetingRequest",
+    "proposal",
+    "followUpSequence",
+    "callingSequence",
+    "outboundWhatsAppMessage",
+    "message",
+    "integrationAccount",
+    "externalRecordMapping",
+    "integrationSyncRun",
+    "domainEventOutbox",
+    "voiceCallAttempt",
+    "voiceProviderEvent",
+    "whatsAppProviderEvent",
+    "outboundEmail",
+    "emailProviderEvent",
+    "inboundEmail"
   ];
   for (const model of scopedModels) {
     // Prisma delegates are dynamically indexed only during one-time legacy backfill.
     // eslint-disable-next-line @typescript-eslint/unbound-method
     const delegate = prisma[model] as { updateMany?: (args: unknown) => Promise<unknown> };
     if (delegate.updateMany) {
-      await delegate.updateMany({ where: { workspaceId: null }, data: { workspaceId: workspace.id } });
+      await delegate.updateMany({
+        where: { workspaceId: null },
+        data: { workspaceId: workspace.id }
+      });
     }
   }
 }

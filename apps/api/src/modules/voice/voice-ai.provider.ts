@@ -93,7 +93,8 @@ export class OpenAIRealtimeVoiceAIProvider implements VoiceAIProvider {
         JSON.stringify({
           type: "response.create",
           response: {
-            instructions: "Greet the customer, identify Shilabs, and ask if they have a minute to talk.",
+            instructions:
+              "Greet the customer, identify Shilabs, and ask if they have a minute to talk.",
             modalities: ["audio", "text"]
           }
         })
@@ -113,7 +114,8 @@ export class OpenAIRealtimeVoiceAIProvider implements VoiceAIProvider {
       }
       if (type === "response.output_audio_transcript.done") {
         const transcript = stringValue(event.transcript);
-        if (transcript) input.onTranscript({ speaker: "assistant", text: transcript, at: nowIso() });
+        if (transcript)
+          input.onTranscript({ speaker: "assistant", text: transcript, at: nowIso() });
       }
     });
 
@@ -178,9 +180,13 @@ async function synthesizeWithWindowsSapi(input: {
     "$s.Dispose();"
   ].join(" ");
   await new Promise<void>((resolve, reject) => {
-    const child = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command], {
-      windowsHide: true
-    });
+    const child = spawn(
+      "powershell.exe",
+      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+      {
+        windowsHide: true
+      }
+    );
     let stderr = "";
     child.stderr.on("data", (data: Buffer) => {
       stderr += data.toString();
@@ -198,7 +204,11 @@ async function synthesizeWithWindowsSapi(input: {
   }
 }
 
-function sendPcmChunks(input: { pcm: Buffer; onAudio: (payload: string) => void; sampleRate: number }): void {
+function sendPcmChunks(input: {
+  pcm: Buffer;
+  onAudio: (payload: string) => void;
+  sampleRate: number;
+}): void {
   const chunkBytes = Math.max(640, Math.floor(input.sampleRate * 2 * 0.1));
   for (let offset = 0; offset < input.pcm.length; offset += chunkBytes) {
     input.onAudio(input.pcm.subarray(offset, offset + chunkBytes).toString("base64"));
@@ -250,7 +260,11 @@ export class LocalVoskWindowsVoiceAIProvider implements VoiceAIProvider {
             sampleRate: this.config.voiceAi.sampleRate,
             voiceName: this.config.voiceAi.localTtsVoiceName
           });
-          sendPcmChunks({ pcm, onAudio: input.onAudio, sampleRate: this.config.voiceAi.sampleRate });
+          sendPcmChunks({
+            pcm,
+            onAudio: input.onAudio,
+            sampleRate: this.config.voiceAi.sampleRate
+          });
         })
         .catch(() => undefined)
         .finally(() => {
@@ -294,7 +308,9 @@ export class LocalVoskWindowsVoiceAIProvider implements VoiceAIProvider {
         responseInFlight = false;
       })().catch(() => {
         terminalHandoff = true;
-        speak("I am sorry, I could not process that clearly. A Shilabs teammate will follow up with you.");
+        speak(
+          "I am sorry, I could not process that clearly. A Shilabs teammate will follow up with you."
+        );
         responseInFlight = false;
       });
     };

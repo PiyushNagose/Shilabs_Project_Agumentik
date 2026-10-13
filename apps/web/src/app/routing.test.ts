@@ -47,15 +47,63 @@ describe("app routing", () => {
     expect(appPath({ id: "deals", leadId: null, dealId: "deal/one" })).toBe("/deals/deal%2Fone");
   });
 
-  it("preserves Phase 6 agent deep links", () => {
-    window.history.replaceState(null, "", "/agents/agent%2Fone");
+  it("preserves Phase 11 order quick-view deep links", () => {
+    window.history.replaceState(null, "", "/orders/order%2Fone");
+    expect(parseAppRoute(navigationByRole.ADMIN)).toEqual({
+      id: "orders",
+      leadId: null,
+      orderId: "order/one"
+    });
+    expect(appPath({ id: "orders", leadId: null, orderId: "order/one" })).toBe(
+      "/orders/order%2Fone"
+    );
+    expect(navigationByRole.SALES_MANAGER).toContain("orders");
+    expect(navigationByRole.SALES_REP).toContain("orders");
+  });
+
+  it("preserves agent detail and Composer deep links", () => {
+    window.history.replaceState(null, "", "/agents/agent%2Fone?tab=composer");
     expect(parseAppRoute(navigationByRole.ADMIN)).toEqual({
       id: "agents",
       leadId: null,
-      agentId: "agent/one"
+      agentId: "agent/one",
+      agentTab: "composer"
     });
-    expect(appPath({ id: "agents", leadId: null, agentId: "agent/one" })).toBe(
-      "/agents/agent%2Fone"
-    );
+    expect(
+      appPath({ id: "agents", leadId: null, agentId: "agent/one", agentTab: "composer" })
+    ).toBe("/agents/agent%2Fone?tab=composer");
+  });
+
+  it("preserves workflow builder deep links", () => {
+    window.history.replaceState(null, "", "/workflows/workflow%2Fone?tab=builder");
+    expect(parseAppRoute(navigationByRole.ADMIN)).toEqual({
+      id: "workflows",
+      leadId: null,
+      workflowId: "workflow/one",
+      workflowTab: "builder"
+    });
+    expect(
+      appPath({ id: "workflows", leadId: null, workflowId: "workflow/one", workflowTab: "builder" })
+    ).toBe("/workflows/workflow%2Fone?tab=builder");
+  });
+
+  it("allows integration management only for admins and managers", () => {
+    window.history.replaceState(null, "", "/integrations");
+    expect(parseAppRoute(navigationByRole.ADMIN)).toEqual({ id: "integrations", leadId: null });
+    expect(parseAppRoute(navigationByRole.SALES_MANAGER)).toEqual({
+      id: "integrations",
+      leadId: null
+    });
+    expect(parseAppRoute(navigationByRole.SALES_REP)).toEqual({ id: "dashboard", leadId: null });
+  });
+
+  it("allows the AI command center only for admins and managers", () => {
+    window.history.replaceState(null, "", "/ai-command-center");
+    expect(parseAppRoute(navigationByRole.ADMIN)).toEqual({ id: "command-center", leadId: null });
+    expect(parseAppRoute(navigationByRole.SALES_MANAGER)).toEqual({
+      id: "command-center",
+      leadId: null
+    });
+    expect(parseAppRoute(navigationByRole.SALES_REP)).toEqual({ id: "dashboard", leadId: null });
   });
 });

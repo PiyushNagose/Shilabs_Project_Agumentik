@@ -26,7 +26,9 @@ async function cleanup(): Promise<void> {
     where: { leadId: { in: leadIds } },
     data: { currentVersionId: null, approvedVersionId: null }
   });
-  await prisma.proposalStatusChange.deleteMany({ where: { proposal: { leadId: { in: leadIds } } } });
+  await prisma.proposalStatusChange.deleteMany({
+    where: { proposal: { leadId: { in: leadIds } } }
+  });
   await prisma.proposalVersion.deleteMany({ where: { proposal: { leadId: { in: leadIds } } } });
   await prisma.proposal.deleteMany({ where: { leadId: { in: leadIds } } });
   await prisma.lead.deleteMany({ where: { id: { in: leadIds } } });
@@ -70,7 +72,12 @@ async function seedProposalWithCorrection(): Promise<{ proposalId: string }> {
     data: { companyId: company.id, firstName: "R25", lastName: "Prospect" }
   });
   const lead = await prisma.lead.create({
-    data: { companyId: company.id, contactId: contact.id, source: "R25_API_TEST", stageId: stage.id }
+    data: {
+      companyId: company.id,
+      contactId: contact.id,
+      source: "R25_API_TEST",
+      stageId: stage.id
+    }
   });
   const proposal = await prisma.proposal.create({
     data: {

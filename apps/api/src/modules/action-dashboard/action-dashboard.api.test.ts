@@ -266,7 +266,9 @@ describe("R19 action dashboard API", () => {
       ])
     );
     expect(["AVAILABLE", "NOT_AVAILABLE"]).toContain(adminDashboard.meetings.status);
-    expect(adminDashboard.meetings.items.every((item) => item.sourceEntityType === "MeetingRequest")).toBe(true);
+    expect(
+      adminDashboard.meetings.items.every((item) => item.sourceEntityType === "MeetingRequest")
+    ).toBe(true);
 
     const repResponse = await request(app)
       .get("/api/action-dashboard")

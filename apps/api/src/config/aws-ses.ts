@@ -35,10 +35,7 @@ const rawAwsSesConfigSchema = z.object({
   AWS_SES_CONFIGURATION_SET: z.string().trim().default(""),
   AWS_SES_ACCESS_KEY_ID: z.string().trim().default(""),
   AWS_SES_SECRET_ACCESS_KEY: z.string().trim().default(""),
-  AWS_SES_USE_DEFAULT_CREDENTIAL_CHAIN: z
-    .enum(["true", "false"])
-    .catch("false")
-    .default("false"),
+  AWS_SES_USE_DEFAULT_CREDENTIAL_CHAIN: z.enum(["true", "false"]).catch("false").default("false"),
   AWS_SES_WEBHOOK_SECRET: z.string().trim().default(""),
   AWS_SES_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
   AWS_SES_MAX_RETRIES: z.coerce.number().int().min(0).max(5).default(1)

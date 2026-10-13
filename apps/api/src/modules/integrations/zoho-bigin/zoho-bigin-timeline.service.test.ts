@@ -83,7 +83,9 @@ async function createMappedActivity(): Promise<string> {
     update: {}
   });
   const stage = await prisma.pipelineStage.findUniqueOrThrow({ where: { key: "NEW" } });
-  const company = await prisma.company.create({ data: { workspaceId: workspace.id, name: "R4 Timeline Company" } });
+  const company = await prisma.company.create({
+    data: { workspaceId: workspace.id, name: "R4 Timeline Company" }
+  });
   const contact = await prisma.contact.create({
     data: {
       workspaceId: workspace.id,

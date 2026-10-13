@@ -122,7 +122,9 @@ export async function updateConversationModeWithAudit(input: {
         include: conversationInclude
       });
       const clearsHumanTakeover =
-        conversation.mode === "AUTO" || conversation.mode === "DRAFT_ONLY" || conversation.mode === "CLOSED";
+        conversation.mode === "AUTO" ||
+        conversation.mode === "DRAFT_ONLY" ||
+        conversation.mode === "CLOSED";
       const activeTakeovers = clearsHumanTakeover
         ? await transaction.humanTakeover.findMany({
             where: { conversationId: input.conversationId, status: "ACTIVE" },

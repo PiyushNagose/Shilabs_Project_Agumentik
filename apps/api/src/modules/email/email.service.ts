@@ -421,12 +421,14 @@ async function recordSendFailure(input: {
 export async function getAwsSesHealth(input?: {
   env?: NodeJS.ProcessEnv;
   provider?: EmailProvider;
+  workspaceId?: string;
 }): Promise<IntegrationHealthDto> {
   const checkedAt = new Date();
   const config = getSelectedEmailProviderConfig(input?.env);
 
   if (config.status === "NOT_CONFIGURED") {
     const account = await upsertIntegrationAccount({
+      workspaceId: input?.workspaceId,
       provider: config.provider,
       key: "default",
       displayName: displayEmailProvider(config.provider),
@@ -459,6 +461,7 @@ export async function getAwsSesHealth(input?: {
       ? IntegrationAccountStatus.CONFIGURED
       : IntegrationAccountStatus.ERROR;
     const account = await upsertIntegrationAccount({
+      workspaceId: input?.workspaceId,
       provider: config.provider,
       key: "default",
       displayName: displayEmailProvider(config.provider),
@@ -487,6 +490,7 @@ export async function getAwsSesHealth(input?: {
   } catch (error) {
     const lastError = sanitizeError(error);
     const account = await upsertIntegrationAccount({
+      workspaceId: input?.workspaceId,
       provider: config.provider,
       key: "default",
       displayName: displayEmailProvider(config.provider),
@@ -1141,8 +1145,21 @@ async function findLeadForInboundEmail(input: {
   headers: Map<string, string>;
   notification: SesInboundNotification;
 }): Promise<
-  | { ok: true; workspaceId: string; leadId: string; contactId: string; conversationId: string | null }
-  | { ok: false; code: string; message: string; workspaceId?: string; leadId?: string; contactId?: string }
+  | {
+      ok: true;
+      workspaceId: string;
+      leadId: string;
+      contactId: string;
+      conversationId: string | null;
+    }
+  | {
+      ok: false;
+      code: string;
+      message: string;
+      workspaceId?: string;
+      leadId?: string;
+      contactId?: string;
+    }
 > {
   const explicitLeadId =
     input.headers.get("x-shilabs-lead-id") ??
@@ -1174,7 +1191,11 @@ async function findLeadForInboundEmail(input: {
       };
     }
     if (!lead.workspaceId) {
-      return { ok: false, code: "WORKSPACE_CONTEXT_MISSING", message: "Referenced lead has no persisted workspace" };
+      return {
+        ok: false,
+        code: "WORKSPACE_CONTEXT_MISSING",
+        message: "Referenced lead has no persisted workspace"
+      };
     }
     return {
       ok: true,
@@ -1225,7 +1246,11 @@ async function findLeadForInboundEmail(input: {
         };
       }
       if (!outbound.lead.workspaceId) {
-        return { ok: false, code: "WORKSPACE_CONTEXT_MISSING", message: "Referenced lead has no persisted workspace" };
+        return {
+          ok: false,
+          code: "WORKSPACE_CONTEXT_MISSING",
+          message: "Referenced lead has no persisted workspace"
+        };
       }
       return {
         ok: true,
@@ -1262,7 +1287,11 @@ async function findLeadForInboundEmail(input: {
         };
       }
       if (!outbound.lead.workspaceId) {
-        return { ok: false, code: "WORKSPACE_CONTEXT_MISSING", message: "Referenced lead has no persisted workspace" };
+        return {
+          ok: false,
+          code: "WORKSPACE_CONTEXT_MISSING",
+          message: "Referenced lead has no persisted workspace"
+        };
       }
       return {
         ok: true,
@@ -1307,7 +1336,11 @@ async function findLeadForInboundEmail(input: {
     };
   }
   if (!lead.workspaceId) {
-    return { ok: false, code: "WORKSPACE_CONTEXT_MISSING", message: "Matched lead has no persisted workspace" };
+    return {
+      ok: false,
+      code: "WORKSPACE_CONTEXT_MISSING",
+      message: "Matched lead has no persisted workspace"
+    };
   }
   return {
     ok: true,

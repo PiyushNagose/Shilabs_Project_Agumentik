@@ -12,6 +12,8 @@ import {
 } from "../leads/lead.permissions.js";
 import { publishRealtimeEvent } from "../realtime/realtime.service.js";
 import type { CreateTaskInput, ListTasksQuery, UpdateTaskInput } from "./task.schemas.js";
+import { completeHumanAction } from "../leads/lead-automation-ownership.service.js";
+import { autoStartLeadAiAutomation } from "../followups/lead-ai-automation.service.js";
 
 const taskInclude = { assignedToUser: true } satisfies Prisma.TaskInclude;
 type TaskRecord = Prisma.TaskGetPayload<{ include: typeof taskInclude }>;
@@ -457,5 +459,19 @@ export async function completeTask(actor: AuthenticatedUser, taskId: string): Pr
     leadId: existing.leadId,
     taskId
   });
+  if (existing.isNextAction) {
+    const ownership = await completeHumanAction({
+      leadId,
+      reason: "NEXT_ACTION_TASK_COMPLETED",
+      actorType: "USER",
+      actorId: actor.id,
+      sourceType: "TASK",
+      sourceId: taskId,
+      correlationId
+    });
+    if (ownership.activated) {
+      await autoStartLeadAiAutomation(actor, leadId, { cycleKey: `task:${taskId}` });
+    }
+  }
   return toTaskDto(task);
 }

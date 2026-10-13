@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  mergeCrmRealtimeRefreshPlans,
-  planCrmRealtimeRefresh
-} from "./CrmWorkspace.js";
+import { mergeCrmRealtimeRefreshPlans, planCrmRealtimeRefresh } from "./CrmWorkspace.js";
 
 describe("CRM realtime refresh planning", () => {
   it("targets follow-up domain events without requesting a full workspace reload", () => {

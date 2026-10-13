@@ -1,5 +1,13 @@
 import type React from "react";
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import { Icon } from "./Icon.js";
 
 type ToastTone = "success" | "error";
@@ -72,7 +80,9 @@ export function ToastProvider({ children }: { children: React.ReactNode }): Reac
       const key = toastKey(toast);
 
       setToasts((current) => {
-        const withoutDuplicate = current.filter((item) => toastKey(item) !== key && item.id !== toast.id);
+        const withoutDuplicate = current.filter(
+          (item) => toastKey(item) !== key && item.id !== toast.id
+        );
         return [toast, ...withoutDuplicate].slice(0, 4);
       });
 

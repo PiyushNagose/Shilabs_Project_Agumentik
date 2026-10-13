@@ -23,7 +23,10 @@ export type RealtimeEntityType =
   | "operations"
   | "notifications"
   | "domain-event"
-  | "agent";
+  | "agent"
+  | "workflow"
+  | "integration"
+  | "order";
 
 export interface RealtimeUpdateEvent {
   type: "realtime:update" | "realtime:reconnected";
@@ -72,7 +75,10 @@ function isRealtimeUpdate(value: unknown): value is RealtimeUpdateEvent {
       "operations",
       "notifications",
       "domain-event",
-      "agent"
+      "agent",
+      "workflow",
+      "integration",
+      "order"
     ].includes(String((value as { entityType?: unknown }).entityType))
   );
 }

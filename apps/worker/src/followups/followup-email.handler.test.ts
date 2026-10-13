@@ -2,7 +2,10 @@ import crypto from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { workerPrisma } from "../domain-events/domain-event.repository.js";
 import { sendFollowUpEmail } from "./followup-email.handler.js";
-import type { WorkerEmailProvider, WorkerEmailSendInput } from "../integrations/aws-ses.provider.js";
+import type {
+  WorkerEmailProvider,
+  WorkerEmailSendInput
+} from "../integrations/aws-ses.provider.js";
 import type { TimelineSyncer, TimelineSyncResult } from "./zoho-timeline.syncer.js";
 
 class TestEmailProvider implements WorkerEmailProvider {
@@ -25,7 +28,11 @@ class TestTimelineSyncer implements TimelineSyncer {
   public syncActivity(input: { activityId: string }): Promise<TimelineSyncResult> {
     this.calls.push(input.activityId);
     return Promise.resolve(
-      this.results.shift() ?? { status: "SYNCED", externalRecordId: "zoho-note-default", lastError: null }
+      this.results.shift() ?? {
+        status: "SYNCED",
+        externalRecordId: "zoho-note-default",
+        lastError: null
+      }
     );
   }
 }
@@ -40,16 +47,35 @@ async function cleanup(): Promise<void> {
       ]
     }
   });
-  await workerPrisma.outboundWhatsAppMessage.deleteMany({ where: { lead: { source: "r13-worker-followup" } } });
-  await workerPrisma.callingAttempt.deleteMany({ where: { lead: { source: "r13-worker-followup" } } });
-  await workerPrisma.callingSequence.deleteMany({ where: { lead: { source: "r13-worker-followup" } } });
-  await workerPrisma.followUpAttempt.deleteMany({ where: { lead: { source: "r13-worker-followup" } } });
-  await workerPrisma.followUpSequence.deleteMany({ where: { lead: { source: "r13-worker-followup" } } });
-  await workerPrisma.outboundEmail.deleteMany({ where: { lead: { source: "r13-worker-followup" } } });
-  await workerPrisma.message.deleteMany({ where: { conversation: { lead: { source: "r13-worker-followup" } } } });
-  await workerPrisma.conversation.deleteMany({ where: { lead: { source: "r13-worker-followup" } } });
+  await workerPrisma.outboundWhatsAppMessage.deleteMany({
+    where: { lead: { source: "r13-worker-followup" } }
+  });
+  await workerPrisma.callingAttempt.deleteMany({
+    where: { lead: { source: "r13-worker-followup" } }
+  });
+  await workerPrisma.callingSequence.deleteMany({
+    where: { lead: { source: "r13-worker-followup" } }
+  });
+  await workerPrisma.followUpAttempt.deleteMany({
+    where: { lead: { source: "r13-worker-followup" } }
+  });
+  await workerPrisma.followUpSequence.deleteMany({
+    where: { lead: { source: "r13-worker-followup" } }
+  });
+  await workerPrisma.outboundEmail.deleteMany({
+    where: { lead: { source: "r13-worker-followup" } }
+  });
+  await workerPrisma.message.deleteMany({
+    where: { conversation: { lead: { source: "r13-worker-followup" } } }
+  });
+  await workerPrisma.conversation.deleteMany({
+    where: { lead: { source: "r13-worker-followup" } }
+  });
   await workerPrisma.activity.deleteMany({ where: { lead: { source: "r13-worker-followup" } } });
   await workerPrisma.auditEvent.deleteMany({ where: { entityType: "FollowUpAttempt" } });
+  await workerPrisma.leadIntelligence.deleteMany({
+    where: { lead: { source: "r13-worker-followup" } }
+  });
   await workerPrisma.lead.deleteMany({ where: { source: "r13-worker-followup" } });
   await workerPrisma.contact.deleteMany({ where: { source: "r13-worker-followup" } });
   await workerPrisma.company.deleteMany({ where: { name: { startsWith: "R13 Worker" } } });
@@ -58,7 +84,9 @@ async function cleanup(): Promise<void> {
 async function fixture() {
   const workspace = await workerPrisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
   const stage = await workerPrisma.pipelineStage.findFirstOrThrow({ where: { key: "NEW" } });
-  const company = await workerPrisma.company.create({ data: { workspaceId: workspace.id, name: `R13 Worker ${crypto.randomUUID()}` } });
+  const company = await workerPrisma.company.create({
+    data: { workspaceId: workspace.id, name: `R13 Worker ${crypto.randomUUID()}` }
+  });
   const contact = await workerPrisma.contact.create({
     data: {
       workspaceId: workspace.id,
@@ -76,7 +104,8 @@ async function fixture() {
       companyId: company.id,
       contactId: contact.id,
       stageId: stage.id,
-      source: "r13-worker-followup"
+      source: "r13-worker-followup",
+      automationOwnershipState: "AI_ACTIVE"
     }
   });
   const conversation = await workerPrisma.conversation.create({
@@ -127,7 +156,9 @@ async function fixture() {
 async function outOfOrderFinalAttemptFixture() {
   const workspace = await workerPrisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
   const stage = await workerPrisma.pipelineStage.findFirstOrThrow({ where: { key: "NEW" } });
-  const company = await workerPrisma.company.create({ data: { workspaceId: workspace.id, name: `R13 Worker ${crypto.randomUUID()}` } });
+  const company = await workerPrisma.company.create({
+    data: { workspaceId: workspace.id, name: `R13 Worker ${crypto.randomUUID()}` }
+  });
   const contact = await workerPrisma.contact.create({
     data: {
       workspaceId: workspace.id,
@@ -147,7 +178,8 @@ async function outOfOrderFinalAttemptFixture() {
       companyId: company.id,
       contactId: contact.id,
       stageId: stage.id,
-      source: "r13-worker-followup"
+      source: "r13-worker-followup",
+      automationOwnershipState: "AI_ACTIVE"
     }
   });
   const conversation = await workerPrisma.conversation.create({
@@ -247,11 +279,42 @@ describe("R13 follow-up email worker handler", () => {
 
     expect(provider.calls).toHaveLength(1);
     expect(timelineSyncer.calls).toHaveLength(1);
-    await expect(workerPrisma.followUpAttempt.findUniqueOrThrow({ where: { id: attempt.id } }))
-      .resolves.toMatchObject({ status: "SENT", zohoSyncStatus: "SYNCED", zohoLastError: null });
     await expect(
-      workerPrisma.outboundEmail.findUniqueOrThrow({ where: { idempotencyKey: attempt.idempotencyKey } })
+      workerPrisma.followUpAttempt.findUniqueOrThrow({ where: { id: attempt.id } })
+    ).resolves.toMatchObject({ status: "SENT", zohoSyncStatus: "SYNCED", zohoLastError: null });
+    await expect(
+      workerPrisma.outboundEmail.findUniqueOrThrow({
+        where: { idempotencyKey: attempt.idempotencyKey }
+      })
     ).resolves.toMatchObject({ status: "SENT", providerMessageId: "ses-r13-1" });
+  }, 45000);
+
+  it("blocks a scheduled send when lead-level AI is paused", async () => {
+    const { event, attempt, lead, sequence } = await fixture();
+    if (!lead.workspaceId) throw new Error("Fixture lead requires a workspace");
+    await workerPrisma.leadIntelligence.create({
+      data: {
+        workspaceId: lead.workspaceId,
+        leadId: lead.id,
+        aiControlStatus: "PAUSED",
+        objections: [],
+        commitments: [],
+        customCadenceDays: [],
+        contextSnapshot: {},
+        evidence: []
+      }
+    });
+    const provider = new TestEmailProvider();
+
+    await expect(sendFollowUpEmail({ event, provider })).rejects.toThrow("Lead-level AI is paused");
+
+    expect(provider.calls).toHaveLength(0);
+    await expect(
+      workerPrisma.followUpAttempt.findUniqueOrThrow({ where: { id: attempt.id } })
+    ).resolves.toMatchObject({ status: "BLOCKED", failureCode: "AI_CONTROL_PAUSED" });
+    await expect(
+      workerPrisma.followUpSequence.findUniqueOrThrow({ where: { id: sequence.id } })
+    ).resolves.toMatchObject({ status: "STOPPED", stopReason: "AI_CONTROL_PAUSED" });
   }, 45000);
 
   it("advances lead next action to the next active scheduled follow-up after a send", async () => {
@@ -286,11 +349,12 @@ describe("R13 follow-up email worker handler", () => {
 
     await sendFollowUpEmail({ event, provider, env, timelineSyncer });
 
-    await expect(workerPrisma.lead.findUniqueOrThrow({ where: { id: lead.id } }))
-      .resolves.toMatchObject({
-        nextAction: "Send follow-up email 2",
-        nextActionAt: nextScheduledAt
-      });
+    await expect(
+      workerPrisma.lead.findUniqueOrThrow({ where: { id: lead.id } })
+    ).resolves.toMatchObject({
+      nextAction: "Send follow-up email 2",
+      nextActionAt: nextScheduledAt
+    });
   }, 45000);
 
   it("retries Zoho only after SES success and never resends", async () => {
@@ -307,13 +371,16 @@ describe("R13 follow-up email worker handler", () => {
       AWS_SES_SECRET_ACCESS_KEY: "test"
     };
 
-    await expect(sendFollowUpEmail({ event, provider, env, timelineSyncer })).rejects.toThrow("Zoho timeout");
+    await expect(sendFollowUpEmail({ event, provider, env, timelineSyncer })).rejects.toThrow(
+      "Zoho timeout"
+    );
     await sendFollowUpEmail({ event, provider, env, timelineSyncer });
 
     expect(provider.calls).toHaveLength(1);
     expect(timelineSyncer.calls).toHaveLength(2);
-    await expect(workerPrisma.followUpAttempt.findUniqueOrThrow({ where: { id: attempt.id } }))
-      .resolves.toMatchObject({ status: "SENT", zohoSyncStatus: "SYNCED" });
+    await expect(
+      workerPrisma.followUpAttempt.findUniqueOrThrow({ where: { id: attempt.id } })
+    ).resolves.toMatchObject({ status: "SENT", zohoSyncStatus: "SYNCED" });
   }, 45000);
 
   it("duplicate processing never creates duplicate Zoho timeline entries", async () => {
@@ -359,14 +426,18 @@ describe("R13 follow-up email worker handler", () => {
     );
 
     expect(provider.calls).toHaveLength(1);
-    await expect(workerPrisma.outboundEmail.findUniqueOrThrow({ where: { idempotencyKey: attempt.idempotencyKey } }))
-      .resolves.toMatchObject({ status: "SENT" });
-    await expect(workerPrisma.followUpAttempt.findUniqueOrThrow({ where: { id: attempt.id } }))
-      .resolves.toMatchObject({
-        status: "SENT",
-        zohoSyncStatus: "FAILED",
-        zohoLastError: "Missing configuration: ZOHO_BIGIN_CLIENT_ID"
-      });
+    await expect(
+      workerPrisma.outboundEmail.findUniqueOrThrow({
+        where: { idempotencyKey: attempt.idempotencyKey }
+      })
+    ).resolves.toMatchObject({ status: "SENT" });
+    await expect(
+      workerPrisma.followUpAttempt.findUniqueOrThrow({ where: { id: attempt.id } })
+    ).resolves.toMatchObject({
+      status: "SENT",
+      zohoSyncStatus: "FAILED",
+      zohoLastError: "Missing configuration: ZOHO_BIGIN_CLIENT_ID"
+    });
   }, 45000);
 
   it("does not complete R13 or create R23 when an earlier required attempt event is still queued", async () => {
@@ -390,15 +461,25 @@ describe("R13 follow-up email worker handler", () => {
 
     await sendFollowUpEmail({ event: finalEvent, provider, env, timelineSyncer });
 
-    await expect(workerPrisma.followUpAttempt.findUniqueOrThrow({ where: { id: finalAttempt.id } }))
-      .resolves.toMatchObject({ status: "SENT" });
-    await expect(workerPrisma.followUpSequence.findUniqueOrThrow({ where: { id: sequence.id } }))
-      .resolves.toMatchObject({ status: "ACTIVE", completedAt: null, currentStep: 2 });
-    await expect(workerPrisma.domainEventOutbox.findUniqueOrThrow({ where: { id: queuedMiddleEvent.id } }))
-      .resolves.toMatchObject({ status: "QUEUED" });
-    await expect(workerPrisma.callingSequence.count({ where: { leadId: lead.id } })).resolves.toBe(0);
-    await expect(workerPrisma.domainEventOutbox.count({
-      where: { eventType: "WHATSAPP_SEND_REQUESTED", payload: { path: ["leadId"], equals: lead.id } }
-    })).resolves.toBe(0);
+    await expect(
+      workerPrisma.followUpAttempt.findUniqueOrThrow({ where: { id: finalAttempt.id } })
+    ).resolves.toMatchObject({ status: "SENT" });
+    await expect(
+      workerPrisma.followUpSequence.findUniqueOrThrow({ where: { id: sequence.id } })
+    ).resolves.toMatchObject({ status: "ACTIVE", completedAt: null, currentStep: 2 });
+    await expect(
+      workerPrisma.domainEventOutbox.findUniqueOrThrow({ where: { id: queuedMiddleEvent.id } })
+    ).resolves.toMatchObject({ status: "QUEUED" });
+    await expect(workerPrisma.callingSequence.count({ where: { leadId: lead.id } })).resolves.toBe(
+      0
+    );
+    await expect(
+      workerPrisma.domainEventOutbox.count({
+        where: {
+          eventType: "WHATSAPP_SEND_REQUESTED",
+          payload: { path: ["leadId"], equals: lead.id }
+        }
+      })
+    ).resolves.toBe(0);
   }, 45000);
 });
