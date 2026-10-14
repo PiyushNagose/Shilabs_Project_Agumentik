@@ -55,7 +55,7 @@ export interface AppRouteState {
   tab?: DetailTab;
 }
 
-export type AgentDetailTab = "composer" | "executions" | "versions" | "overview";
+export type AgentDetailTab = "composer" | "executions" | "evaluation" | "versions" | "overview";
 export type WorkflowDetailTab = "builder" | "executions" | "versions" | "overview";
 
 export const appRoutes: Readonly<Record<AppRouteId, AppRouteDefinition>> = {
@@ -233,7 +233,11 @@ function isDetailTab(value: string | null): value is DetailTab {
 
 function isAgentDetailTab(value: string | null): value is AgentDetailTab {
   return (
-    value === "composer" || value === "executions" || value === "versions" || value === "overview"
+    value === "composer" ||
+    value === "executions" ||
+    value === "evaluation" ||
+    value === "versions" ||
+    value === "overview"
   );
 }
 function isWorkflowDetailTab(value: string | null): value is WorkflowDetailTab {

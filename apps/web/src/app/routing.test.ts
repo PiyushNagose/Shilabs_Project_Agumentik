@@ -72,6 +72,12 @@ describe("app routing", () => {
     expect(
       appPath({ id: "agents", leadId: null, agentId: "agent/one", agentTab: "composer" })
     ).toBe("/agents/agent%2Fone?tab=composer");
+
+    window.history.replaceState(null, "", "/agents/agent%2Fone?tab=evaluation");
+    expect(parseAppRoute(navigationByRole.ADMIN).agentTab).toBe("evaluation");
+    expect(
+      appPath({ id: "agents", leadId: null, agentId: "agent/one", agentTab: "evaluation" })
+    ).toBe("/agents/agent%2Fone?tab=evaluation");
   });
 
   it("preserves workflow builder deep links", () => {

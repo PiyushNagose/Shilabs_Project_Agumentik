@@ -33,7 +33,7 @@ import type {
 
 export { ApiClientError, apiBaseUrl, apiErrorMessage } from "./api/core.js";
 export { completeTask, listTasks, type TaskListParams } from "./api/tasks.js";
-export { listCompanies } from "./api/companies.js";
+export { createCompany, listCompanies, type CompanyBody } from "./api/companies.js";
 export {
   createOrder,
   getOrder,
@@ -56,7 +56,7 @@ export {
   validateAgentComposer,
   type AgentBody
 } from "./api/agents.js";
-export { listContacts } from "./api/contacts.js";
+export { createContact, listContacts, type ContactBody } from "./api/contacts.js";
 export {
   connectIntegration,
   disableIntegration,
@@ -111,6 +111,19 @@ export interface LeadListParams {
   pageSize?: number;
   sort?: "createdAt" | "lastActivityAt";
   direction?: "asc" | "desc";
+}
+
+export interface LeadBody {
+  companyId: string;
+  contactId: string;
+  ownerId?: string | null;
+  source: string;
+  requirement?: string | null;
+  serviceInterest?: string | null;
+  estimatedValue?: string | null;
+  currency?: string;
+  nextAction?: string | null;
+  nextActionAt?: string | null;
 }
 
 export interface ConversationListParams {
@@ -251,6 +264,13 @@ export function listLeads(
   params: LeadListParams
 ): Promise<PaginatedResponse<LeadDto>> {
   return apiRequest<PaginatedResponse<LeadDto>>(`/api/leads${toQueryString(params)}`, accessToken);
+}
+
+export function createLead(accessToken: string, body: LeadBody): Promise<LeadDto> {
+  return apiRequest<LeadDto>("/api/leads", accessToken, {
+    method: "POST",
+    body: JSON.stringify(body)
+  });
 }
 
 export function getLead(accessToken: string, leadId: string): Promise<LeadDto> {

@@ -160,7 +160,7 @@ export function LeadTaskList({
             >
               {completed ? <Check size={15} /> : null}
             </button>
-            <div>
+            <div className="task-content">
               <strong>{task.title}</strong>
               {task.description ? <p>{task.description}</p> : null}
               <span>

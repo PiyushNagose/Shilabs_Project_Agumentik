@@ -7,20 +7,23 @@ import {
   List,
   Mail,
   MapPin,
+  Plus,
   Search,
   SlidersHorizontal,
   UsersRound
 } from "lucide-react";
 import { useMemo, useState } from "react";
-import { Badge, Button, Drawer, Select } from "../../components/ui/index.js";
+import { Badge, Button, Drawer, Modal, Select } from "../../components/ui/index.js";
 import { StateBlock } from "../../components/StateBlock.js";
 import { usePersistedResource } from "../../hooks/usePersistedResource.js";
 import {
+  createCompany,
   listCompanies,
   listContacts,
   listLeadActivities,
   listLeads
 } from "../../services/api-client.js";
+import { apiErrorMessage } from "../../services/api/core.js";
 import { LeadTimeline, leadName } from "../leads/LeadExperience.js";
 import type { DetailTab } from "../leads/CrmWorkspace.js";
 
@@ -68,6 +71,117 @@ function websiteHref(company: CompanyDto): string | null {
   return /^https?:\/\//iu.test(company.website) ? company.website : `https://${company.website}`;
 }
 
+function CompanyCreateForm({
+  accessToken,
+  onCreated
+}: {
+  accessToken: string;
+  onCreated: () => Promise<void>;
+}): React.JSX.Element {
+  const [name, setName] = useState("");
+  const [website, setWebsite] = useState("");
+  const [industry, setIndustry] = useState("");
+  const [location, setLocation] = useState("");
+  const [employeeRange, setEmployeeRange] = useState("");
+  const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(): Promise<void> {
+    setSaving(true);
+    setError(null);
+    try {
+      await createCompany(accessToken, {
+        name: name.trim(),
+        website: website.trim() || null,
+        industry: industry.trim() || null,
+        location: location.trim() || null,
+        employeeRange: employeeRange.trim() || null,
+        notes: notes.trim() || null
+      });
+      await onCreated();
+    } catch (saveError) {
+      setError(apiErrorMessage(saveError, "The company could not be created."));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form
+      className="record-create-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void submit();
+      }}
+    >
+      <div className="record-create-grid">
+        <label>
+          Company name
+          <input
+            autoFocus
+            maxLength={160}
+            onChange={(event) => setName(event.target.value)}
+            required
+            value={name}
+          />
+        </label>
+        <label>
+          Website
+          <input
+            onChange={(event) => setWebsite(event.target.value)}
+            placeholder="example.com"
+            value={website}
+          />
+        </label>
+        <label>
+          Industry
+          <input
+            onChange={(event) => setIndustry(event.target.value)}
+            placeholder="Technology"
+            value={industry}
+          />
+        </label>
+        <label>
+          Location
+          <input
+            onChange={(event) => setLocation(event.target.value)}
+            placeholder="City, country"
+            value={location}
+          />
+        </label>
+        <label>
+          Company size
+          <input
+            onChange={(event) => setEmployeeRange(event.target.value)}
+            placeholder="51-200"
+            value={employeeRange}
+          />
+        </label>
+        <label className="record-create-wide">
+          Notes
+          <textarea
+            maxLength={1000}
+            onChange={(event) => setNotes(event.target.value)}
+            rows={3}
+            value={notes}
+          />
+        </label>
+      </div>
+      {error ? (
+        <p className="form-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <footer>
+        <Button disabled={saving || !name.trim()} type="submit" variant="primary">
+          {saving ? "Creating..." : "Create company"}
+        </Button>
+      </footer>
+    </form>
+  );
+}
+
 export function CompaniesWorkspace({
   accessToken,
   onOpenLead
@@ -80,6 +194,7 @@ export function CompaniesWorkspace({
   const [status, setStatus] = useState("");
   const [sort, setSort] = useState<CompanySort>("name");
   const [mode, setMode] = useState<CompanyMode>("grid");
+  const [createOpen, setCreateOpen] = useState(false);
   const [selectedCompanyId, setSelectedCompanyId] = useState<string | null>(null);
 
   const resource = usePersistedResource<CompaniesData>({
@@ -191,25 +306,30 @@ export function CompaniesWorkspace({
             <h2>Companies</h2>
             <p>{visibleCompanies.length} authorized accounts</p>
           </div>
-          <div className="view-toggle" aria-label="Company view">
-            <button
-              aria-label="Grid view"
-              aria-pressed={mode === "grid"}
-              className={mode === "grid" ? "active" : ""}
-              onClick={() => setMode("grid")}
-              type="button"
-            >
-              <Grid2X2 size={17} />
-            </button>
-            <button
-              aria-label="List view"
-              aria-pressed={mode === "list"}
-              className={mode === "list" ? "active" : ""}
-              onClick={() => setMode("list")}
-              type="button"
-            >
-              <List size={17} />
-            </button>
+          <div className="records-heading-actions">
+            <div className="view-toggle" aria-label="Company view">
+              <button
+                aria-label="Grid view"
+                aria-pressed={mode === "grid"}
+                className={mode === "grid" ? "active" : ""}
+                onClick={() => setMode("grid")}
+                type="button"
+              >
+                <Grid2X2 size={17} />
+              </button>
+              <button
+                aria-label="List view"
+                aria-pressed={mode === "list"}
+                className={mode === "list" ? "active" : ""}
+                onClick={() => setMode("list")}
+                type="button"
+              >
+                <List size={17} />
+              </button>
+            </div>
+            <Button onClick={() => setCreateOpen(true)} variant="primary">
+              <Plus size={17} /> New company
+            </Button>
           </div>
         </header>
         <div className="records-toolbar company-toolbar">
@@ -370,6 +490,16 @@ export function CompaniesWorkspace({
           </div>
         ) : null}
       </div>
+
+      <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="New company">
+        <CompanyCreateForm
+          accessToken={accessToken}
+          onCreated={async () => {
+            await resource.reload();
+            setCreateOpen(false);
+          }}
+        />
+      </Modal>
 
       <Drawer
         open={selectedCompanyId !== null}

@@ -12,11 +12,12 @@ export function usePersistedResource<T>(options: {
   optionsRef.current = options;
   const reloadRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const [state, setState] = useState<{
+    scope: string;
     data: T | null;
     loading: boolean;
     error: string | null;
     updatedAt: string | null;
-  }>({ data: null, loading: true, error: null, updatedAt: null });
+  }>({ scope: options.scope, data: null, loading: true, error: null, updatedAt: null });
 
   useEffect(() => {
     let disposed = false;
@@ -24,7 +25,8 @@ export function usePersistedResource<T>(options: {
     let pending = false;
     let running: Promise<void> | null = null;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    setState({ data: null, loading: true, error: null, updatedAt: null });
+    const scope = options.scope;
+    setState({ scope, data: null, loading: true, error: null, updatedAt: null });
 
     // Serialize fetches and retain one trailing invalidation received during a fetch.
     const reload = (): Promise<void> => {
@@ -40,7 +42,13 @@ export function usePersistedResource<T>(options: {
           try {
             const data = await optionsRef.current.load();
             if (!isDisposed()) {
-              setState({ data, loading: false, error: null, updatedAt: new Date().toISOString() });
+              setState({
+                scope,
+                data,
+                loading: false,
+                error: null,
+                updatedAt: new Date().toISOString()
+              });
             }
           } catch {
             if (!isDisposed()) {
@@ -77,5 +85,14 @@ export function usePersistedResource<T>(options: {
   }, [options.scope, subscribe]);
 
   const reload = useCallback(() => reloadRef.current(), []);
-  return { ...state, reload };
+  if (state.scope !== options.scope) {
+    return { data: null, loading: true, error: null, updatedAt: null, reload };
+  }
+  return {
+    data: state.data,
+    loading: state.loading,
+    error: state.error,
+    updatedAt: state.updatedAt,
+    reload
+  };
 }

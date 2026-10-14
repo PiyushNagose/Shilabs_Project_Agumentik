@@ -1532,25 +1532,38 @@ Example complete lead flow:
 
 ```text
 Lead created
-→ owner assigned
-→ automation/workflow starts
-→ outreach sent
-→ customer replies
-→ reply persisted
-→ AI classifies
-→ qualification updates
-→ activity timeline records
-→ next action/task updates
-→ realtime invalidation occurs
-→ salesperson sees update
-→ proposal/meeting/handoff triggered
-→ deal progresses
-→ order may be created
-→ analytics and AI overview update
-→ full audit trail preserved
+-> owner assigned and ownership is HUMAN_ACTIVE
+-> automatic acknowledgement is sent while ownership remains HUMAN_ACTIVE
+-> manager performs a substantive human action, such as sending the required message or completing the meaningful next action
+-> ownership transitions HUMAN_ACTIVE -> HUMAN_ACTION_COMPLETED -> AI_ACTIVE
+-> AI follow-up/workflow starts and outreach is sent
+-> meaningful customer reply is persisted
+-> AI follow-up stops immediately and ownership becomes HUMAN_REQUIRED
+-> human responds or completes the required substantive action
+-> ownership returns to AI_ACTIVE and permitted automation resumes
+-> AI classifies and qualification data/status updates
+-> pipeline moves to Qualified only when that stage exists in the configured pipeline
+-> activity timeline and next action/task update
+-> realtime invalidation occurs and the salesperson sees the update
+-> proposal/meeting/handoff is triggered
+-> negotiation, pricing, discount, legal, complaint, or other high-risk requests produce ASK_HUMAN or ESCALATE
+-> no pricing, discount, legal term, date, or commercial commitment is invented
+-> deal progresses through its configured pipeline
+-> analytics and AI overview update
+-> full audit trail is preserved
 ```
 
-This is the minimum standard for “complete.”
+Safety acceptance must also verify that DNC, manual pause, lost/terminal status, and
+provider failure block or stop automation safely. Manual pause may resume only through an
+authorized explicit action.
+
+### Extended CRM / post-sale validation
+
+After the core manager-spec lead-follow-up flow passes, an order may be created from the
+won deal to validate order relationships and independent payment/fulfillment states. Orders
+are outside the manager document's core lead-follow-up acceptance flow.
+
+This is the minimum standard for "complete."
 
 ---
 

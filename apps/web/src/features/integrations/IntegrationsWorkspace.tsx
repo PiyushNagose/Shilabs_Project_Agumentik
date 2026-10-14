@@ -1,5 +1,5 @@
 import type React from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import type {
   IntegrationCatalogItemDto,
   IntegrationCategoryName,
@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import { Badge, Button, Card, Modal, Select } from "../../components/ui/index.js";
 import { StateBlock } from "../../components/StateBlock.js";
+import { usePersistedResource } from "../../hooks/usePersistedResource.js";
 import {
   connectIntegration,
   disableIntegration,
@@ -31,7 +32,6 @@ import {
   listIntegrations,
   reconnectIntegration
 } from "../../services/api-client.js";
-import { useRealtime } from "../realtime/RealtimeProvider.js";
 
 const categories: { value: string; label: string }[] = [
   { value: "ALL", label: "All providers" },
@@ -73,39 +73,22 @@ function when(value: string | null): string {
 }
 
 export function IntegrationsWorkspace({ accessToken }: { accessToken: string }): React.JSX.Element {
-  const [data, setData] = useState<Awaited<ReturnType<typeof listIntegrations>> | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("ALL");
   const [addOpen, setAddOpen] = useState(false);
-  const realtime = useRealtime();
-  const load = async (): Promise<void> => {
-    setError(false);
-    try {
-      setData(await listIntegrations(accessToken));
-    } catch {
-      setError(true);
-    } finally {
-      setLoading(false);
-    }
-  };
-  useEffect(() => {
-    void load();
-  }, [accessToken]);
-  useEffect(
-    () =>
-      realtime.subscribe((event) => {
-        if (event.entityType === "integration" || event.entityType === "workspace") void load();
-      }),
-    [accessToken, realtime.subscribe]
-  );
+  const resource = usePersistedResource({
+    scope: "integrations",
+    load: () => listIntegrations(accessToken),
+    accepts: (event) => event.entityType === "integration" || event.entityType === "workspace",
+    errorMessage: "Connection health could not be loaded."
+  });
+  const data = resource.data;
   const run = async (key: string, action: () => Promise<unknown>): Promise<void> => {
     setBusy(key);
     try {
       await action();
-      await load();
+      await resource.reload();
     } finally {
       setBusy(null);
     }
@@ -122,19 +105,19 @@ export function IntegrationsWorkspace({ accessToken }: { accessToken: string }):
     [category, data, query]
   );
   const available = (data?.catalog ?? []).filter((item) => !item.connected);
-  if (loading && !data)
+  if (resource.loading && !data)
     return (
       <StateBlock
         title="Loading integrations"
         detail="Checking workspace connections and provider health."
       />
     );
-  if (error && !data)
+  if (resource.error && !data)
     return (
       <StateBlock
         title="Integrations unavailable"
-        detail="Connection health could not be loaded."
-        action={<Button onClick={() => void load()}>Retry</Button>}
+        detail={resource.error}
+        action={<Button onClick={() => void resource.reload()}>Retry</Button>}
       />
     );
   return (

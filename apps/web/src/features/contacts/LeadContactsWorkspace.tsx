@@ -1,5 +1,7 @@
 import type {
   ActivityDto,
+  CompanyDto,
+  ContactDto,
   LeadDto,
   LeadQualificationDto,
   MeetingRequestDto,
@@ -12,6 +14,7 @@ import {
   Eye,
   Mail,
   Phone,
+  Plus,
   Search,
   Save,
   SlidersHorizontal,
@@ -19,19 +22,23 @@ import {
   UserRound
 } from "lucide-react";
 import { useMemo, useState } from "react";
-import { Badge, Button, Select } from "../../components/ui/index.js";
+import { Badge, Button, Modal, Select } from "../../components/ui/index.js";
 import { StateBlock } from "../../components/StateBlock.js";
 import { usePersistedResource } from "../../hooks/usePersistedResource.js";
 import {
   completeTask,
+  createContact,
   getLead,
   getLeadQualification,
   listLeadActivities,
   listLeads,
+  listCompanies,
+  listContacts,
   listMeetingRequests,
   listTasks
 } from "../../services/api-client.js";
-import { LeadQuickView, leadName, leadPriority } from "../leads/LeadExperience.js";
+import { apiErrorMessage } from "../../services/api/core.js";
+import { LeadQuickView, leadPriority } from "../leads/LeadExperience.js";
 import type { DetailTab } from "../leads/CrmWorkspace.js";
 
 type SegmentId = "all" | "hot" | "follow-up" | "unassigned" | "recent";
@@ -74,8 +81,16 @@ function readSavedView(): SavedContactView | null {
 }
 
 interface ContactWorkspaceData {
+  companies: CompanyDto[];
+  contacts: ContactDto[];
   leads: LeadDto[];
   tasks: TaskDto[];
+}
+
+interface ContactView {
+  company: CompanyDto;
+  contact: ContactDto;
+  lead: LeadDto | null;
 }
 
 interface LeadDrawerData {
@@ -111,6 +126,148 @@ function segmentMatch(segment: SegmentId, lead: LeadDto): boolean {
   return true;
 }
 
+function contactSegmentMatch(segment: SegmentId, view: ContactView): boolean {
+  if (segment === "all") return true;
+  if (!view.lead) return segment === "recent" && isRecentContact(view.contact);
+  return segmentMatch(segment, view.lead);
+}
+
+function isRecentContact(contact: ContactDto): boolean {
+  return new Date(contact.updatedAt).getTime() >= recentCutoff();
+}
+
+function ContactCreateForm({
+  accessToken,
+  companies,
+  onCreated
+}: {
+  accessToken: string;
+  companies: CompanyDto[];
+  onCreated: () => Promise<void>;
+}): React.JSX.Element {
+  const [companyId, setCompanyId] = useState(companies[0]?.id ?? "");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [title, setTitle] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [preferredChannel, setPreferredChannel] = useState("EMAIL");
+  const [doNotContact, setDoNotContact] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(): Promise<void> {
+    setSaving(true);
+    setError(null);
+    try {
+      await createContact(accessToken, {
+        companyId,
+        firstName: firstName.trim(),
+        lastName: lastName.trim(),
+        title: title.trim() || null,
+        email: email.trim() || null,
+        phone: phone.trim() || null,
+        source: "Manual",
+        preferredChannel,
+        doNotContact
+      });
+      await onCreated();
+    } catch (saveError) {
+      setError(apiErrorMessage(saveError, "The contact could not be created."));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form
+      className="record-create-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void submit();
+      }}
+    >
+      <div className="record-create-grid">
+        <label className="record-create-wide">
+          Company
+          <Select
+            ariaLabel="Contact company"
+            onChange={setCompanyId}
+            options={companies.map((company) => ({ value: company.id, label: company.name }))}
+            value={companyId}
+          />
+        </label>
+        <label>
+          First name
+          <input
+            autoFocus
+            maxLength={80}
+            onChange={(event) => setFirstName(event.target.value)}
+            required
+            value={firstName}
+          />
+        </label>
+        <label>
+          Last name
+          <input
+            maxLength={80}
+            onChange={(event) => setLastName(event.target.value)}
+            required
+            value={lastName}
+          />
+        </label>
+        <label>
+          Job title
+          <input onChange={(event) => setTitle(event.target.value)} value={title} />
+        </label>
+        <label>
+          Email
+          <input onChange={(event) => setEmail(event.target.value)} type="email" value={email} />
+        </label>
+        <label>
+          Phone
+          <input onChange={(event) => setPhone(event.target.value)} type="tel" value={phone} />
+        </label>
+        <label>
+          Preferred channel
+          <Select
+            ariaLabel="Preferred contact channel"
+            onChange={setPreferredChannel}
+            options={[
+              { value: "EMAIL", label: "Email" },
+              { value: "PHONE", label: "Phone" },
+              { value: "WHATSAPP", label: "WhatsApp" }
+            ]}
+            value={preferredChannel}
+          />
+        </label>
+        <label className="record-create-checkbox record-create-wide">
+          <input
+            checked={doNotContact}
+            onChange={(event) => setDoNotContact(event.target.checked)}
+            type="checkbox"
+          />
+          Do not contact
+        </label>
+      </div>
+      {error ? (
+        <p className="form-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <footer>
+        <Button
+          disabled={saving || !companyId || !firstName.trim() || !lastName.trim()}
+          type="submit"
+          variant="primary"
+        >
+          {saving ? "Creating..." : "Create contact"}
+        </Button>
+      </footer>
+    </form>
+  );
+}
+
 export function LeadContactsWorkspace({
   accessToken,
   onOpenLead
@@ -124,20 +281,23 @@ export function LeadContactsWorkspace({
   const [sort, setSort] = useState<SortId>("activity");
   const [savedView, setSavedView] = useState<SavedContactView | null>(() => readSavedView());
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
 
   const resource = usePersistedResource<ContactWorkspaceData>({
     scope: `lead-contacts:${accessToken}`,
     load: async () => {
-      const [page, tasks] = await Promise.all([
+      const [page, tasks, contacts, companies] = await Promise.all([
         listLeads(accessToken, {
           page: 1,
           pageSize: 100,
           sort: "lastActivityAt",
           direction: "desc"
         }),
-        listTasks(accessToken, {})
+        listTasks(accessToken, {}),
+        listContacts(accessToken),
+        listCompanies(accessToken)
       ]);
-      return { leads: page.items, tasks };
+      return { companies, contacts, leads: page.items, tasks };
     },
     accepts: (event) =>
       event.type === "realtime:reconnected" ||
@@ -167,36 +327,51 @@ export function LeadContactsWorkspace({
   });
 
   const leads = resource.data?.leads ?? [];
+  const companies = resource.data?.companies ?? [];
+  const contacts = resource.data?.contacts ?? [];
   const tasks = resource.data?.tasks ?? [];
   const owners = useMemo(() => {
     const unique = new Map<string, NonNullable<LeadDto["owner"]>>();
     for (const lead of leads) if (lead.owner) unique.set(lead.owner.id, lead.owner);
     return [...unique.values()].sort((a, b) => a.firstName.localeCompare(b.firstName));
   }, [leads]);
-  const visibleLeads = useMemo(() => {
+  const contactViews = useMemo<ContactView[]>(() => {
+    const companyById = new Map(companies.map((company) => [company.id, company]));
+    const leadByContactId = new Map(leads.map((lead) => [lead.contactId, lead]));
+    return contacts.flatMap((contact) => {
+      const company = companyById.get(contact.companyId);
+      return company ? [{ company, contact, lead: leadByContactId.get(contact.id) ?? null }] : [];
+    });
+  }, [companies, contacts, leads]);
+  const visibleContacts = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
-    return leads
-      .filter((lead) => segmentMatch(segment, lead))
-      .filter((lead) => !ownerId || lead.ownerId === ownerId)
-      .filter((lead) => {
+    return contactViews
+      .filter((view) => contactSegmentMatch(segment, view))
+      .filter((view) => !ownerId || view.lead?.ownerId === ownerId)
+      .filter((view) => {
         if (!query) return true;
         return [
-          leadName(lead),
-          lead.company.name,
-          lead.contact.email,
-          lead.requirement,
-          lead.serviceInterest
+          `${view.contact.firstName} ${view.contact.lastName}`,
+          view.company.name,
+          view.contact.email,
+          view.contact.phone,
+          view.contact.title,
+          view.lead?.requirement,
+          view.lead?.serviceInterest
         ].some((value) => value?.toLocaleLowerCase().includes(query));
       })
       .sort((left, right) => {
-        if (sort === "score") return right.score - left.score;
-        if (sort === "name") return leadName(left).localeCompare(leadName(right));
+        if (sort === "score") return (right.lead?.score ?? -1) - (left.lead?.score ?? -1);
+        if (sort === "name")
+          return `${left.contact.firstName} ${left.contact.lastName}`.localeCompare(
+            `${right.contact.firstName} ${right.contact.lastName}`
+          );
         return (
-          new Date(right.lastActivityAt ?? 0).getTime() -
-          new Date(left.lastActivityAt ?? 0).getTime()
+          new Date(right.lead?.lastActivityAt ?? right.contact.updatedAt).getTime() -
+          new Date(left.lead?.lastActivityAt ?? left.contact.updatedAt).getTime()
         );
       });
-  }, [leads, ownerId, search, segment, sort]);
+  }, [contactViews, ownerId, search, segment, sort]);
 
   const segments: { id: SegmentId; label: string }[] = [
     { id: "all", label: "All contacts" },
@@ -239,7 +414,9 @@ export function LeadContactsWorkspace({
               type="button"
             >
               <span>{item.label}</span>
-              <strong>{leads.filter((lead) => segmentMatch(item.id, lead)).length}</strong>
+              <strong>
+                {contactViews.filter((view) => contactSegmentMatch(item.id, view)).length}
+              </strong>
             </button>
           ))}
         </nav>
@@ -266,8 +443,15 @@ export function LeadContactsWorkspace({
           <div>
             <span className="records-eyebrow">CRM / Contacts</span>
             <h2>Lead contacts</h2>
-            <p>{visibleLeads.length} authorized records</p>
+            <p>{visibleContacts.length} authorized records</p>
           </div>
+          <Button
+            disabled={companies.length === 0}
+            onClick={() => setCreateOpen(true)}
+            variant="primary"
+          >
+            <Plus size={17} /> New contact
+          </Button>
         </header>
         <div className="records-toolbar">
           <label className="records-search">
@@ -321,45 +505,48 @@ export function LeadContactsWorkspace({
             action={<Button onClick={() => void resource.reload()}>Retry</Button>}
           />
         ) : null}
-        {!resource.loading && !resource.error && visibleLeads.length === 0 ? (
+        {!resource.loading && !resource.error && visibleContacts.length === 0 ? (
           <StateBlock
             title="No matching contacts"
             detail="Try another segment or clear the search filters."
           />
         ) : null}
 
-        {visibleLeads.length > 0 ? (
+        {visibleContacts.length > 0 ? (
           <div className="lead-contact-stack">
-            {visibleLeads.map((lead) => {
-              const priority = leadPriority(tasks.filter((task) => task.leadId === lead.id));
+            {visibleContacts.map(({ company, contact, lead }) => {
+              const priority = lead
+                ? leadPriority(tasks.filter((task) => task.leadId === lead.id))
+                : "NONE";
+              const name = `${contact.firstName} ${contact.lastName}`;
               return (
-                <article className="lead-contact-card" key={lead.id}>
+                <article className="lead-contact-card" key={contact.id}>
                   <div className="contact-card-profile">
                     <span className="lead-avatar" aria-hidden="true">
-                      {lead.contact.firstName.slice(0, 1)}
-                      {lead.contact.lastName.slice(0, 1)}
+                      {contact.firstName.slice(0, 1)}
+                      {contact.lastName.slice(0, 1)}
                     </span>
                     <div>
-                      <h3>{leadName(lead)}</h3>
-                      <p>{lead.contact.title ?? lead.company.name}</p>
-                      <small>{lead.contact.email ?? "No email"}</small>
+                      <h3>{name}</h3>
+                      <p>{contact.title ?? company.name}</p>
+                      <small>{contact.email ?? "No email"}</small>
                     </div>
                   </div>
                   <div className="contact-card-context">
                     <span>Company</span>
-                    <strong>{lead.company.name}</strong>
-                    <p>{lead.requirement ?? lead.serviceInterest ?? "Intent not identified"}</p>
+                    <strong>{company.name}</strong>
+                    <p>{lead?.requirement ?? lead?.serviceInterest ?? "No lead linked"}</p>
                   </div>
                   <div className="contact-card-engagement">
                     <span>
                       <Clock3 size={14} /> Last engagement
                     </span>
-                    <strong>{formatDate(lead.lastActivityAt)}</strong>
-                    <p>{lead.nextAction ?? "No next action"}</p>
+                    <strong>{formatDate(lead?.lastActivityAt ?? contact.updatedAt)}</strong>
+                    <p>{lead?.nextAction ?? "No next action"}</p>
                   </div>
                   <div className="contact-card-score">
-                    <strong>{lead.score}</strong>
-                    <span>{lead.temperature}</span>
+                    <strong>{lead?.score ?? "-"}</strong>
+                    <span>{lead?.temperature ?? "CONTACT"}</span>
                     <Badge
                       tone={priority === "HIGH" || priority === "URGENT" ? "danger" : "neutral"}
                     >
@@ -368,34 +555,39 @@ export function LeadContactsWorkspace({
                   </div>
                   <div className="contact-card-footer">
                     <div className="contact-quick-actions">
-                      {lead.contact.phone ? (
-                        <a aria-label={`Call ${leadName(lead)}`} href={`tel:${lead.contact.phone}`}>
+                      {contact.phone ? (
+                        <a aria-label={`Call ${name}`} href={`tel:${contact.phone}`}>
                           <Phone size={16} />
                         </a>
                       ) : null}
-                      {lead.contact.email ? (
-                        <a
-                          aria-label={`Email ${leadName(lead)}`}
-                          href={`mailto:${lead.contact.email}`}
-                        >
+                      {contact.email ? (
+                        <a aria-label={`Email ${name}`} href={`mailto:${contact.email}`}>
                           <Mail size={16} />
                         </a>
                       ) : null}
-                      <button
-                        aria-label={`Preview ${leadName(lead)}`}
-                        onClick={() => setSelectedLeadId(lead.id)}
-                        type="button"
-                      >
-                        <Eye size={16} />
-                      </button>
+                      {lead ? (
+                        <button
+                          aria-label={`Preview ${name}`}
+                          onClick={() => setSelectedLeadId(lead.id)}
+                          type="button"
+                        >
+                          <Eye size={16} />
+                        </button>
+                      ) : null}
                     </div>
-                    <Button
-                      onClick={() => onOpenLead(lead.id, "Overview")}
-                      size="sm"
-                      variant="ghost"
-                    >
-                      Open profile <ArrowUpRight size={15} />
-                    </Button>
+                    {lead ? (
+                      <Button
+                        onClick={() => onOpenLead(lead.id, "Overview")}
+                        size="sm"
+                        variant="ghost"
+                      >
+                        Open profile <ArrowUpRight size={15} />
+                      </Button>
+                    ) : (
+                      <Badge tone={contact.doNotContact ? "warning" : "neutral"}>
+                        {contact.doNotContact ? "Do not contact" : "Contact only"}
+                      </Badge>
+                    )}
                   </div>
                 </article>
               );
@@ -403,6 +595,17 @@ export function LeadContactsWorkspace({
           </div>
         ) : null}
       </div>
+
+      <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="New contact">
+        <ContactCreateForm
+          accessToken={accessToken}
+          companies={companies}
+          onCreated={async () => {
+            await resource.reload();
+            setCreateOpen(false);
+          }}
+        />
+      </Modal>
 
       <LeadQuickView
         activities={drawer.data?.activities ?? []}

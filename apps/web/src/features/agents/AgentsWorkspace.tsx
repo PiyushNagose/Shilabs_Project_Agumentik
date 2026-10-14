@@ -2,6 +2,7 @@ import type React from "react";
 import { useEffect, useMemo, useState } from "react";
 import type {
   AgentDetailDto,
+  AgentExecutionDto,
   AgentStatusName,
   AgentTypeName,
   PublicUser
@@ -12,17 +13,22 @@ import {
   Archive,
   ArrowLeft,
   Bot,
+  BrainCircuit,
   CheckCircle2,
   CirclePause,
   Clock3,
+  Database,
+  FileSearch,
   GitBranch,
   History,
+  ListChecks,
   Pencil,
   Play,
   Plus,
   Search,
   ShieldCheck,
   Sparkles,
+  Wrench,
   XCircle
 } from "lucide-react";
 import { Badge, Button, Card, Modal, Select } from "../../components/ui/index.js";
@@ -64,6 +70,39 @@ function duration(value: number | null): string {
   if (value === null) return "-";
   if (value < 1000) return `${String(value)} ms`;
   return `${String(Math.round(value / 100) / 10)}s`;
+}
+
+function configReference(value: unknown, keys: readonly string[], fallback: string): string {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return fallback;
+  const record = value as Record<string, unknown>;
+  for (const key of keys) {
+    const entry = record[key];
+    if (typeof entry === "string" && entry.trim()) return entry.replaceAll("_", " ");
+    if (typeof entry === "number" || typeof entry === "boolean") return String(entry);
+    if (Array.isArray(entry)) {
+      const safeItems = entry.filter(
+        (item): item is string | number => typeof item === "string" || typeof item === "number"
+      );
+      if (safeItems.length) return safeItems.slice(0, 4).join(", ");
+    }
+  }
+  return fallback;
+}
+
+function evaluationOutcome(execution: AgentExecutionDto): string {
+  const evaluation = execution.evaluation;
+  if (evaluation && typeof evaluation === "object" && !Array.isArray(evaluation)) {
+    const record = evaluation as Record<string, unknown>;
+    if (typeof record.outcome === "string") {
+      const outcome = record.outcome.replaceAll("_", " ").toLowerCase();
+      return `${outcome.charAt(0).toUpperCase()}${outcome.slice(1)}`;
+    }
+  }
+  return execution.status === "SUCCEEDED"
+    ? "Passed"
+    : execution.status === "FAILED"
+      ? "Needs review"
+      : "Pending";
 }
 
 function AgentCreateModal({
@@ -117,7 +156,7 @@ function AgentCreateModal({
       }
     >
       <form
-        className="agent-form"
+        className="agent-form agent-create-form"
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
@@ -528,7 +567,7 @@ function AgentDetail({
           <small>Persisted business result</small>
         </Card>
       </section>
-      <nav className="agent-tabs" aria-label="Agent detail">
+      <nav className="agent-tabs agent-detail-tabs" aria-label="Agent detail">
         <button className={tab === "composer" ? "active" : ""} onClick={() => openTab("composer")}>
           <GitBranch size={15} /> Composer {agent.draftVersion ? <Badge>Draft</Badge> : null}
         </button>
@@ -540,6 +579,12 @@ function AgentDetail({
           onClick={() => openTab("executions")}
         >
           <History size={15} /> Executions <Badge>{agent.executions.length}</Badge>
+        </button>
+        <button
+          className={tab === "evaluation" ? "active" : ""}
+          onClick={() => openTab("evaluation")}
+        >
+          <ListChecks size={15} /> Evaluation
         </button>
         <button className={tab === "versions" ? "active" : ""} onClick={() => openTab("versions")}>
           <Archive size={15} /> Versions <Badge>{agent.versions.length}</Badge>
@@ -557,8 +602,10 @@ function AgentDetail({
         <AgentOverview agent={agent} />
       ) : tab === "versions" ? (
         <AgentVersions agent={agent} />
+      ) : tab === "evaluation" ? (
+        <AgentEvaluation agent={agent} canViewTechnical={canManage} />
       ) : (
-        <AgentExecutions agent={agent} />
+        <AgentExecutions agent={agent} canViewTechnical={canManage} />
       )}
       <AgentEditModal
         accessToken={accessToken}
@@ -642,7 +689,13 @@ function AgentVersions({ agent }: { agent: AgentDetailDto }): React.JSX.Element 
   );
 }
 
-function AgentExecutions({ agent }: { agent: AgentDetailDto }): React.JSX.Element {
+function AgentExecutions({
+  agent,
+  canViewTechnical
+}: {
+  agent: AgentDetailDto;
+  canViewTechnical: boolean;
+}): React.JSX.Element {
   if (agent.executions.length === 0)
     return (
       <section className="ui-card">
@@ -674,7 +727,7 @@ function AgentExecutions({ agent }: { agent: AgentDetailDto }): React.JSX.Elemen
               <div>
                 <strong>{execution.summary ?? "Agent execution"}</strong>
                 <small>
-                  {execution.source.replaceAll("_", " ")} · {formatDate(execution.startedAt)}
+                  {execution.source.replaceAll("_", " ")} / {formatDate(execution.startedAt)}
                 </small>
               </div>
               <Badge tone={failed ? "danger" : passed ? "success" : "warning"}>
@@ -690,13 +743,179 @@ function AgentExecutions({ agent }: { agent: AgentDetailDto }): React.JSX.Elemen
                 <strong>{execution.entityType ?? execution.sourceEntityType ?? "Workspace"}</strong>
               </span>
               <span>
-                Evaluation{" "}
-                <strong>{passed ? "Passed" : failed ? "Needs review" : "Pending"}</strong>
+                Evaluation <strong>{evaluationOutcome(execution)}</strong>
               </span>
             </div>
+            {canViewTechnical ? (
+              <div className="agent-execution-reference">
+                <span>Version {execution.versionId}</span>
+                <span>Correlation {execution.correlationId}</span>
+              </div>
+            ) : null}
           </Card>
         );
       })}
+    </section>
+  );
+}
+
+function AgentEvaluation({
+  agent,
+  canViewTechnical
+}: {
+  agent: AgentDetailDto;
+  canViewTechnical: boolean;
+}): React.JSX.Element {
+  const version = agent.draftVersion ?? agent.currentVersion;
+  const latest = agent.executions[0] ?? null;
+  const definition = version?.definition;
+  const references = [
+    {
+      label: "Model",
+      value: configReference(
+        version?.modelConfig,
+        ["model", "provider", "mode"],
+        "Platform governed model"
+      ),
+      icon: BrainCircuit
+    },
+    {
+      label: "Memory",
+      value: configReference(
+        definition,
+        ["memory", "memoryMode", "context"],
+        "Persisted CRM and conversation context"
+      ),
+      icon: Database
+    },
+    {
+      label: "Knowledge",
+      value: configReference(
+        version?.knowledgeConfig,
+        ["knowledgeBase", "collection", "sources", "retrievalMode"],
+        "Approved workspace knowledge"
+      ),
+      icon: FileSearch
+    },
+    {
+      label: "Tools",
+      value: configReference(
+        version?.toolsConfig,
+        ["tools", "capabilities", "actions"],
+        configReference(definition, ["capability", "adapter"], "No tools declared")
+      ),
+      icon: Wrench
+    }
+  ];
+
+  return (
+    <section className="agent-evaluation-workspace" aria-label="Agent evaluation">
+      {canViewTechnical ? (
+        <section className="agent-reference-grid" aria-label="Agent capability references">
+          {references.map(({ label, value, icon: Icon }) => (
+            <Card key={label}>
+              <Icon size={17} />
+              <span>{label}</span>
+              <strong>{value}</strong>
+            </Card>
+          ))}
+        </section>
+      ) : (
+        <p className="agent-technical-notice">
+          Technical configuration is restricted. Business outcomes and evaluation status remain
+          available below.
+        </p>
+      )}
+
+      <Card className="agent-trace-card">
+        <header>
+          <div>
+            <span className="records-eyebrow">EXECUTION GRAPH</span>
+            <h3>Latest governed run</h3>
+          </div>
+          <Badge
+            tone={
+              !latest
+                ? "neutral"
+                : latest.status === "FAILED"
+                  ? "danger"
+                  : latest.status === "SUCCEEDED"
+                    ? "success"
+                    : "warning"
+            }
+          >
+            {latest?.status ?? "NO RUN"}
+          </Badge>
+        </header>
+        {latest ? (
+          <div className="agent-execution-trace" aria-label="Latest execution trace">
+            <span>
+              <small>Source</small>
+              <strong>{latest.source.replaceAll("_", " ")}</strong>
+            </span>
+            <i aria-hidden="true" />
+            <span>
+              <small>Agent</small>
+              <strong>{agent.name}</strong>
+            </span>
+            <i aria-hidden="true" />
+            <span>
+              <small>Evaluation</small>
+              <strong>{evaluationOutcome(latest)}</strong>
+            </span>
+          </div>
+        ) : (
+          <StateBlock title="No execution trace" detail="A trace appears after the first run." />
+        )}
+      </Card>
+
+      <Card className="agent-evaluation-log">
+        <header>
+          <div>
+            <span className="records-eyebrow">EVALUATION LOG</span>
+            <h3>Persisted outcomes</h3>
+          </div>
+          <Badge>{agent.executions.length}</Badge>
+        </header>
+        {agent.executions.length ? (
+          <div role="table" aria-label="Agent evaluation log">
+            <div className="agent-evaluation-row head" role="row">
+              <span>Run</span>
+              <span>Outcome</span>
+              <span>Duration</span>
+              <span>Completed</span>
+            </div>
+            {agent.executions.map((execution) => (
+              <div className="agent-evaluation-row" key={execution.id} role="row">
+                <span>
+                  <strong>{execution.summary ?? "Agent execution"}</strong>
+                  {canViewTechnical ? <small>{execution.correlationId}</small> : null}
+                </span>
+                <Badge
+                  tone={
+                    execution.status === "FAILED"
+                      ? "danger"
+                      : execution.status === "SUCCEEDED"
+                        ? "success"
+                        : "warning"
+                  }
+                >
+                  {evaluationOutcome(execution)}
+                </Badge>
+                <span data-label="Duration">{duration(execution.durationMs)}</span>
+                <time
+                  data-label="Completed"
+                  dateTime={execution.completedAt ?? execution.startedAt}
+                >
+                  {formatDate(execution.completedAt ?? execution.startedAt)}
+                </time>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <StateBlock title="No evaluations yet" detail="Evaluated runs will appear here." />
+        )}
+      </Card>
     </section>
   );
 }

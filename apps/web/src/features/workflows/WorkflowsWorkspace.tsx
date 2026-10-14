@@ -1,5 +1,5 @@
 import type React from "react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type {
   PublicUser,
   WorkflowDashboardDto,
@@ -23,6 +23,7 @@ import {
 import type { WorkflowDetailTab } from "../../app/routing.js";
 import { Badge, Button, Card, Modal, Select } from "../../components/ui/index.js";
 import { StateBlock } from "../../components/StateBlock.js";
+import { usePersistedResource } from "../../hooks/usePersistedResource.js";
 import {
   createWorkflow,
   getWorkflow,
@@ -54,61 +55,33 @@ export function WorkflowsWorkspace({
   initialTab?: WorkflowDetailTab;
   onRouteChange: (id: string | null, tab?: WorkflowDetailTab) => void;
 }): React.JSX.Element {
-  const [dashboard, setDashboard] = useState<WorkflowDashboardDto | null>(null);
-  const [detail, setDetail] = useState<WorkflowDetailDto | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("ALL");
   const canManage = currentUser.role === "ADMIN" || currentUser.role === "SALES_MANAGER";
   const tab = initialTab ?? "overview";
-  const loadList = async (): Promise<void> => {
-    setLoading(true);
-    setError(false);
-    try {
-      setDashboard(await listWorkflows(accessToken));
-    } catch {
-      setError(true);
-    } finally {
-      setLoading(false);
-    }
-  };
-  const loadDetail = async (): Promise<void> => {
-    if (!initialWorkflowId) {
-      setDetail(null);
-      return;
-    }
-    setLoading(true);
-    setError(false);
-    try {
-      setDetail(await getWorkflow(accessToken, initialWorkflowId));
-    } catch {
-      setError(true);
-    } finally {
-      setLoading(false);
-    }
-  };
-  useEffect(() => {
-    void (initialWorkflowId ? loadDetail() : loadList());
-  }, [accessToken, initialWorkflowId]);
-  if (loading && !dashboard && !detail)
+  const resource = usePersistedResource<WorkflowDashboardDto | WorkflowDetailDto>({
+    scope: initialWorkflowId ? `workflow:${initialWorkflowId}` : "workflows",
+    load: () =>
+      initialWorkflowId ? getWorkflow(accessToken, initialWorkflowId) : listWorkflows(accessToken),
+    accepts: (event) => event.entityType === "workflow" || event.entityType === "workspace",
+    errorMessage: "The workspace workflow data could not be loaded."
+  });
+  const dashboard = initialWorkflowId ? null : (resource.data as WorkflowDashboardDto | null);
+  const detail = initialWorkflowId ? (resource.data as WorkflowDetailDto | null) : null;
+  if (resource.loading && !resource.data)
     return (
       <StateBlock
         title="Loading workflows"
         detail="Reading persisted workflow versions and executions."
       />
     );
-  if (error)
+  if (resource.error && !resource.data)
     return (
       <StateBlock
         title="Workflows unavailable"
-        detail="The workspace workflow data could not be loaded."
-        action={
-          <Button onClick={() => void (initialWorkflowId ? loadDetail() : loadList())}>
-            Retry
-          </Button>
-        }
+        detail={resource.error}
+        action={<Button onClick={() => void resource.reload()}>Retry</Button>}
       />
     );
   if (initialWorkflowId && detail)
@@ -120,7 +93,7 @@ export function WorkflowsWorkspace({
         tab={tab}
         onBack={() => onRouteChange(null)}
         onTab={(next) => onRouteChange(detail.id, next)}
-        onChanged={loadDetail}
+        onChanged={resource.reload}
       />
     );
   const items = (dashboard?.workflows ?? []).filter(
@@ -268,7 +241,7 @@ function WorkflowDetail({
   return (
     <section className="agent-detail">
       <header className="agent-detail-header">
-        <Button onClick={onBack}>
+        <Button variant="ghost" onClick={onBack}>
           <ArrowLeft size={15} /> Back to workflows
         </Button>
         <div className="agent-detail-title">
@@ -283,6 +256,9 @@ function WorkflowDetail({
         </div>
         <div className="agent-detail-actions">
           <Badge tone={tone(workflow.status)}>{workflow.status}</Badge>
+          <Button variant={canManage ? "primary" : "secondary"} onClick={() => onTab("builder")}>
+            <GitBranch size={15} /> {canManage ? "Edit workflow" : "View builder"}
+          </Button>
           {canManage && workflow.status === "PUBLISHED" ? (
             <Button disabled={busy} onClick={() => void action("PAUSED")}>
               <CirclePause size={15} /> Pause

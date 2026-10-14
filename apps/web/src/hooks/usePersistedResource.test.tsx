@@ -114,4 +114,40 @@ describe("persisted resource refresh", () => {
     unmount();
     expect(realtime.listener).toBeNull();
   });
+
+  it("never exposes data from the previous scope during navigation", async () => {
+    const pending = new Map<string, (value: number) => void>();
+    const load = vi.fn(
+      (scope: string) =>
+        new Promise<number>((resolve) => {
+          pending.set(scope, resolve);
+        })
+    );
+    const { result, rerender } = renderHook(
+      ({ scope }) =>
+        usePersistedResource({
+          scope,
+          load: () => load(scope),
+          accepts: () => true,
+          errorMessage: "Refresh failed"
+        }),
+      { initialProps: { scope: "workflow:list" } }
+    );
+
+    await act(() => Promise.resolve());
+    await act(async () => {
+      pending.get("workflow:list")?.(5);
+      await Promise.resolve();
+    });
+    expect(result.current.data).toBe(5);
+
+    rerender({ scope: "workflow:detail" });
+    expect(result.current).toMatchObject({ data: null, loading: true, error: null });
+
+    await act(async () => {
+      pending.get("workflow:detail")?.(8);
+      await Promise.resolve();
+    });
+    expect(result.current.data).toBe(8);
+  });
 });

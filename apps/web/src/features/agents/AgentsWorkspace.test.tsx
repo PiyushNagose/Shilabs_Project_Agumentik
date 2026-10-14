@@ -123,7 +123,7 @@ describe("AgentsWorkspace", () => {
       />
     );
     expect(screen.getByText("Proposal generated successfully")).toBeTruthy();
-    expect(screen.getByText("Passed")).toBeTruthy();
+    expect(screen.getAllByText("Passed").length).toBeGreaterThan(0);
   });
 
   it("opens the shared Agent Composer with the complete node palette", () => {
@@ -178,5 +178,41 @@ describe("AgentsWorkspace", () => {
       within(screen.getByLabelText("Composer nodes")).getByRole("button", { name: /Trigger/i })
     ).toHaveProperty("disabled", true);
     expect(screen.getByRole("button", { name: "Preview" }).hasAttribute("disabled")).toBe(false);
+  });
+
+  it("shows persisted evaluation references to managers without exposing them to sales reps", () => {
+    const { rerender } = render(
+      <AgentsWorkspace
+        accessToken="token"
+        currentUser={admin}
+        initialAgentId="agent_1"
+        initialTab="evaluation"
+        onRouteChange={vi.fn()}
+      />
+    );
+
+    expect(screen.getByLabelText("Agent capability references")).toBeTruthy();
+    expect(screen.getByText("Model")).toBeTruthy();
+    expect(screen.getByText("Memory")).toBeTruthy();
+    expect(screen.getByText("Knowledge")).toBeTruthy();
+    expect(screen.getByText("Tools")).toBeTruthy();
+    expect(screen.getByLabelText("Latest execution trace")).toBeTruthy();
+    expect(screen.getByLabelText("Agent evaluation log")).toBeTruthy();
+    expect(screen.getByText("run_1")).toBeTruthy();
+
+    rerender(
+      <AgentsWorkspace
+        accessToken="token"
+        currentUser={salesRep}
+        initialAgentId="agent_1"
+        initialTab="evaluation"
+        onRouteChange={vi.fn()}
+      />
+    );
+
+    expect(screen.queryByLabelText("Agent capability references")).toBeNull();
+    expect(screen.getByText(/Technical configuration is restricted/)).toBeTruthy();
+    expect(screen.queryByText("run_1")).toBeNull();
+    expect(screen.getAllByText("Passed").length).toBeGreaterThan(0);
   });
 });

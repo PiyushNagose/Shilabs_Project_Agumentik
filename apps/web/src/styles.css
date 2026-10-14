@@ -2359,6 +2359,7 @@ nav a.active-nav::after,
   transition:
     background var(--dur-med) var(--ease-smooth),
     border-color var(--dur-med) var(--ease-smooth);
+  scroll-margin-top: 56px;
 }
 
 .tab-panel > p {
@@ -2981,6 +2982,8 @@ nav a.active-nav::after,
   align-content: start;
   justify-items: start;
   min-width: 0;
+  width: 100%;
+  min-height: 180px;
   padding: var(--sp-4);
   background: color-mix(in srgb, var(--bg-card) 88%, var(--bg-elevated));
   border: 1px solid var(--border-subtle);

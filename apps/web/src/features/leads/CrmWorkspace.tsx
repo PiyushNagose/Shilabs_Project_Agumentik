@@ -5,6 +5,8 @@ import {
   type ActivityDto,
   type AgentCorrectionDto,
   type BriefingRunDto,
+  type CompanyDto,
+  type ContactDto,
   type ConversationDto,
   type ConversationModeName,
   type FollowUpSequenceDto,
@@ -24,12 +26,12 @@ import {
   type TaskDto,
   type ZohoLeadContactSyncDto
 } from "@shilabs/shared-types";
-import { ArrowLeft, Mail, Phone } from "lucide-react";
+import { ArrowLeft, Mail, Phone, Plus } from "lucide-react";
 import { Icon } from "../../components/Icon.js";
 import { StateBlock } from "../../components/StateBlock.js";
 import { StatusBadge } from "../../components/StatusBadge.js";
 import { useToast } from "../../components/ToastProvider.js";
-import { Select } from "../../components/ui/index.js";
+import { Button, Modal, Select } from "../../components/ui/index.js";
 import {
   accelerateFollowUpSequenceForE2E,
   assignLead,
@@ -40,7 +42,10 @@ import {
   confirmMeetingRequest,
   createProposalAgentCorrection,
   completeTask,
+  createCompany,
+  createContact,
   createConversation,
+  createLead,
   createMeetingRequest,
   generateLeadBriefing,
   generateMeetingBriefing,
@@ -49,6 +54,8 @@ import {
   getHumanTakeoverBriefing,
   getLeadQualification,
   listBriefings,
+  listCompanies,
+  listContacts,
   listConversationMessages,
   listConversations,
   listFollowUpSequences,
@@ -286,6 +293,297 @@ const initialQualificationState: QualificationState = {
   error: null
 };
 
+function NewLeadForm({
+  accessToken,
+  currentUser,
+  users,
+  onCreated
+}: {
+  accessToken: string;
+  currentUser: PublicUser;
+  users: PublicUser[];
+  onCreated: (lead: LeadDto) => Promise<void>;
+}): React.JSX.Element {
+  const newRecordValue = "__new__";
+  const [companies, setCompanies] = useState<CompanyDto[]>([]);
+  const [contacts, setContacts] = useState<ContactDto[]>([]);
+  const [companyId, setCompanyId] = useState(newRecordValue);
+  const [contactId, setContactId] = useState(newRecordValue);
+  const [companyName, setCompanyName] = useState("");
+  const [website, setWebsite] = useState("");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [title, setTitle] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [source, setSource] = useState("Website");
+  const [requirement, setRequirement] = useState("");
+  const [serviceInterest, setServiceInterest] = useState("");
+  const [estimatedValue, setEstimatedValue] = useState("");
+  const [ownerId, setOwnerId] = useState(currentUser.id);
+  const [nextAction, setNextAction] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [loadingRelationships, setLoadingRelationships] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    setLoadingRelationships(true);
+    void Promise.all([listCompanies(accessToken), listContacts(accessToken)])
+      .then(([companyItems, contactItems]) => {
+        if (!active) return;
+        setCompanies(companyItems);
+        setContacts(contactItems);
+      })
+      .catch((loadError: unknown) => {
+        if (active) {
+          setError(apiErrorMessage(loadError, "Companies and contacts could not be loaded."));
+        }
+      })
+      .finally(() => {
+        if (active) setLoadingRelationships(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [accessToken]);
+
+  const companyContacts = contacts.filter((contact) => contact.companyId === companyId);
+  const creatingCompany = companyId === newRecordValue;
+  const creatingContact = creatingCompany || contactId === newRecordValue;
+
+  const save = async (): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      if (creatingContact && !email.trim() && !phone.trim()) {
+        setError("Provide an email address or phone number for the new contact.");
+        return;
+      }
+      const resolvedCompanyId = creatingCompany
+        ? (
+            await createCompany(accessToken, {
+              name: companyName.trim(),
+              website: website.trim() || null
+            })
+          ).id
+        : companyId;
+      const resolvedContactId = creatingContact
+        ? (
+            await createContact(accessToken, {
+              companyId: resolvedCompanyId,
+              firstName: firstName.trim(),
+              lastName: lastName.trim(),
+              title: title.trim() || null,
+              email: email.trim() || null,
+              phone: phone.trim() || null,
+              source,
+              preferredChannel: email.trim() ? "EMAIL" : "PHONE"
+            })
+          ).id
+        : contactId;
+      const lead = await createLead(accessToken, {
+        companyId: resolvedCompanyId,
+        contactId: resolvedContactId,
+        ownerId: ownerId || null,
+        source,
+        requirement: requirement || null,
+        serviceInterest: serviceInterest || null,
+        estimatedValue: estimatedValue || null,
+        currency: "INR",
+        nextAction: nextAction || null
+      });
+      await onCreated(lead);
+    } catch (saveError) {
+      setError(apiErrorMessage(saveError, "The lead could not be created"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form
+      className="lead-create-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void save();
+      }}
+    >
+      {error ? (
+        <p className="form-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <div className="lead-create-form-grid">
+        <label className="lead-create-wide">
+          Company
+          <Select
+            ariaLabel="Lead company"
+            onChange={(value) => {
+              setCompanyId(value);
+              setContactId(newRecordValue);
+            }}
+            options={[
+              { value: newRecordValue, label: "Create new company" },
+              ...companies.map((company) => ({ value: company.id, label: company.name }))
+            ]}
+            value={companyId}
+          />
+        </label>
+        {creatingCompany ? (
+          <>
+            <label>
+              Company name
+              <input
+                autoFocus
+                maxLength={160}
+                onChange={(event) => setCompanyName(event.target.value)}
+                required
+                value={companyName}
+              />
+            </label>
+            <label>
+              Website
+              <input
+                onChange={(event) => setWebsite(event.target.value)}
+                placeholder="example.com"
+                value={website}
+              />
+            </label>
+          </>
+        ) : (
+          <label className="lead-create-wide">
+            Contact
+            <Select
+              ariaLabel="Lead contact"
+              onChange={setContactId}
+              options={[
+                { value: newRecordValue, label: "Create new contact" },
+                ...companyContacts.map((contact) => ({
+                  value: contact.id,
+                  label: `${contact.firstName} ${contact.lastName}${contact.email ? ` - ${contact.email}` : ""}`
+                }))
+              ]}
+              value={contactId}
+            />
+          </label>
+        )}
+        {creatingContact ? (
+          <>
+            <label>
+              First name
+              <input
+                maxLength={80}
+                onChange={(event) => setFirstName(event.target.value)}
+                required
+                value={firstName}
+              />
+            </label>
+            <label>
+              Last name
+              <input
+                maxLength={80}
+                onChange={(event) => setLastName(event.target.value)}
+                required
+                value={lastName}
+              />
+            </label>
+            <label>
+              Job title
+              <input onChange={(event) => setTitle(event.target.value)} value={title} />
+            </label>
+            <label>
+              Email
+              <input
+                onChange={(event) => setEmail(event.target.value)}
+                type="email"
+                value={email}
+              />
+            </label>
+            <label>
+              Phone
+              <input onChange={(event) => setPhone(event.target.value)} type="tel" value={phone} />
+            </label>
+          </>
+        ) : null}
+        <label>
+          Source
+          <Select
+            ariaLabel="Lead source"
+            onChange={setSource}
+            options={[
+              { value: "Website", label: "Website" },
+              { value: "Referral", label: "Referral" },
+              { value: "Campaign", label: "Campaign" },
+              { value: "Inbound call", label: "Inbound call" },
+              { value: "Manual", label: "Manual" }
+            ]}
+            value={source}
+          />
+        </label>
+        <label className="lead-create-wide">
+          Requirement
+          <textarea
+            onChange={(event) => setRequirement(event.target.value)}
+            placeholder="What does this lead need?"
+            rows={3}
+            value={requirement}
+          />
+        </label>
+        <label>
+          Service interest
+          <input
+            onChange={(event) => setServiceInterest(event.target.value)}
+            value={serviceInterest}
+          />
+        </label>
+        <label>
+          Estimated value (INR)
+          <input
+            min="0"
+            onChange={(event) => setEstimatedValue(event.target.value)}
+            type="number"
+            value={estimatedValue}
+          />
+        </label>
+        <label>
+          Owner
+          <Select
+            ariaLabel="Lead owner"
+            onChange={setOwnerId}
+            options={[
+              { value: "", label: "Unassigned" },
+              ...users.map((user) => ({
+                value: user.id,
+                label: `${user.firstName} ${user.lastName}`
+              }))
+            ]}
+            value={ownerId}
+          />
+        </label>
+        <label>
+          Next action
+          <input onChange={(event) => setNextAction(event.target.value)} value={nextAction} />
+        </label>
+      </div>
+      <footer>
+        <Button
+          disabled={
+            busy ||
+            loadingRelationships ||
+            (creatingCompany && !companyName.trim()) ||
+            (creatingContact && (!firstName.trim() || !lastName.trim()))
+          }
+          type="submit"
+          variant="primary"
+        >
+          {busy ? "Creating lead" : "Create lead"}
+        </Button>
+      </footer>
+    </form>
+  );
+}
+
 export interface CrmRealtimeRefreshPlan {
   fullWorkspace: boolean;
   leadList: boolean;
@@ -427,6 +725,15 @@ function formatMoney(value: string | null, currency: string): string {
   }).format(Number(value));
 }
 
+function formatBusinessLabel(value: string | null | undefined, fallback = "Not set"): string {
+  if (!value) {
+    return fallback;
+  }
+
+  const label = value.replaceAll("_", " ").trim().toLowerCase();
+  return label.length > 0 ? `${label.charAt(0).toUpperCase()}${label.slice(1)}` : fallback;
+}
+
 function temperatureTone(temperature: LeadTemperatureName): "hot" | "warm" | "neutral" {
   if (temperature === "HOT") {
     return "hot";
@@ -532,6 +839,7 @@ export function CrmWorkspace({
   const [taskState, setTaskState] = useState<TaskState>({ tasks: [], loading: false, error: null });
   const [workspaceTasks, setWorkspaceTasks] = useState<TaskDto[]>([]);
   const [quickViewOpen, setQuickViewOpen] = useState(false);
+  const [createLeadOpen, setCreateLeadOpen] = useState(false);
   const [proposalState, setProposalState] = useState<ProposalState>(initialProposalState);
   const [meetingState, setMeetingState] = useState<MeetingState>(() => createInitialMeetingState());
   const [briefingState, setBriefingState] = useState<BriefingState>(initialBriefingState);
@@ -2071,6 +2379,14 @@ export function CrmWorkspace({
                 Pipeline
               </button>
             </div>
+            <button
+              className="workspace-create-button"
+              onClick={() => setCreateLeadOpen(true)}
+              type="button"
+            >
+              <Plus size={16} />
+              New lead
+            </button>
             {canSyncZoho ? (
               <button
                 className="workspace-sync-button"
@@ -2230,21 +2546,39 @@ export function CrmWorkspace({
         ) : null}
       </div>
       {!isProfile ? (
-        <LeadQuickView
-          activities={state.activities}
-          lead={state.selectedLead}
-          qualification={qualificationState.qualification}
-          tasks={taskState.tasks}
-          tasksLoading={taskState.loading}
-          tasksError={taskState.error}
-          meetings={meetingState.requests}
-          open={quickViewOpen}
-          onClose={() => setQuickViewOpen(false)}
-          onCompleteTask={completeLeadTask}
-          onOpenProfile={() => {
-            if (state.selectedLead) onRouteChange?.(state.selectedLead.id, "Overview");
-          }}
-        />
+        <>
+          <LeadQuickView
+            activities={state.activities}
+            lead={state.selectedLead}
+            qualification={qualificationState.qualification}
+            tasks={taskState.tasks}
+            tasksLoading={taskState.loading}
+            tasksError={taskState.error}
+            meetings={meetingState.requests}
+            open={quickViewOpen}
+            onClose={() => setQuickViewOpen(false)}
+            onCompleteTask={completeLeadTask}
+            onOpenProfile={() => {
+              if (state.selectedLead) onRouteChange?.(state.selectedLead.id, "Overview");
+            }}
+          />
+          <Modal open={createLeadOpen} onClose={() => setCreateLeadOpen(false)} title="New lead">
+            <NewLeadForm
+              accessToken={accessToken}
+              currentUser={currentUser}
+              users={state.users}
+              onCreated={async (lead) => {
+                setCreateLeadOpen(false);
+                await loadWorkspace({ ...initialFilters, search: undefined }, lead.id);
+                toast.success({
+                  title: "Lead created",
+                  detail: `${lead.contact.firstName} ${lead.contact.lastName}`
+                });
+                onRouteChange?.(lead.id, "Overview");
+              }}
+            />
+          </Modal>
+        </>
       ) : null}
     </section>
   );
@@ -2398,23 +2732,30 @@ function LeadList({
           const priority = leadPriority(tasks.filter((task) => task.leadId === lead.id));
           return (
             <div
+              aria-label={`Open ${leadName(lead)}`}
               className={`lead-row ${lead.id === selectedLeadId ? "selected" : ""}`}
               key={lead.id}
+              onClick={() => void onSelect(lead.id)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  void onSelect(lead.id);
+                }
+              }}
               role="row"
+              tabIndex={0}
             >
               <span>
                 <input
                   aria-label={`Select ${leadName(lead)}`}
                   checked={selectedIds.has(lead.id)}
                   onChange={() => toggle(lead.id)}
+                  onClick={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => event.stopPropagation()}
                   type="checkbox"
                 />
               </span>
-              <button
-                className="lead-primary-cell"
-                onClick={() => void onSelect(lead.id)}
-                type="button"
-              >
+              <div className="lead-primary-cell">
                 <span className="lead-avatar" aria-hidden="true">
                   {lead.contact.firstName.slice(0, 1)}
                   {lead.contact.lastName.slice(0, 1)}
@@ -2423,21 +2764,27 @@ function LeadList({
                   <strong>{leadName(lead)}</strong>
                   <small>{lead.contact.email ?? "No email"}</small>
                 </span>
-              </button>
-              <span>{lead.company.name}</span>
-              <span>
+              </div>
+              <span title={lead.company.name}>{lead.company.name}</span>
+              <span
+                title={lead.owner ? `${lead.owner.firstName} ${lead.owner.lastName}` : "Unassigned"}
+              >
                 {lead.owner ? `${lead.owner.firstName} ${lead.owner.lastName}` : "Unassigned"}
               </span>
               <span>
                 <StatusBadge tone="neutral">{lead.status.replaceAll("_", " ")}</StatusBadge>
               </span>
-              <span>{lead.stage.label}</span>
-              <span>{priority === "NONE" ? "-" : priority}</span>
+              <span title={lead.stage.label}>{lead.stage.label}</span>
+              <span title={priority === "NONE" ? "No priority" : priority}>
+                {priority === "NONE" ? "-" : priority}
+              </span>
               <span>
                 <strong>{lead.score}</strong>
                 <small>{lead.temperature}</small>
               </span>
-              <span>{lead.nextAction ?? "No next action"}</span>
+              <span title={lead.nextAction ?? "No next action"}>
+                {lead.nextAction ?? "No next action"}
+              </span>
             </div>
           );
         })}
@@ -3018,30 +3365,43 @@ function DetailTabPanel({
   }
 
   if (tab === "Overview") {
+    const openTaskCount = taskState.tasks.filter(
+      (task) => task.status === "OPEN" || task.status === "IN_PROGRESS"
+    ).length;
+    const recentActivities = activities.slice(0, 3);
+    const ownershipState = formatBusinessLabel(lead.automationOwnershipState);
+
     return (
       <div className="tab-panel tab-panel-structured">
-        <TabSection
-          eyebrow="Overview"
-          title="Lead snapshot"
-          meta={lead.status.replaceAll("_", " ")}
-        >
+        <TabSection eyebrow="Overview" title="Operational overview" meta={ownershipState}>
           <div className="tab-data-grid">
-            <TabData label="Contact" value={`${lead.contact.firstName} ${lead.contact.lastName}`} />
             <TabData
               label="Requirement"
               value={lead.requirement ?? "Requirement not captured yet"}
             />
             <TabData
-              label="Service interest"
-              value={lead.serviceInterest ?? "Service interest not captured yet"}
+              label="Automation context"
+              value={formatBusinessLabel(
+                lead.automationOwnershipReason,
+                "No ownership exception recorded"
+              )}
             />
-            <TabData label="Source" value={lead.source} />
-            <TabData
-              label="Owner"
-              value={lead.owner ? `${lead.owner.firstName} ${lead.owner.lastName}` : "Unassigned"}
-            />
-            <TabData label="Created" value={formatDate(lead.createdAt)} />
+            <TabData label="Open tasks" value={String(openTaskCount)} />
+            <TabData label="Proposal records" value={String(proposalState.proposals.length)} />
+            <TabData label="Meeting requests" value={String(meetingState.requests.length)} />
+            <TabData label="Next action due" value={formatDate(nextActionAt)} />
           </div>
+        </TabSection>
+        <TabSection
+          eyebrow="Recent activity"
+          title="Latest updates"
+          meta={`${String(activities.length)} total`}
+        >
+          {recentActivities.length === 0 ? (
+            <StateBlock title="No activities yet" detail="New lead updates will appear here." />
+          ) : (
+            <LeadTimeline activities={recentActivities} />
+          )}
         </TabSection>
       </div>
     );

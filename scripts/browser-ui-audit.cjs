@@ -5,6 +5,8 @@ const os = require("node:os");
 const ts = require("typescript");
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
 const demoMode = process.env.UI_AUDIT_DEMO === "true";
+const buildersOnly = process.env.UI_AUDIT_BUILDERS_ONLY === "true";
+const requestedRoutes = process.env.UI_AUDIT_ROUTES?.split(",").filter(Boolean) ?? [];
 const baseUrl = process.env.UI_AUDIT_BASE_URL || "http://localhost:5174";
 
 async function main() {
@@ -45,7 +47,7 @@ async function main() {
       const requests = [];
       page.on("pageerror", (error) => errors.push(error.message));
       await page.addInitScript((user) => {
-        localStorage.setItem("shilabs.accessToken", "isolated-ui-audit");
+        localStorage.setItem("shilabs.accessToken", "header.payload.signature");
         localStorage.setItem("shilabs.user", JSON.stringify(user));
         window.WebSocket = class {
           constructor() {
@@ -91,6 +93,8 @@ async function main() {
             "/deals/deal-1",
             "/agents",
             "/agents/agent-outreach?tab=composer",
+            "/agents/agent-outreach?tab=executions",
+            "/agents/agent-outreach?tab=evaluation",
             "/workflows",
             "/workflows/workflow-governed-follow-up?tab=builder",
             "/integrations",
@@ -128,13 +132,35 @@ async function main() {
             "/users",
             "/settings"
           ];
-      for (const route of routes) {
+      const auditedRoutes = requestedRoutes.length
+        ? requestedRoutes
+        : buildersOnly
+          ? [
+              "/agents/agent-outreach?tab=composer",
+              "/agents/agent-outreach?tab=executions",
+              "/agents/agent-outreach?tab=evaluation",
+              "/workflows/workflow-governed-follow-up?tab=builder",
+              "/integrations"
+            ]
+          : routes;
+      for (const route of auditedRoutes) {
         errors.length = 0;
         await page.goto(baseUrl + route);
-        await page.waitForLoadState("networkidle");
+        await page.waitForLoadState("domcontentloaded");
+        await page.waitForTimeout(250);
         if (route.includes("audit=board")) {
           await page.getByRole("button", { name: "Pipeline view" }).click();
           await page.waitForTimeout(150);
+        }
+        if (route.includes("audit=board-scroll")) {
+          const board = page.locator(".deal-board");
+          const emptyColumnBody = page.locator(".deal-column > div:not(:has(article))").first();
+          const before = await board.evaluate((element) => element.scrollLeft);
+          await emptyColumnBody.hover();
+          await page.mouse.wheel(480, 0);
+          await page.waitForTimeout(150);
+          const after = await board.evaluate((element) => element.scrollLeft);
+          if (after <= before) errors.push("Pipeline board did not scroll over empty column space");
         }
         if (route.includes("audit=drawer")) {
           await page
@@ -143,8 +169,29 @@ async function main() {
             .click();
           await page.waitForTimeout(150);
         }
-        if (route.includes("audit=modal")) {
+        if (route.startsWith("/companies") && route.includes("audit=list")) {
+          await page.getByRole("button", { name: "List view" }).click();
+          await page.waitForTimeout(150);
+        }
+        if (route.includes("audit=profile-menu")) {
+          if (width <= 760) await page.getByRole("button", { name: "Open navigation" }).click();
+          await page.getByRole("button", { name: "Open account menu" }).click();
+          await page.waitForTimeout(150);
+        }
+        if (route.startsWith("/deals") && route.includes("audit=modal")) {
           await page.getByRole("button", { name: "New deal", exact: true }).first().click();
+          await page.waitForTimeout(150);
+        }
+        if (route.startsWith("/deals") && route.includes("audit=modal-select")) {
+          await page.getByRole("button", { name: "Select a lead" }).click();
+          await page.waitForTimeout(150);
+        }
+        if (route.startsWith("/agents") && route.includes("audit=modal")) {
+          await page.getByRole("button", { name: "New agent", exact: true }).click();
+          await page.waitForTimeout(150);
+        }
+        if (route.startsWith("/agents") && route.includes("audit=modal-select")) {
+          await page.getByRole("button", { name: "Outreach", exact: true }).click();
           await page.waitForTimeout(150);
         }
         const name = route.replace(/[^a-zA-Z0-9]+/g, "-");
@@ -166,6 +213,46 @@ async function main() {
             })
             .map((el) => el.textContent.trim().slice(0, 100))
         }));
+        const typographyOutliers = await page.evaluate(() => {
+          const productScale = new Set([
+            "11px",
+            "12px",
+            "13px",
+            "14px",
+            "16px",
+            "20px",
+            "24px",
+            "26px",
+            "32px"
+          ]);
+          return [...document.querySelectorAll("body *")]
+            .filter((element) => {
+              const rect = element.getBoundingClientRect();
+              const style = getComputedStyle(element);
+              return (
+                rect.width > 0 &&
+                rect.height > 0 &&
+                style.display !== "none" &&
+                style.visibility !== "hidden" &&
+                element.children.length === 0 &&
+                element.textContent?.trim() &&
+                !["SCRIPT", "STYLE", "OPTION"].includes(element.tagName)
+              );
+            })
+            .map((element) => ({
+              size: getComputedStyle(element).fontSize,
+              text: element.textContent.trim().slice(0, 50)
+            }))
+            .filter(({ size }) => !productScale.has(size))
+            .slice(0, 8);
+        });
+        if (typographyOutliers.length) {
+          errors.push(
+            `Typography outside product scale: ${typographyOutliers
+              .map(({ size, text }) => `${size} (${text})`)
+              .join(", ")}`
+          );
+        }
         const tableAlignmentErrors = await page.evaluate(() => {
           const tables = [
             ["Leads", ".lead-row-head", ".lead-row:not(.lead-row-head)"],
@@ -210,6 +297,52 @@ async function main() {
           });
         });
         errors.push(...tableAlignmentErrors);
+        if (route.startsWith("/companies") && route.includes("audit=list")) {
+          const clippedCompanyActions = await page.evaluate(() =>
+            [...document.querySelectorAll(".company-collection.list .company-card > footer")]
+              .filter((footer) =>
+                [...footer.querySelectorAll(".contact-quick-actions a, .ui-button")].some(
+                  (control) => {
+                    const item = control.getBoundingClientRect();
+                    const container = footer.getBoundingClientRect();
+                    return (
+                      item.width < 31 ||
+                      item.left < container.left - 1 ||
+                      item.right > container.right + 1
+                    );
+                  }
+                )
+              )
+              .map((footer) => footer.closest(".company-card")?.querySelector("h3")?.textContent)
+          );
+          if (clippedCompanyActions.length)
+            errors.push(`Clipped company actions: ${clippedCompanyActions.join(", ")}`);
+        }
+        if (route.includes("audit=profile-menu")) {
+          const hiddenMenuItems = await page.evaluate(() =>
+            [...document.querySelectorAll('.profile-popup [role="menuitem"]')]
+              .filter((item) => {
+                const rect = item.getBoundingClientRect();
+                const center = document.elementFromPoint(
+                  rect.left + rect.width / 2,
+                  rect.top + rect.height / 2
+                );
+                return (
+                  rect.width < 120 ||
+                  rect.height < 36 ||
+                  rect.left < 0 ||
+                  rect.right > innerWidth ||
+                  rect.top < 0 ||
+                  rect.bottom > innerHeight ||
+                  !center ||
+                  !item.contains(center)
+                );
+              })
+              .map((item) => item.textContent?.trim())
+          );
+          if (hiddenMenuItems.length)
+            errors.push(`Account menu items are clipped: ${hiddenMenuItems.join(", ")}`);
+        }
         if (width > 760) {
           const collapseVisible = await page.evaluate(() => {
             const control = document.querySelector(".sidebar-collapse");

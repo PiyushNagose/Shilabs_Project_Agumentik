@@ -952,7 +952,7 @@ async function openCrm(): Promise<void> {
 
 async function openFirstLeadProfile(): Promise<void> {
   await openCrm();
-  fireEvent.click(await screen.findByRole("button", { name: /Priya Prospect/ }));
+  fireEvent.click(await screen.findByRole("row", { name: /Open Priya Prospect/ }));
   fireEvent.click(await screen.findByRole("button", { name: /View full profile/ }));
   await screen.findByLabelText("Lead profile");
 }
@@ -2371,7 +2371,7 @@ describe("web app", () => {
 
     const search = await screen.findByRole("searchbox", { name: "Search leads" });
     fireEvent.change(search, { target: { value: "Priya" } });
-    fireEvent.click(await screen.findByRole("button", { name: /Priya Prospect/ }));
+    fireEvent.click(await screen.findByRole("row", { name: /Open Priya Prospect/ }));
 
     const quickView = await screen.findByRole("dialog", { name: "Lead quick view" });
     expect(await within(quickView).findByText("Lead stage changed")).toBeTruthy();

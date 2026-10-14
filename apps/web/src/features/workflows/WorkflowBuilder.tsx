@@ -39,13 +39,14 @@ import {
 const catalog: { type: WorkflowNodeType; label: string; icon: typeof CircleDot }[] = [
   { type: "TRIGGER", label: "Trigger", icon: CircleDot },
   { type: "CONDITION", label: "Condition", icon: GitBranch },
+  { type: "CONDITION", label: "If / Else", icon: GitBranch },
   { type: "WAIT", label: "Wait", icon: Clock3 },
-  { type: "CRM_ACTION", label: "CRM Action", icon: Wrench },
+  { type: "CRM_ACTION", label: "Action", icon: Wrench },
   { type: "TASK", label: "Task", icon: ListTodo },
   { type: "COMMUNICATION", label: "Communication", icon: Mail },
-  { type: "AGENT_INVOKE", label: "Agent Invoke", icon: Bot },
+  { type: "AGENT_INVOKE", label: "Agent", icon: Bot },
   { type: "INTEGRATION_ACTION", label: "Integration Action", icon: Link2 },
-  { type: "HUMAN_APPROVAL", label: "Human Approval", icon: Hand },
+  { type: "HUMAN_APPROVAL", label: "Handoff", icon: Hand },
   { type: "END", label: "End", icon: Square }
 ];
 function defaultConfig(type: WorkflowNodeType): WorkflowNodeDto["config"] {
@@ -146,12 +147,12 @@ export function WorkflowBuilder({
       )
     });
   };
-  const addNode = (type: WorkflowNodeType): void => {
+  const addNode = (type: WorkflowNodeType, label?: string): void => {
     const id = `${type.toLowerCase()}-${Date.now().toString(36)}`;
     const next: WorkflowNodeDto = {
       id,
       type,
-      label: catalog.find((item) => item.type === type)?.label ?? type,
+      label: label ?? catalog.find((item) => item.type === type)?.label ?? type,
       position: {
         x: 260 + (definition.nodes.length % 2) * 260,
         y: 60 + definition.nodes.length * 120
@@ -226,11 +227,16 @@ export function WorkflowBuilder({
         </p>
       ) : null}
       <div className="composer-layout">
-        <aside className="composer-palette">
+        <aside className="composer-palette" aria-label="Workflow nodes">
           <strong>NODES</strong>
           <p>Add an orchestration step.</p>
           {catalog.map(({ type, label, icon: Icon }) => (
-            <button key={type} disabled={!canManage} onClick={() => addNode(type)} type="button">
+            <button
+              key={`${type}-${label}`}
+              disabled={!canManage}
+              onClick={() => addNode(type, label)}
+              type="button"
+            >
               <Icon size={15} />
               <span>{label}</span>
               <Plus size={13} />

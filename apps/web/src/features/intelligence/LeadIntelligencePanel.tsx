@@ -269,7 +269,7 @@ export function LeadIntelligencePanel({
           />
           {canManage ? (
             <Button
-              variant="ghost"
+              variant="secondary"
               disabled={busy}
               onClick={() =>
                 void run(() =>
