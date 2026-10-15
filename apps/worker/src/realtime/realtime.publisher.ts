@@ -2,7 +2,18 @@ import type { DomainEventOutbox, Prisma } from "@prisma/client";
 import { getWorkerConfig } from "@shilabs/shared-config";
 
 type RealtimeEntityType =
-  "workspace" | "lead" | "dashboard" | "operations" | "notifications" | "domain-event";
+  | "workspace"
+  | "lead"
+  | "contact"
+  | "company"
+  | "conversation"
+  | "qualification"
+  | "proposal"
+  | "meeting"
+  | "dashboard"
+  | "operations"
+  | "notifications"
+  | "domain-event";
 
 function payloadString(event: DomainEventOutbox, key: string): string | null {
   const payload = event.payload as Prisma.JsonObject;

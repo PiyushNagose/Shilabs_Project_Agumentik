@@ -3,6 +3,7 @@ import type { CompanyDto } from "@shilabs/shared-types";
 import { normalizeWebsite } from "@shilabs/validation";
 import { AppError } from "../../shared/errors.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
+import { publishRealtimeEvent } from "../realtime/realtime.service.js";
 import {
   assertCanAccessCompany,
   companyVisibilityWhere
@@ -78,7 +79,7 @@ export async function createCompany(
   await ensureWebsiteIsAvailable(normalizedWebsite);
 
   try {
-    return toCompanyDto(
+    const company = toCompanyDto(
       await createCompanyRecord({
         workspaceId: actor.activeWorkspaceId,
         name: input.name,
@@ -90,6 +91,12 @@ export async function createCompany(
         notes: input.notes ?? null
       })
     );
+    await publishRealtimeEvent({
+      workspaceId: actor.activeWorkspaceId,
+      entityType: "company",
+      action: "company-created"
+    });
+    return company;
   } catch (error) {
     if (isUniqueConstraintError(error)) {
       throw new AppError(409, "CONFLICT", "A company with this website already exists");
@@ -111,7 +118,7 @@ export async function updateCompany(
   await ensureWebsiteIsAvailable(normalizedWebsite, companyId);
 
   try {
-    return toCompanyDto(
+    const company = toCompanyDto(
       await updateCompanyRecord(companyId, {
         name: input.name,
         website: "website" in input ? (input.website ?? null) : undefined,
@@ -122,6 +129,12 @@ export async function updateCompany(
         notes: "notes" in input ? (input.notes ?? null) : undefined
       })
     );
+    await publishRealtimeEvent({
+      workspaceId: actor.activeWorkspaceId,
+      entityType: "company",
+      action: "company-updated"
+    });
+    return company;
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
       throw new AppError(404, "NOT_FOUND", "Company not found");

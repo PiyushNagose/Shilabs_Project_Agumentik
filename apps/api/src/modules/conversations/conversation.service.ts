@@ -32,6 +32,8 @@ import {
 import { autoStartLeadAiAutomation } from "../followups/lead-ai-automation.service.js";
 import { listProposals } from "../proposals/proposal.service.js";
 import { getQualification } from "../qualification/qualification.service.js";
+import { publishRealtimeEvent } from "../realtime/realtime.service.js";
+import { completeTask } from "../tasks/task.service.js";
 import { conversationEvents, messageEvents } from "./conversation.events.js";
 import type {
   CreateConversationInput,
@@ -84,6 +86,19 @@ export function toMessageDto(message: MessageRecord): MessageDto {
     createdAt: message.createdAt.toISOString(),
     senderUser: message.senderUser ? toPublicUser(message.senderUser) : null
   };
+}
+
+async function publishConversationUpdate(
+  leadId: string,
+  conversationId: string,
+  action: string
+): Promise<void> {
+  await publishRealtimeEvent({
+    entityType: "conversation",
+    action,
+    leadId,
+    conversationId
+  });
 }
 
 type HumanTakeoverRecord = Prisma.HumanTakeoverGetPayload<{ include: { takenOverBy: true } }>;
@@ -188,6 +203,7 @@ export async function createConversation(
     mode: input.mode
   });
 
+  await publishConversationUpdate(lead.id, conversation.id, "conversation-created");
   return toConversationDto(conversation);
 }
 
@@ -281,6 +297,7 @@ export async function appendMessage(
     throw error;
   });
 
+  await publishConversationUpdate(conversation.leadId, conversation.id, "message-appended");
   return toMessageDto(message);
 }
 
@@ -308,6 +325,20 @@ export async function sendHumanReply(
   if (conversation.mode !== "HUMAN" && !existingOutboundEmail) {
     throw new AppError(409, "CONFLICT", "Human replies require conversation mode HUMAN");
   }
+  const pendingHumanEmailTask =
+    conversation.mode === "HUMAN" &&
+    ["HUMAN_ACTIVE", "HUMAN_REQUIRED"].includes(conversation.lead.automationOwnershipState)
+      ? ((
+          await prisma.task.findMany({
+            where: {
+              leadId: conversation.leadId,
+              isNextAction: true,
+              status: { in: ["OPEN", "IN_PROGRESS"] }
+            },
+            orderBy: { updatedAt: "desc" }
+          })
+        ).find((task) => /email|message|outreach/iu.test(task.title)) ?? null)
+      : null;
   const outboundEmail = await sendOutboundEmail(
     actor,
     {
@@ -414,6 +445,10 @@ export async function sendHumanReply(
     }
   }
 
+  if (pendingHumanEmailTask) {
+    await completeTask(actor, pendingHumanEmailTask.id);
+  }
+
   const ownership = await completeHumanAction({
     leadId: conversation.leadId,
     reason: "HUMAN_REPLY_SENT",
@@ -430,6 +465,7 @@ export async function sendHumanReply(
     });
   }
 
+  await publishConversationUpdate(conversation.leadId, conversation.id, "human-reply-sent");
   return { outboundEmail, message: toMessageDto(message), zohoTimeline };
 }
 
@@ -483,6 +519,7 @@ export async function updateConversationMode(
     });
   }
 
+  await publishConversationUpdate(existing.leadId, conversationId, "conversation-mode-changed");
   return toConversationDto(conversation);
 }
 
@@ -508,6 +545,7 @@ export async function startHumanTakeover(
         data: { mode: "HUMAN" }
       });
     }
+    await publishConversationUpdate(existing.leadId, conversationId, "human-takeover-started");
     return toHumanTakeoverDto(active);
   }
 
@@ -578,6 +616,7 @@ export async function startHumanTakeover(
     sourceId: takeover.id
   });
 
+  await publishConversationUpdate(existing.leadId, conversationId, "human-takeover-started");
   return toHumanTakeoverDto(takeover);
 }
 

@@ -109,7 +109,9 @@ async function loadLead(
 }
 
 function clip(value: string, length = 420): string {
-  return value.replace(/\s+/g, " ").trim().slice(0, length);
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= length) return normalized;
+  return `${normalized.slice(0, Math.max(0, length - 3)).trimEnd()}...`;
 }
 
 function latestContextChangeAt(lead: LeadContext): Date {

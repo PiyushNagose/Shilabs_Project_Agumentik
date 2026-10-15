@@ -428,6 +428,9 @@ describe("M5 CRM pipeline and deals API", () => {
     expect(deal.stage.key).toBe("PROPOSAL");
     expect(deal.probability).toBe(70);
     expect(deal.status).toBe("OPEN");
+    await expect(
+      prisma.lead.findUniqueOrThrow({ where: { id: lead.id }, select: { stageId: true } })
+    ).resolves.toMatchObject({ stageId: proposalStage.id });
 
     const fetchedResponse = await request(app)
       .get(`/api/deals/${deal.id}`)
@@ -450,6 +453,7 @@ describe("M5 CRM pipeline and deals API", () => {
     const lead = await createLead(token);
     const proposalStage = await stageByKey("PROPOSAL");
     const negotiationStage = await stageByKey("NEGOTIATION");
+    const wonStage = await stageByKey("WON");
     const createResponse = await request(app)
       .post("/api/deals")
       .set("Authorization", `Bearer ${token}`)
@@ -477,6 +481,9 @@ describe("M5 CRM pipeline and deals API", () => {
     expect(updated.stage.key).toBe("NEGOTIATION");
     expect(updated.probability).toBe(85);
     expect(updated.proposalStatus).toBe("SENT");
+    await expect(
+      prisma.lead.findUniqueOrThrow({ where: { id: lead.id }, select: { stageId: true } })
+    ).resolves.toMatchObject({ stageId: negotiationStage.id });
 
     const activity = await prisma.activity.findFirstOrThrow({
       where: {
@@ -492,6 +499,31 @@ describe("M5 CRM pipeline and deals API", () => {
         entityId: deal.id,
         action: "DEAL_UPDATED"
       }
+    });
+
+    await prisma.lead.update({
+      where: { id: lead.id },
+      data: { nextAction: "Human follow-up required", nextActionAt: new Date() }
+    });
+    const wonResponse = await request(app)
+      .patch(`/api/deals/${deal.id}`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ stageId: wonStage.id })
+      .expect(200);
+    const wonDeal = wonResponse.body as unknown as DealDto;
+
+    expect(wonDeal.status).toBe("WON");
+    expect(wonDeal.stage.key).toBe("WON");
+    await expect(
+      prisma.lead.findUniqueOrThrow({
+        where: { id: lead.id },
+        select: { stageId: true, status: true, nextAction: true, nextActionAt: true }
+      })
+    ).resolves.toMatchObject({
+      stageId: wonStage.id,
+      status: "WON",
+      nextAction: null,
+      nextActionAt: null
     });
   }, 45000);
 });

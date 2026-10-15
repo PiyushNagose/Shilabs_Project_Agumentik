@@ -271,6 +271,13 @@ export async function startFollowUpSequence(
     });
   }
 
+  const activeSequence = await prisma.followUpSequence.findFirst({
+    where: { leadId, status: "ACTIVE" },
+    orderBy: { createdAt: "desc" },
+    select: { id: true }
+  });
+  if (activeSequence) return loadSequence(activeSequence.id);
+
   const approvedKnowledge = await listApprovedKnowledge({ limit: 20 });
   const timing = getFollowUpTimingConfig(options?.env);
   const messages = conversation

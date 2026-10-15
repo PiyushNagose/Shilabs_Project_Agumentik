@@ -301,7 +301,9 @@ export function LeadContactsWorkspace({
     },
     accepts: (event) =>
       event.type === "realtime:reconnected" ||
-      ["workspace", "lead", "task", "activity"].includes(event.entityType),
+      ["workspace", "company", "contact", "lead", "task", "activity"].includes(
+        event.entityType
+      ),
     errorMessage: "Lead contacts could not be loaded"
   });
 

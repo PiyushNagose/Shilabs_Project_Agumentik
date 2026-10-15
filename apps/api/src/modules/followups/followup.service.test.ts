@@ -9,7 +9,10 @@ import {
   listFollowUpSequencesForLead,
   startFollowUpSequence
 } from "./followup.service.js";
-import { autoStartLeadAiAutomation } from "./lead-ai-automation.service.js";
+import {
+  autoStartLeadAiAutomation,
+  shouldAutoStartLeadAiAutomation
+} from "./lead-ai-automation.service.js";
 
 const actorEmail = "r13-followup-admin@example.local";
 const productionTimingEnv = {
@@ -158,6 +161,19 @@ async function seedLead(input?: { doNotContact?: boolean }) {
 }
 
 describe("R13 follow-up sequence service", () => {
+  it("enables automatic follow-up in the real local E2E environment", () => {
+    expect(
+      shouldAutoStartLeadAiAutomation({ APP_ENV: "e2e-local", NODE_ENV: "test" })
+    ).toBe(true);
+    expect(
+      shouldAutoStartLeadAiAutomation({
+        APP_ENV: "e2e-local",
+        NODE_ENV: "test",
+        AI_AUTOSTART_ON_LEAD_CREATE: "false"
+      })
+    ).toBe(false);
+  });
+
   beforeEach(async () => {
     await cleanup();
   }, 45000);
@@ -232,6 +248,34 @@ describe("R13 follow-up sequence service", () => {
     await expect(
       prisma.domainEventOutbox.count({ where: { correlationId: sequence?.id } })
     ).resolves.toBe(4);
+  }, 45000);
+
+  it("reuses the active lead sequence when a second start uses a different key", async () => {
+    const actor = await seedActor();
+    const lead = await seedLead();
+    const options = {
+      provider: new FollowUpTestProvider(),
+      now: new Date("2026-09-17T00:00:00.000Z"),
+      env: productionTimingEnv
+    };
+
+    const first = await startFollowUpSequence(
+      actor,
+      lead.id,
+      { idempotencyKey: `r13-active-first-${lead.id}` },
+      options
+    );
+    const second = await startFollowUpSequence(
+      actor,
+      lead.id,
+      { idempotencyKey: `r13-active-second-${lead.id}` },
+      options
+    );
+
+    expect(second.id).toBe(first.id);
+    await expect(
+      prisma.followUpSequence.count({ where: { leadId: lead.id, status: "ACTIVE" } })
+    ).resolves.toBe(1);
   }, 45000);
 
   it("persists attention-required state when eligibility blocks automation", async () => {

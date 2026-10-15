@@ -22,14 +22,15 @@ function envFlagEnabled(value: string | undefined): boolean | null {
 }
 
 export function shouldAutoStartLeadAiAutomation(env: NodeJS.ProcessEnv = process.env): boolean {
+  const explicit = envFlagEnabled(env.AI_AUTOSTART_ON_LEAD_CREATE);
+  if (explicit !== null) return explicit;
+  if (env.APP_ENV === "e2e-local") return true;
   if (
     (env.NODE_ENV === "test" || env.VITEST === "true") &&
     env.AI_AUTOSTART_ON_LEAD_CREATE_IN_TEST !== "true"
   ) {
     return false;
   }
-  const explicit = envFlagEnabled(env.AI_AUTOSTART_ON_LEAD_CREATE);
-  if (explicit !== null) return explicit;
   return true;
 }
 

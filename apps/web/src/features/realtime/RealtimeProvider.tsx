@@ -15,6 +15,12 @@ import { useAuth } from "../auth/AuthProvider.js";
 export type RealtimeEntityType =
   | "workspace"
   | "lead"
+  | "contact"
+  | "company"
+  | "conversation"
+  | "qualification"
+  | "proposal"
+  | "meeting"
   | "deal"
   | "pipeline"
   | "task"
@@ -67,6 +73,12 @@ function isRealtimeUpdate(value: unknown): value is RealtimeUpdateEvent {
     [
       "workspace",
       "lead",
+      "contact",
+      "company",
+      "conversation",
+      "qualification",
+      "proposal",
+      "meeting",
       "deal",
       "pipeline",
       "task",

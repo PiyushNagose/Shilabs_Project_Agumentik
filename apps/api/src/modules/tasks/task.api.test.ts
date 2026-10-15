@@ -171,7 +171,8 @@ describe("Phase 2 task and activity API", () => {
       .expect(200);
     expect(await prisma.lead.findUniqueOrThrow({ where: { id: lead.id } })).toMatchObject({
       nextAction: null,
-      nextActionAt: null
+      nextActionAt: null,
+      automationOwnershipState: "HUMAN_ACTIVE"
     });
   });
 

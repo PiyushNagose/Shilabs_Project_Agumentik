@@ -12,6 +12,7 @@ import { publishDomainEvent } from "../domain-events/domain-events.service.js";
 import { toLeadDto } from "../leads/lead.service.js";
 import { completeHumanAction } from "../leads/lead-automation-ownership.service.js";
 import { autoStartLeadAiAutomation } from "../followups/lead-ai-automation.service.js";
+import { publishRealtimeEvent } from "../realtime/realtime.service.js";
 import type {
   ConfirmMeetingRequestInput,
   CreateMeetingRequestInput,
@@ -89,6 +90,15 @@ export function toMeetingRequestDto(request: MeetingRequestRecord): MeetingReque
     confirmedBy: request.confirmedBy ? toPublicUser(request.confirmedBy) : null,
     slots: request.slots.map(toSlotDto)
   };
+}
+
+async function publishMeetingUpdate(request: MeetingRequestRecord, action: string): Promise<void> {
+  await publishRealtimeEvent({
+    entityType: "meeting",
+    action,
+    leadId: request.leadId,
+    conversationId: request.conversationId
+  });
 }
 
 function defaultIdempotencyKey(input: CreateMeetingRequestInput): string {
@@ -508,6 +518,7 @@ export async function createMeetingRequest(
       { maxWait: 10000, timeout: 30000 }
     );
 
+    await publishMeetingUpdate(request, "meeting-request-updated");
     return toMeetingRequestDto(request);
   }
 
@@ -633,6 +644,7 @@ export async function createMeetingRequest(
       return existingRequest;
     });
 
+  await publishMeetingUpdate(request, "meeting-request-created");
   return toMeetingRequestDto(request);
 }
 
@@ -705,6 +717,7 @@ export async function confirmMeetingRequest(
       },
       include: meetingRequestInclude
     });
+    await publishMeetingUpdate(updated, "meeting-request-attention-required");
     return toMeetingRequestDto(updated);
   }
 
@@ -735,6 +748,7 @@ export async function confirmMeetingRequest(
       },
       include: meetingRequestInclude
     });
+    await publishMeetingUpdate(updated, "meeting-request-attention-required");
     return toMeetingRequestDto(updated);
   }
   const externalMeetingId = createResult.externalMeetingId;
@@ -871,5 +885,6 @@ export async function confirmMeetingRequest(
     });
   }
 
+  await publishMeetingUpdate(confirmed, "meeting-confirmed");
   return toMeetingRequestDto(confirmed);
 }

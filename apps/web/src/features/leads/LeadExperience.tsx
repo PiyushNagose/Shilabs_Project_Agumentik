@@ -64,6 +64,28 @@ function actorLabel(activity: ActivityDto): string {
   return "CRM user";
 }
 
+function ownershipActivityDescription(activity: ActivityDto): string | null {
+  if (activity.type !== "AUTOMATION_OWNERSHIP_CHANGED") return null;
+  const metadata = activity.metadata as { from?: unknown; to?: unknown } | null;
+  const from = typeof metadata?.from === "string" ? metadata.from : "";
+  const to = typeof metadata?.to === "string" ? metadata.to : "";
+  if (to === "HUMAN_ACTION_COMPLETED") return "Required human action completed.";
+  if (to === "AI_ACTIVE") return "AI follow-up resumed after the human action.";
+  if (to === "HUMAN_REQUIRED") return "AI paused and assigned the next action to a person.";
+  if (to === "HUMAN_ACTIVE") return "A person is handling the next action.";
+  if (to === "AI_STOPPED") return "AI follow-up stopped.";
+  if (from && to) {
+    return `Ownership changed from ${from.replaceAll("_", " ")} to ${to.replaceAll("_", " ")}.`;
+  }
+  return "Automation ownership updated.";
+}
+
+function activityDescription(activity: ActivityDto): string {
+  const ownershipDescription = ownershipActivityDescription(activity);
+  if (ownershipDescription !== null) return ownershipDescription;
+  return activity.summary || activity.description || "Activity recorded";
+}
+
 export function LeadFactStrip({
   lead,
   qualification,
@@ -118,8 +140,10 @@ export function LeadTimeline({ activities }: { activities: ActivityDto[] }): Rea
               </div>
               <time dateTime={activity.occurredAt}>{formatDate(activity.occurredAt)}</time>
             </header>
-            <p>{activity.summary || activity.description || "Activity recorded"}</p>
-            {activity.summary && activity.description !== activity.summary ? (
+            <p>{activityDescription(activity)}</p>
+            {!ownershipActivityDescription(activity) &&
+            activity.summary &&
+            activity.description !== activity.summary ? (
               <small>{activity.description}</small>
             ) : null}
           </article>
@@ -133,12 +157,16 @@ export function LeadTaskList({
   tasks,
   loading,
   error,
-  onComplete
+  onComplete,
+  onComposeEmail,
+  automationOwnershipState
 }: {
   tasks: TaskDto[];
   loading: boolean;
   error: string | null;
   onComplete: (taskId: string) => Promise<void>;
+  onComposeEmail?: () => void;
+  automationOwnershipState?: string;
 }): React.JSX.Element {
   if (loading)
     return <StateBlock title="Loading tasks" detail="Fetching assigned and automated work." />;
@@ -149,16 +177,48 @@ export function LeadTaskList({
     <div className="lead-task-list">
       {tasks.map((task) => {
         const completed = task.status === "COMPLETED";
+        const isEmailAction = /email|message|outreach/iu.test(task.title);
+        const isAiScheduledEmail =
+          !completed && automationOwnershipState === "AI_ACTIVE" && isEmailAction;
+        const requiresTrackedEmail =
+          !completed &&
+          Boolean(onComposeEmail) &&
+          automationOwnershipState !== "AI_ACTIVE" &&
+          isEmailAction;
         return (
           <article className={completed ? "completed" : ""} key={task.id}>
             <button
-              aria-label={completed ? `${task.title} completed` : `Complete ${task.title}`}
-              className="task-check"
-              disabled={completed}
-              onClick={() => void onComplete(task.id)}
+              aria-label={
+                completed
+                  ? `${task.title} completed`
+                  : isAiScheduledEmail
+                    ? `${task.title} scheduled for AI`
+                    : requiresTrackedEmail
+                      ? `Send ${task.title}`
+                      : `Complete ${task.title}`
+              }
+              className={`task-check${requiresTrackedEmail ? " task-email-action" : ""}`}
+              disabled={completed || isAiScheduledEmail}
+              onClick={() => {
+                if (requiresTrackedEmail) onComposeEmail?.();
+                else void onComplete(task.id);
+              }}
+              title={
+                isAiScheduledEmail
+                  ? "Scheduled for AI follow-up"
+                  : requiresTrackedEmail
+                    ? "Compose and send tracked email"
+                    : undefined
+              }
               type="button"
             >
-              {completed ? <Check size={15} /> : null}
+              {completed ? (
+                <Check size={15} />
+              ) : isAiScheduledEmail ? (
+                <Clock3 size={15} />
+              ) : requiresTrackedEmail ? (
+                <Mail size={15} />
+              ) : null}
             </button>
             <div className="task-content">
               <strong>{task.title}</strong>
@@ -195,6 +255,7 @@ export function LeadQuickView({
   open,
   onClose,
   onCompleteTask,
+  onComposeEmail,
   onOpenProfile
 }: {
   activities: ActivityDto[];
@@ -207,6 +268,7 @@ export function LeadQuickView({
   open: boolean;
   onClose: () => void;
   onCompleteTask: (taskId: string) => Promise<void>;
+  onComposeEmail?: () => void;
   onOpenProfile: () => void;
 }): React.JSX.Element | null {
   return (
@@ -215,9 +277,16 @@ export function LeadQuickView({
       onClose={onClose}
       title="Lead quick view"
       footer={
-        <Button onClick={onOpenProfile} variant="primary">
-          View full profile <ChevronRight size={16} />
-        </Button>
+        <>
+          {lead?.contact.email && onComposeEmail ? (
+            <Button onClick={onComposeEmail}>
+              <Mail size={16} /> Send email
+            </Button>
+          ) : null}
+          <Button onClick={onOpenProfile} variant="primary">
+            View full profile <ChevronRight size={16} />
+          </Button>
+        </>
       }
     >
       {!lead ? (
@@ -236,7 +305,15 @@ export function LeadQuickView({
               </p>
             </div>
             <div className="quick-contact-actions">
-              {lead.contact.email ? (
+              {lead.contact.email && onComposeEmail ? (
+                <button
+                  aria-label={`Compose email to ${leadName(lead)}`}
+                  onClick={onComposeEmail}
+                  type="button"
+                >
+                  <Mail size={16} />
+                </button>
+              ) : lead.contact.email ? (
                 <a aria-label={`Email ${leadName(lead)}`} href={`mailto:${lead.contact.email}`}>
                   <Mail size={16} />
                 </a>
@@ -291,6 +368,8 @@ export function LeadQuickView({
               loading={tasksLoading}
               error={tasksError}
               onComplete={onCompleteTask}
+              onComposeEmail={onComposeEmail}
+              automationOwnershipState={lead.automationOwnershipState}
             />
           </section>
 

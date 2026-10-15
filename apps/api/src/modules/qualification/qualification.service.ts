@@ -6,6 +6,7 @@ import type { AIProvider } from "../ai/ai.provider.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
 import { findLeadById } from "../leads/lead.repository.js";
 import { assertCanMutateLead } from "../leads/lead.permissions.js";
+import { publishRealtimeEvent } from "../realtime/realtime.service.js";
 import {
   findLeadForQualification,
   findQualificationByLeadId,
@@ -186,6 +187,11 @@ export async function updateQualification(
     activityDescription: "Lead qualification updated by user",
     before: getSnapshot(existing)
   });
+  await publishRealtimeEvent({
+    entityType: "qualification",
+    action: "qualification-updated",
+    leadId
+  });
   return toQualificationDto(qualification);
 }
 
@@ -229,6 +235,11 @@ export async function recalculateQualification(
     action: qualificationEvents.updated,
     activityDescription: "Lead qualification updated from conversation evidence",
     before: getSnapshot(existing)
+  });
+  await publishRealtimeEvent({
+    entityType: "qualification",
+    action: "qualification-recalculated",
+    leadId
   });
   return toQualificationDto(qualification);
 }

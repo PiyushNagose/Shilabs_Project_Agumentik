@@ -1250,6 +1250,7 @@ nav a.active-nav::after,
 
 .dashboard-action-card p {
   display: -webkit-box;
+  overflow: hidden;
   margin: 0;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;

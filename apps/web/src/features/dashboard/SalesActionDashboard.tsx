@@ -268,9 +268,21 @@ export function SalesActionDashboard({
     load: () => getSalesActionDashboard(accessToken),
     accepts: (event) =>
       event.type === "realtime:reconnected" ||
-      ["dashboard", "lead", "workspace", "notifications", "domain-event"].includes(
-        event.entityType
-      ),
+      [
+        "dashboard",
+        "workspace",
+        "lead",
+        "task",
+        "activity",
+        "conversation",
+        "qualification",
+        "meeting",
+        "proposal",
+        "deal",
+        "order",
+        "notifications",
+        "domain-event"
+      ].includes(event.entityType),
     errorMessage: "Action dashboard could not be loaded"
   });
   const [expandedSections, setExpandedSections] = useState<Set<DashboardExpandableSection>>(

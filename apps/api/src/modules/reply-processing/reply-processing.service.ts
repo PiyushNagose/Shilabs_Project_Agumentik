@@ -466,6 +466,8 @@ async function createFailedRun(input: {
         provider: input.metadata?.providerName,
         model: input.metadata?.model,
         inputContext: input.inputContext,
+        requiresHumanReview: true,
+        humanHandoffRequired: true,
         failureCode: input.code,
         failureMessage: input.message,
         idempotencyKey: input.idempotencyKey
@@ -478,7 +480,7 @@ async function createFailedRun(input: {
         summary: null,
         draftResponse: null,
         requiresHumanReview: true,
-        humanHandoffRequired: false,
+        humanHandoffRequired: true,
         provider: input.metadata?.providerName,
         model: input.metadata?.model,
         inputContext: input.inputContext,
@@ -490,6 +492,15 @@ async function createFailedRun(input: {
     await tx.inboundEmail.update({
       where: { id: input.inbound.id },
       data: { replyProcessingStatus: "FAILED" }
+    });
+    await requireHumanActionInTransaction({
+      client: tx,
+      leadId: input.inbound.lead.id,
+      reason: `REPLY_PROCESSING_FAILED:${input.code}`,
+      actorType: "SYSTEM",
+      sourceType: "REPLY_PROCESSING",
+      sourceId: run.id,
+      correlationId: input.inbound.id
     });
     await tx.auditEvent.create({
       data: {

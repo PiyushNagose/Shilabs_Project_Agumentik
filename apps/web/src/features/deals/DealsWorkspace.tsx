@@ -590,7 +590,16 @@ export function DealsWorkspace({
     },
     accepts: (event) =>
       event.type === "realtime:reconnected" ||
-      ["deal", "pipeline", "lead", "task", "activity"].includes(event.entityType),
+      [
+        "deal",
+        "pipeline",
+        "lead",
+        "task",
+        "activity",
+        "qualification",
+        "meeting",
+        "proposal"
+      ].includes(event.entityType),
     errorMessage: "Deals could not be loaded."
   });
   const detailId = initialDealId ?? selectedId;
@@ -600,7 +609,7 @@ export function DealsWorkspace({
     accepts: (event) =>
       event.type === "realtime:reconnected" ||
       event.entityType === "deal" ||
-      event.entityType === "lead",
+      ["deal", "lead", "qualification", "meeting", "proposal"].includes(event.entityType),
     errorMessage: "Deal details could not be loaded."
   });
   const related = usePersistedResource<RelatedData | null>({
@@ -621,7 +630,7 @@ export function DealsWorkspace({
         : Promise.resolve(null),
     accepts: (event) =>
       event.type === "realtime:reconnected" ||
-      ["deal", "task", "activity", "lead"].includes(event.entityType),
+      ["deal", "task", "activity", "lead", "meeting", "proposal"].includes(event.entityType),
     errorMessage: "Related deal records could not be loaded."
   });
   const data = resource.data;

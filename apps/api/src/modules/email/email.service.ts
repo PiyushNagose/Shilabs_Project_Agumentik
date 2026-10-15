@@ -34,6 +34,7 @@ import type { AuthenticatedUser } from "../auth/auth.types.js";
 import { upsertIntegrationAccount } from "../integrations/integration-mapping.repository.js";
 import { AwsSesProvider } from "../integrations/aws-ses/aws-ses.provider.js";
 import { MailpitEmailProvider } from "../integrations/mailpit/mailpit.provider.js";
+import { requireHumanActionInTransaction } from "../leads/lead-automation-ownership.service.js";
 import { publishRealtimeEvent } from "../realtime/realtime.service.js";
 import type { EmailProvider } from "./email.provider.js";
 import {
@@ -1571,6 +1572,15 @@ export async function ingestSesInboundEmail(input: {
             }
           }
         ]
+      });
+      await requireHumanActionInTransaction({
+        client: tx,
+        leadId: match.leadId,
+        reason: "MEANINGFUL_CLIENT_REPLY:EMAIL",
+        actorType: "PROVIDER",
+        sourceType: "EMAIL_WEBHOOK",
+        sourceId: inbound.id,
+        correlationId: eventId
       });
       const activeFollowUps = await tx.followUpSequence.findMany({
         where: { leadId: match.leadId, workspaceId: match.workspaceId, status: "ACTIVE" },

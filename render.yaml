@@ -40,6 +40,18 @@ services:
         sync: false
       - key: GEMINI_MODEL
         value: gemini-flash-lite-latest
+      - key: GEMINI_EMBEDDING_MODEL
+        value: gemini-embedding-001
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+      - key: OPENAI_EMBEDDING_MODEL
+        value: text-embedding-3-small
+      - key: AI_TIMEOUT_MS
+        value: "30000"
+      - key: AI_MAX_RETRIES
+        value: "1"
       - key: CALENDAR_PROVIDER
         value: google
       - key: GOOGLE_CALENDAR_CLIENT_ID
@@ -50,6 +62,14 @@ services:
         sync: false
       - key: GOOGLE_CALENDAR_ID
         sync: false
+      - key: GOOGLE_CALENDAR_SCOPE
+        value: https://www.googleapis.com/auth/calendar.freebusy https://www.googleapis.com/auth/calendar.events
+      - key: CALENDAR_DEFAULT_TIME_ZONE
+        value: Asia/Kolkata
+      - key: CALENDAR_TIMEOUT_MS
+        value: "30000"
+      - key: CALENDAR_MAX_RETRIES
+        value: "1"
       - key: ZOHO_BIGIN_ACCOUNTS_URL
         sync: false
       - key: ZOHO_BIGIN_API_DOMAIN
@@ -60,10 +80,70 @@ services:
         sync: false
       - key: ZOHO_BIGIN_REFRESH_TOKEN
         sync: false
+      - key: ZOHO_BIGIN_REQUIRED_SCOPES
+        value: ZohoBigin.modules.ALL
+      - key: ZOHO_BIGIN_TIMEOUT_MS
+        value: "30000"
+      - key: ZOHO_BIGIN_MAX_RETRIES
+        value: "1"
       - key: VOICE_PROVIDER
         value: none
       - key: MESSAGING_PROVIDER
         value: none
+      - key: MESSAGING_WEBHOOK_BASE_URL
+        sync: false
+      - key: MESSAGING_TIMEOUT_MS
+        value: "30000"
+      - key: MESSAGING_MAX_RETRIES
+        value: "1"
+      - key: WHATSAPP_WEBHOOK_VERIFY_TOKEN
+        sync: false
+      - key: WHATSAPP_APP_SECRET
+        sync: false
+      - key: WHATSAPP_ACCESS_TOKEN
+        sync: false
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_BUSINESS_ACCOUNT_ID
+        sync: false
+      - key: WHATSAPP_DEFAULT_TEMPLATE_NAME
+        sync: false
+      - key: TWILIO_WHATSAPP_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_WHATSAPP_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_WHATSAPP_SANDBOX_FROM
+        sync: false
+      - key: VOICE_WEBHOOK_BASE_URL
+        sync: false
+      - key: VOICE_PRODUCTION_CALLING_ENABLED
+        value: "false"
+      - key: VOICE_COMPLIANCE_CONSENT_MODE
+        value: disabled
+      - key: VOICE_TIMEOUT_MS
+        value: "30000"
+      - key: VOICE_MAX_RETRIES
+        value: "1"
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_FROM_NUMBER
+        sync: false
+      - key: EXOTEL_ACCOUNT_SID
+        sync: false
+      - key: EXOTEL_API_KEY
+        sync: false
+      - key: EXOTEL_API_TOKEN
+        sync: false
+      - key: EXOTEL_CALLER_ID
+        sync: false
+      - key: EXOTEL_APP_URL
+        sync: false
+      - key: EXOTEL_AGENT_NUMBER
+        sync: false
+      - key: EXOTEL_WEBHOOK_SECRET
+        sync: false
       - key: EMAIL_PROVIDER
         value: AWS_SES
       - key: AWS_SES_REGION
@@ -74,6 +154,12 @@ services:
         sync: false
       - key: AWS_SES_WEBHOOK_SECRET
         sync: false
+      - key: AWS_SES_CONFIGURATION_SET
+        sync: false
+      - key: AWS_SES_TIMEOUT_MS
+        value: "30000"
+      - key: AWS_SES_MAX_RETRIES
+        value: "1"
       - key: AWS_SES_USE_DEFAULT_CREDENTIAL_CHAIN
         value: "false"
       - key: AWS_SES_ACCESS_KEY_ID

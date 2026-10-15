@@ -68,6 +68,15 @@ function responseSubject(run: ReplyRun): string {
   return subject;
 }
 
+export function removeInternalIdentifiers(body: string, identifiers: (string | null)[]): string {
+  return identifiers
+    .filter((identifier): identifier is string => Boolean(identifier && identifier.length >= 12))
+    .reduce(
+      (sanitized, identifier) => sanitized.replaceAll(identifier, "the customer request"),
+      body
+    );
+}
+
 async function recordSkipped(input: {
   run: ReplyRun;
   code: string;
@@ -346,16 +355,28 @@ async function sendAIEmailReply(input: {
   emailProvider?: EmailProvider;
   env?: NodeJS.ProcessEnv;
 }): Promise<void> {
-  const reply = input.run.draftResponse
+  const generatedReply = input.run.draftResponse
     ? {
         body: input.run.draftResponse,
         requiresHumanReview: false,
         reason: null
       }
     : await input.provider.generateSalesReply(await buildAIInput(input.run));
-  if (reply.requiresHumanReview) {
-    throw new AppError(409, "CONFLICT", reply.reason ?? "AI response requires human review");
+  if (generatedReply.requiresHumanReview) {
+    throw new AppError(
+      409,
+      "CONFLICT",
+      generatedReply.reason ?? "AI response requires human review"
+    );
   }
+
+  const replyBody = removeInternalIdentifiers(generatedReply.body, [
+    input.run.id,
+    input.run.leadId,
+    input.run.conversationId,
+    input.run.messageId,
+    input.run.inboundEmailId
+  ]);
 
   const idempotencyKey = `phase1-ai-reply:${input.run.id}`;
   const outbound = await sendOutboundEmail(
@@ -363,7 +384,7 @@ async function sendAIEmailReply(input: {
     {
       leadId: input.run.leadId,
       subject: responseSubject(input.run),
-      textBody: reply.body,
+      textBody: replyBody,
       idempotencyKey
     },
     { env: input.env, provider: input.emailProvider }
@@ -381,7 +402,7 @@ async function sendAIEmailReply(input: {
       providerMessageId: outbound.providerMessageId ?? outbound.id,
       direction: "OUTBOUND",
       senderType: "AI",
-      body: reply.body,
+      body: replyBody,
       deliveryStatus: "SENT",
       sentAt: outbound.sentAt ? new Date(outbound.sentAt) : now,
       metadata: {

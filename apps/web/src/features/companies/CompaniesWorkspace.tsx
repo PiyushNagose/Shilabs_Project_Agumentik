@@ -214,7 +214,7 @@ export function CompaniesWorkspace({
     },
     accepts: (event) =>
       event.type === "realtime:reconnected" ||
-      ["workspace", "lead", "activity"].includes(event.entityType),
+      ["workspace", "company", "contact", "lead", "activity"].includes(event.entityType),
     errorMessage: "Companies could not be loaded"
   });
 
@@ -239,7 +239,11 @@ export function CompaniesWorkspace({
     },
     accepts: (event) => {
       if (!selectedCompanyId) return false;
-      if (event.type === "realtime:reconnected" || event.entityType === "workspace") return true;
+      if (
+        event.type === "realtime:reconnected" ||
+        ["workspace", "company", "contact"].includes(event.entityType)
+      )
+        return true;
       const relatedLeadIds =
         resource.data?.leads
           .filter((lead) => lead.companyId === selectedCompanyId)

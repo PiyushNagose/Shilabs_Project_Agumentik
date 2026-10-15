@@ -6,6 +6,7 @@ import { toPublicUser } from "../auth/auth.service.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
 import { publishDomainEvent } from "../domain-events/domain-events.service.js";
 import type { TransactionClient } from "../domain-events/domain-events.repository.js";
+import { publishRealtimeEvent } from "../realtime/realtime.service.js";
 import type {
   AcknowledgeNotificationInput,
   EscalateNotificationInput,
@@ -105,6 +106,17 @@ function statusAfterRead(
 ): InternalNotificationRecord["status"] {
   if (current === "UNREAD") return "READ";
   return current;
+}
+
+async function publishNotificationUpdate(
+  notification: Pick<InternalNotificationRecord, "leadId">,
+  action: string
+): Promise<void> {
+  await publishRealtimeEvent({
+    entityType: "notifications",
+    action,
+    leadId: notification.leadId ?? undefined
+  });
 }
 
 async function publishNotificationLifecycleEvent(input: {
@@ -290,6 +302,7 @@ export async function markNotificationRead(
     return notification;
   });
 
+  await publishNotificationUpdate(updated, "notification-read");
   return toInternalNotificationDto(updated);
 }
 
@@ -323,6 +336,7 @@ export async function acknowledgeNotification(
     return notification;
   });
 
+  await publishNotificationUpdate(updated, "notification-acknowledged");
   return toInternalNotificationDto(updated);
 }
 
@@ -373,5 +387,6 @@ export async function escalateNotification(
     return notification;
   });
 
+  await publishNotificationUpdate(updated, "notification-escalated");
   return toInternalNotificationDto(updated);
 }

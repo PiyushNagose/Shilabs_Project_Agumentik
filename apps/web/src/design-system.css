@@ -2601,7 +2601,9 @@ body,
   gap: 6px;
 }
 .quick-contact-actions a,
-.profile-quick-actions a {
+.quick-contact-actions button,
+.profile-quick-actions a,
+.profile-quick-actions button {
   display: inline-flex;
   min-width: 34px;
   min-height: 34px;
@@ -2616,6 +2618,7 @@ body,
   background: #fff;
   border: 1px solid var(--border);
   border-radius: 6px;
+  cursor: pointer;
 }
 .lead-fact-strip {
   display: grid;
@@ -2822,6 +2825,15 @@ body,
 .task-check:disabled {
   background: var(--secondary);
   border-color: var(--secondary);
+}
+.task-check.task-email-action {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, #fff);
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+}
+.task-check.task-email-action:hover {
+  background: color-mix(in srgb, var(--accent) 14%, #fff);
+  border-color: var(--accent);
 }
 .task-meta {
   display: grid;

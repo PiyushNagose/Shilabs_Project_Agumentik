@@ -2,6 +2,7 @@ import { LeadStatus, Prisma } from "@prisma/client";
 import type { LeadDto, PaginatedResponse } from "@shilabs/shared-types";
 import { AppError } from "../../shared/errors.js";
 import { getPagination, getTotalPages } from "../../shared/pagination.js";
+import { prisma } from "../../shared/prisma.js";
 import { toPublicUser } from "../auth/auth.service.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
 import { findCompanyById } from "../companies/company.repository.js";
@@ -41,6 +42,7 @@ import { toPipelineStageDto } from "../pipeline/pipeline.service.js";
 import { publishRealtimeEvent } from "../realtime/realtime.service.js";
 import { autoStartLeadAiAutomation } from "../followups/lead-ai-automation.service.js";
 import { isTerminalLeadStatus, stopAi } from "./lead-automation-ownership.service.js";
+import { sendOutboundEmail } from "../email/email.service.js";
 import {
   assertCanAccessCompany,
   assertCanAccessContact
@@ -77,6 +79,79 @@ export function toLeadDto(lead: LeadRecord): LeadDto {
     owner: lead.owner ? toPublicUser(lead.owner) : null,
     stage: toPipelineStageDto(lead.stage)
   };
+}
+
+function shouldSendAutomaticAcknowledgement(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (
+    (env.NODE_ENV === "test" || env.VITEST === "true") &&
+    env.LEAD_ACK_ON_CREATE_IN_TEST !== "true"
+  ) {
+    return false;
+  }
+  return env.LEAD_ACK_ON_CREATE !== "false";
+}
+
+async function sendAutomaticLeadAcknowledgement(
+  actor: AuthenticatedUser,
+  lead: LeadRecord
+): Promise<void> {
+  if (!shouldSendAutomaticAcknowledgement() || !lead.contact.email) return;
+  const contactName = lead.contact.firstName.trim() || "there";
+  const body = `Hi ${contactName},\n\nThank you for contacting Shilabs. We have received your request, and a member of our team will review it and follow up with you shortly.\n\nBest regards,\nShilabs`;
+  const outbound = await sendOutboundEmail(actor, {
+    leadId: lead.id,
+    subject: "We received your request",
+    textBody: body,
+    idempotencyKey: `lead-acknowledgement:${lead.id}`
+  });
+  if (outbound.status !== "SENT") return;
+
+  await prisma.$transaction(async (tx) => {
+    const existingConversation = await tx.conversation.findFirst({
+      where: { leadId: lead.id, channel: "EMAIL", status: "OPEN" },
+      orderBy: { createdAt: "desc" },
+      select: { id: true }
+    });
+    const conversation =
+      existingConversation ??
+      (await tx.conversation.create({
+        data: { leadId: lead.id, channel: "EMAIL", mode: "HUMAN", status: "OPEN" },
+        select: { id: true }
+      }));
+    const message = await tx.message.upsert({
+      where: { providerMessageId: outbound.providerMessageId ?? outbound.id },
+      create: {
+        conversationId: conversation.id,
+        providerMessageId: outbound.providerMessageId ?? outbound.id,
+        direction: "OUTBOUND",
+        senderType: "SYSTEM",
+        body,
+        deliveryStatus: "SENT",
+        sentAt: outbound.sentAt ? new Date(outbound.sentAt) : new Date(),
+        metadata: {
+          source: "AUTOMATIC_LEAD_ACKNOWLEDGEMENT",
+          outboundEmailId: outbound.id
+        }
+      },
+      update: {}
+    });
+    await tx.conversation.update({
+      where: { id: conversation.id },
+      data: { lastMessageAt: message.sentAt ?? message.createdAt }
+    });
+    await tx.auditEvent.create({
+      data: {
+        workspaceId: lead.workspaceId,
+        actorType: "SYSTEM",
+        sourceType: "LEAD_INTAKE",
+        sourceId: lead.id,
+        entityType: "Message",
+        entityId: message.id,
+        action: "AUTOMATIC_ACKNOWLEDGEMENT_SENT",
+        after: { leadId: lead.id, outboundEmailId: outbound.id }
+      }
+    });
+  });
 }
 
 function requireLead(lead: LeadRecord | null): LeadRecord {
@@ -273,6 +348,8 @@ export async function createLead(
     }
   });
 
+  const createdLead = (await findLeadById(lead.id)) ?? lead;
+  await sendAutomaticLeadAcknowledgement(actor, createdLead);
   await autoStartLeadAiAutomation(actor, lead.id);
   const hydratedLead = await findLeadById(lead.id);
   await publishRealtimeEvent({ entityType: "lead", action: "lead-created", leadId: lead.id });

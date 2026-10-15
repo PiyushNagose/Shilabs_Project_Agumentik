@@ -2387,6 +2387,82 @@ describe("web app", () => {
     );
   });
 
+  it("sends the first tracked human email and lets the backend complete its reminder", async () => {
+    storeAuth();
+    const initialEmailTask = { ...leadTask, title: "Send initial discovery email" };
+    const emailConversation = {
+      ...conversation,
+      id: "conversation_initial_email",
+      channel: "EMAIL",
+      mode: "HUMAN"
+    };
+    let conversationCreated = false;
+    const fetchSpy = vi.spyOn(window, "fetch").mockImplementation((input, init) => {
+      const url = requestUrl(input);
+      if (url.includes("/api/conversations?") && url.includes("channel=EMAIL")) {
+        return Promise.resolve(jsonResponse(conversationCreated ? [emailConversation] : []));
+      }
+      if (url.endsWith("/api/conversations") && init?.method === "POST") {
+        conversationCreated = true;
+        return Promise.resolve(jsonResponse(emailConversation));
+      }
+      if (
+        url.endsWith("/api/conversations/conversation_initial_email/human-reply") &&
+        init?.method === "POST"
+      ) {
+        return Promise.resolve(
+          jsonResponse({
+            message: { ...inboundMessage, id: "message_initial_email", direction: "OUTBOUND" },
+            outboundEmail: {
+              id: "outbound_initial_email",
+              status: "SENT",
+              failureMessage: null,
+              sentAt: new Date().toISOString()
+            },
+            zohoTimeline: null
+          })
+        );
+      }
+      if (url.endsWith("/api/conversations/conversation_initial_email/messages")) {
+        return Promise.resolve(jsonResponse([]));
+      }
+      if (url.includes("/api/tasks")) {
+        return Promise.resolve(jsonResponse([initialEmailTask]));
+      }
+      return crmFetch(input);
+    });
+    render(<App />);
+    await openCrm();
+    fireEvent.click(await screen.findByRole("row", { name: /Open Priya Prospect/ }));
+    const quickView = await screen.findByRole("dialog", { name: "Lead quick view" });
+    fireEvent.click(within(quickView).getByRole("button", { name: "Send email" }));
+
+    const composer = await screen.findByRole("dialog", { name: "Send email" });
+    expect(within(composer).getByText(lead.contact.email)).toBeTruthy();
+    fireEvent.click(within(composer).getByRole("button", { name: "Send email" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Send email" })).toBeNull());
+    expect(
+      fetchSpy.mock.calls.some(
+        ([input, init]) =>
+          requestUrl(input).endsWith("/api/conversations") && init?.method === "POST"
+      )
+    ).toBe(true);
+    expect(
+      fetchSpy.mock.calls.some(
+        ([input, init]) =>
+          requestUrl(input).endsWith("/api/conversations/conversation_initial_email/human-reply") &&
+          init?.method === "POST"
+      )
+    ).toBe(true);
+    expect(
+      fetchSpy.mock.calls.some(
+        ([input, init]) =>
+          requestUrl(input).endsWith("/api/tasks/task_1/complete") && init?.method === "POST"
+      )
+    ).toBe(false);
+  });
+
   it("uses persisted task and business activity APIs in the routed lead profile", async () => {
     storeAuth();
     window.history.replaceState(null, "", "/crm/leads/lead_1?tab=Tasks");

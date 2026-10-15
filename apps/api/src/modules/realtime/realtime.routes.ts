@@ -8,6 +8,12 @@ const realtimeEventSchema = z.object({
   entityType: z.enum([
     "workspace",
     "lead",
+    "contact",
+    "company",
+    "conversation",
+    "qualification",
+    "proposal",
+    "meeting",
     "task",
     "activity",
     "dashboard",

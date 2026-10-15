@@ -116,6 +116,14 @@ async function loadProposal(id: string): Promise<ProposalRecord> {
   return prisma.proposal.findUniqueOrThrow({ where: { id }, include: proposalInclude });
 }
 
+async function publishProposalUpdate(proposal: ProposalRecord, action: string): Promise<void> {
+  await publishRealtimeEvent({
+    entityType: "proposal",
+    action,
+    leadId: proposal.leadId
+  });
+}
+
 async function ensureLeadAndDeal(input: { leadId: string; dealId?: string }): Promise<string> {
   const lead = await findLeadById(input.leadId);
   if (!lead) throw new AppError(404, "NOT_FOUND", "Lead not found");
@@ -224,7 +232,9 @@ export async function createProposal(
     { maxWait: 10000, timeout: 30000 }
   );
 
-  return toProposalDto(await loadProposal(proposal.id));
+  const hydrated = await loadProposal(proposal.id);
+  await publishProposalUpdate(hydrated, "proposal-created");
+  return toProposalDto(hydrated);
 }
 
 export async function updateProposalDraft(
@@ -288,7 +298,9 @@ export async function updateProposalDraft(
     },
     { maxWait: 10000, timeout: 30000 }
   );
-  return toProposalDto(await loadProposal(proposal.id));
+  const hydrated = await loadProposal(proposal.id);
+  await publishProposalUpdate(hydrated, "proposal-updated");
+  return toProposalDto(hydrated);
 }
 
 export async function submitProposalForApproval(
@@ -343,7 +355,9 @@ export async function submitProposalForApproval(
     { maxWait: 10000, timeout: 30000 }
   );
 
-  return toProposalDto(await loadProposal(proposal.id));
+  const hydrated = await loadProposal(proposal.id);
+  await publishProposalUpdate(hydrated, "proposal-submitted");
+  return toProposalDto(hydrated);
 }
 
 export async function approveProposal(
@@ -421,7 +435,9 @@ export async function approveProposal(
     { maxWait: 10000, timeout: 30000 }
   );
 
-  return toProposalDto(await loadProposal(proposal.id));
+  const hydrated = await loadProposal(proposal.id);
+  await publishProposalUpdate(hydrated, "proposal-approved");
+  return toProposalDto(hydrated);
 }
 
 export async function recordProposalSentAfterProviderConfirmation(
@@ -555,11 +571,6 @@ export async function recordProposalSentAfterProviderConfirmation(
     },
     { maxWait: 10000, timeout: 30000 }
   );
-  await publishRealtimeEvent({
-    entityType: "lead",
-    action: "proposal-sent",
-    leadId: existing.leadId
-  });
   const ownership = await completeHumanAction({
     leadId: existing.leadId,
     reason: "PROPOSAL_SENT",
@@ -575,5 +586,7 @@ export async function recordProposalSentAfterProviderConfirmation(
     });
   }
 
-  return toProposalDto(await loadProposal(proposal.id));
+  const hydrated = await loadProposal(proposal.id);
+  await publishProposalUpdate(hydrated, "proposal-sent");
+  return toProposalDto(hydrated);
 }

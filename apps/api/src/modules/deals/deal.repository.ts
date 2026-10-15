@@ -1,4 +1,4 @@
-import type { Prisma } from "@prisma/client";
+import { LeadStatus, type DealStatus, type Prisma } from "@prisma/client";
 import { prisma } from "../../shared/prisma.js";
 import { dealEvents } from "./deal.events.js";
 
@@ -9,6 +9,22 @@ const dealInclude = {
 } satisfies Prisma.DealInclude;
 
 export type DealRecord = Prisma.DealGetPayload<{ include: typeof dealInclude }>;
+
+function leadStatusForDeal(status: DealStatus): LeadStatus {
+  if (status === "WON") return LeadStatus.WON;
+  if (status === "LOST") return LeadStatus.LOST;
+  return LeadStatus.OPEN;
+}
+
+function leadSyncForDeal(status: DealStatus): Prisma.LeadUpdateInput {
+  const leadStatus = leadStatusForDeal(status);
+  return {
+    status: leadStatus,
+    ...(leadStatus === LeadStatus.WON || leadStatus === LeadStatus.LOST
+      ? { nextAction: null, nextActionAt: null }
+      : {})
+  };
+}
 
 export function findDealById(id: string, workspaceId: string): Promise<DealRecord | null> {
   return prisma.deal.findFirst({ where: { id, workspaceId }, include: dealInclude });
@@ -61,7 +77,18 @@ export async function createDealWithActivityAndAudit(input: {
 }): Promise<DealRecord> {
   return prisma.$transaction(
     async (transaction) => {
-      const deal = await transaction.deal.create({ data: input.deal, include: dealInclude });
+      let deal = await transaction.deal.create({ data: input.deal, include: dealInclude });
+      await transaction.lead.update({
+        where: { id: input.leadId },
+        data: {
+          stage: { connect: { id: deal.stageId } },
+          ...leadSyncForDeal(deal.status)
+        }
+      });
+      deal = await transaction.deal.findUniqueOrThrow({
+        where: { id: deal.id },
+        include: dealInclude
+      });
       await transaction.activity.create({
         data: {
           workspaceId: input.workspaceId,
@@ -107,9 +134,20 @@ export async function updateDealWithActivityAndAudit(input: {
 }): Promise<DealRecord> {
   return prisma.$transaction(
     async (transaction) => {
-      const deal = await transaction.deal.update({
+      let deal = await transaction.deal.update({
         where: { id: input.dealId },
         data: input.data,
+        include: dealInclude
+      });
+      await transaction.lead.update({
+        where: { id: deal.leadId },
+        data: {
+          stage: { connect: { id: deal.stageId } },
+          ...leadSyncForDeal(deal.status)
+        }
+      });
+      deal = await transaction.deal.findUniqueOrThrow({
+        where: { id: deal.id },
         include: dealInclude
       });
       await transaction.activity.create({

@@ -1327,6 +1327,15 @@ describe("R10 reply processing", () => {
     await expect(
       prisma.inboundEmail.findUniqueOrThrow({ where: { id: fixture.inbound.id } })
     ).resolves.toMatchObject({ replyProcessingStatus: "FAILED" });
+    await expect(
+      prisma.lead.findUniqueOrThrow({ where: { id: fixture.lead.id } })
+    ).resolves.toMatchObject({
+      automationOwnershipState: "HUMAN_REQUIRED",
+      automationOwnershipReason: "REPLY_PROCESSING_FAILED:PROVIDER_ERROR"
+    });
+    await expect(
+      prisma.conversation.findUniqueOrThrow({ where: { id: fixture.conversation.id } })
+    ).resolves.toMatchObject({ mode: "HUMAN" });
   }, 45000);
 
   it("truthfully records missing AI configuration without fake output", async () => {
@@ -1338,5 +1347,12 @@ describe("R10 reply processing", () => {
     expect(result.failureCode).toBe("AI_NOT_CONFIGURED");
     expect(result.intent).toBeNull();
     expect(result.draftResponse).toBeNull();
+    expect(result.humanHandoffRequired).toBe(true);
+    await expect(
+      prisma.lead.findUniqueOrThrow({ where: { id: fixture.lead.id } })
+    ).resolves.toMatchObject({
+      automationOwnershipState: "HUMAN_REQUIRED",
+      automationOwnershipReason: "REPLY_PROCESSING_FAILED:AI_NOT_CONFIGURED"
+    });
   }, 45000);
 });

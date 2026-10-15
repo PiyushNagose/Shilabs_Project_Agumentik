@@ -509,6 +509,13 @@ describe("M7/M8 conversations API", () => {
     expect(second.message?.id).toBe(first.message?.id);
     expect(provider.sendEmailMock).toHaveBeenCalledTimes(1);
     await expect(
+      prisma.lead.findUnique({
+        where: { id: lead.id },
+        select: { automationOwnershipState: true }
+      })
+    ).resolves.toMatchObject({ automationOwnershipState: "AI_ACTIVE" });
+    await expect(prisma.followUpSequence.count({ where: { leadId: lead.id } })).resolves.toBe(1);
+    await expect(
       prisma.activity.count({ where: { leadId: lead.id, type: "MESSAGE_SENT" } })
     ).resolves.toBe(1);
     await expect(

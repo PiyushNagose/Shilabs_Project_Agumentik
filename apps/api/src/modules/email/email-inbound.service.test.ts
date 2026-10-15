@@ -199,6 +199,15 @@ describe("SES inbound email ingestion", () => {
     await expect(
       prisma.emailProviderEvent.count({ where: { type: "INBOUND_RECEIVED" } })
     ).resolves.toBe(1);
+    await expect(
+      prisma.lead.findUnique({
+        where: { id: lead.id },
+        select: { automationOwnershipState: true, automationOwnershipReason: true }
+      })
+    ).resolves.toMatchObject({
+      automationOwnershipState: "HUMAN_REQUIRED",
+      automationOwnershipReason: "MEANINGFUL_CLIENT_REPLY:EMAIL"
+    });
   });
 
   it("deduplicates inbound provider message IDs", async () => {

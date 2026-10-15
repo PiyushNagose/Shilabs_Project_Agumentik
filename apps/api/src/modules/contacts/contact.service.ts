@@ -11,6 +11,7 @@ import {
 } from "../authorization/crm-record.permissions.js";
 import { findCompanyById } from "../companies/company.repository.js";
 import { stopAi } from "../leads/lead-automation-ownership.service.js";
+import { publishRealtimeEvent } from "../realtime/realtime.service.js";
 import type { CreateContactInput, UpdateContactInput } from "./contact.schemas.js";
 import {
   createContact as createContactRecord,
@@ -103,7 +104,7 @@ export async function createContact(
   });
 
   try {
-    return toContactDto(
+    const contact = toContactDto(
       await createContactRecord({
         workspaceId: actor.activeWorkspaceId,
         company: { connect: { id: input.companyId } },
@@ -120,6 +121,12 @@ export async function createContact(
         doNotContact: input.doNotContact ?? false
       })
     );
+    await publishRealtimeEvent({
+      workspaceId: actor.activeWorkspaceId,
+      entityType: "contact",
+      action: "contact-created"
+    });
+    return contact;
   } catch (error) {
     if (isUniqueConstraintError(error)) {
       throw new AppError(409, "CONFLICT", "A matching contact already exists for this company");
@@ -180,7 +187,13 @@ export async function updateContact(
         )
       );
     }
-    return toContactDto(updated);
+    const contact = toContactDto(updated);
+    await publishRealtimeEvent({
+      workspaceId: actor.activeWorkspaceId,
+      entityType: "contact",
+      action: "contact-updated"
+    });
+    return contact;
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
       throw new AppError(404, "NOT_FOUND", "Contact not found");

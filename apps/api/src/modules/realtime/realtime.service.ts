@@ -10,6 +10,12 @@ import { resolveWorkspaceContext } from "../workspaces/workspace.service.js";
 export type RealtimeEntityType =
   | "workspace"
   | "lead"
+  | "contact"
+  | "company"
+  | "conversation"
+  | "qualification"
+  | "proposal"
+  | "meeting"
   | "deal"
   | "pipeline"
   | "task"

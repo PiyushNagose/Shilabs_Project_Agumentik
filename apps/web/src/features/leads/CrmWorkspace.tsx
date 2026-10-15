@@ -584,6 +584,90 @@ function NewLeadForm({
   );
 }
 
+function HumanEmailForm({
+  lead,
+  currentUser,
+  onSend
+}: {
+  lead: LeadDto;
+  currentUser: PublicUser;
+  onSend: (subject: string, body: string) => Promise<void>;
+}): React.JSX.Element {
+  const sender = lead.owner ?? currentUser;
+  const [subject, setSubject] = useState(`Discovery: ${lead.company.name}`);
+  const [body, setBody] = useState(
+    `Hi ${lead.contact.firstName},\n\nThank you for your interest in ${lead.serviceInterest ?? "our services"}. I would like to understand your requirements and timeline. Could we arrange a short discovery call?\n\nBest regards,\n${sender.firstName} ${sender.lastName}`
+  );
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(): Promise<void> {
+    setSending(true);
+    setError(null);
+    try {
+      await onSend(subject.trim(), body.trim());
+    } catch (sendError) {
+      setError(
+        sendError instanceof Error && sendError.message.trim()
+          ? sendError.message
+          : "The email could not be sent."
+      );
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <form
+      className="record-create-form human-email-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void submit();
+      }}
+    >
+      <p className="human-email-recipient">
+        To <strong>{lead.contact.email}</strong>
+      </p>
+      <div className="record-create-grid">
+        <label className="record-create-wide">
+          Subject
+          <input
+            autoFocus
+            maxLength={500}
+            onChange={(event) => setSubject(event.target.value)}
+            required
+            value={subject}
+          />
+        </label>
+        <label className="record-create-wide">
+          Message
+          <textarea
+            maxLength={20000}
+            onChange={(event) => setBody(event.target.value)}
+            required
+            rows={8}
+            value={body}
+          />
+        </label>
+      </div>
+      {error ? (
+        <p className="form-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <footer>
+        <Button
+          disabled={sending || !subject.trim() || !body.trim()}
+          type="submit"
+          variant="primary"
+        >
+          <Mail size={16} /> {sending ? "Sending..." : "Send email"}
+        </Button>
+      </footer>
+    </form>
+  );
+}
+
 export interface CrmRealtimeRefreshPlan {
   fullWorkspace: boolean;
   leadList: boolean;
@@ -646,7 +730,23 @@ export function planCrmRealtimeRefresh(
     };
   }
 
-  if (!["workspace", "lead", "task", "notifications", "domain-event"].includes(event.entityType)) {
+  if (
+    ![
+      "workspace",
+      "lead",
+      "contact",
+      "company",
+      "conversation",
+      "qualification",
+      "proposal",
+      "meeting",
+      "deal",
+      "task",
+      "activity",
+      "notifications",
+      "domain-event"
+    ].includes(event.entityType)
+  ) {
     return null;
   }
 
@@ -661,6 +761,19 @@ export function planCrmRealtimeRefresh(
 
   if (event.entityType === "notifications") {
     return { ...plan, notifications: true };
+  }
+
+  if (event.entityType === "conversation" || event.entityType === "activity") {
+    plan.conversations = true;
+  }
+  if (event.entityType === "qualification") {
+    plan.qualification = true;
+  }
+  if (event.entityType === "proposal") {
+    plan.proposals = true;
+  }
+  if (event.entityType === "meeting") {
+    plan.meetings = true;
   }
 
   const scope = [event.entityType, event.action, event.sourceEventType]
@@ -840,6 +953,7 @@ export function CrmWorkspace({
   const [workspaceTasks, setWorkspaceTasks] = useState<TaskDto[]>([]);
   const [quickViewOpen, setQuickViewOpen] = useState(false);
   const [createLeadOpen, setCreateLeadOpen] = useState(false);
+  const [emailComposerOpen, setEmailComposerOpen] = useState(false);
   const [proposalState, setProposalState] = useState<ProposalState>(initialProposalState);
   const [meetingState, setMeetingState] = useState<MeetingState>(() => createInitialMeetingState());
   const [briefingState, setBriefingState] = useState<BriefingState>(initialBriefingState);
@@ -1409,6 +1523,66 @@ export function CrmWorkspace({
         detail: apiErrorMessage(error, "Please retry")
       });
     }
+  }
+
+  async function sendTrackedLeadEmail(subject: string, body: string): Promise<void> {
+    const lead = state.selectedLead;
+    if (!lead?.contact.email) throw new Error("This lead does not have an email address.");
+
+    const conversations = await listConversations(accessToken, {
+      leadId: lead.id,
+      channel: "EMAIL",
+      status: "OPEN"
+    });
+    let conversation = conversations[0] ?? null;
+    if (!conversation) {
+      conversation = await createConversation(accessToken, {
+        leadId: lead.id,
+        channel: "EMAIL",
+        mode: "HUMAN"
+      });
+    } else if (conversation.mode !== "HUMAN") {
+      await startHumanTakeover(accessToken, conversation.id, {
+        reason: "Salesperson composing a tracked CRM email"
+      });
+    }
+
+    const idempotencyKey =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `human-email-${Date.now().toString()}`;
+    const result = await sendHumanConversationReply(accessToken, conversation.id, {
+      subject,
+      body,
+      idempotencyKey
+    });
+    if (result.outboundEmail.status !== "SENT") {
+      throw new Error(
+        result.outboundEmail.failureMessage ??
+          `Email provider returned ${result.outboundEmail.status.replaceAll("_", " ").toLowerCase()}.`
+      );
+    }
+
+    const [tasks, activities] = await Promise.all([
+      listTasks(accessToken, { leadId: lead.id }),
+      listLeadActivities(accessToken, lead.id)
+    ]);
+    setTaskState({ tasks, loading: false, error: null });
+    setWorkspaceTasks((current) => [
+      ...current.filter((task) => task.leadId !== lead.id),
+      ...tasks
+    ]);
+    setState((current) => ({ ...current, activities }));
+    await Promise.all([
+      refreshLeadList(filters),
+      refreshSelectedLead(lead.id),
+      loadLeadConversations(lead.id)
+    ]);
+    setEmailComposerOpen(false);
+    toast.success({
+      title: "Email sent",
+      detail: "Human action recorded and automation state refreshed."
+    });
   }
 
   async function loadLeadNotifications(leadId: string): Promise<void> {
@@ -2541,6 +2715,7 @@ export function CrmWorkspace({
             proposalState={proposalState}
             taskState={taskState}
             onCompleteTask={completeLeadTask}
+            onComposeEmail={() => setEmailComposerOpen(true)}
             onBack={() => onRouteChange?.(null)}
           />
         ) : null}
@@ -2558,6 +2733,7 @@ export function CrmWorkspace({
             open={quickViewOpen}
             onClose={() => setQuickViewOpen(false)}
             onCompleteTask={completeLeadTask}
+            onComposeEmail={() => setEmailComposerOpen(true)}
             onOpenProfile={() => {
               if (state.selectedLead) onRouteChange?.(state.selectedLead.id, "Overview");
             }}
@@ -2580,6 +2756,20 @@ export function CrmWorkspace({
           </Modal>
         </>
       ) : null}
+      <Modal
+        open={emailComposerOpen && Boolean(state.selectedLead?.contact.email)}
+        onClose={() => setEmailComposerOpen(false)}
+        title="Send email"
+      >
+        {state.selectedLead?.contact.email ? (
+          <HumanEmailForm
+            key={state.selectedLead.id}
+            currentUser={currentUser}
+            lead={state.selectedLead}
+            onSend={sendTrackedLeadEmail}
+          />
+        ) : null}
+      </Modal>
     </section>
   );
 }
@@ -2878,6 +3068,7 @@ function LeadDetail({
   onStartHumanTakeover,
   onTabChange,
   onCompleteTask,
+  onComposeEmail,
   onBack
 }: {
   accessToken: string;
@@ -2929,6 +3120,7 @@ function LeadDetail({
   onStartHumanTakeover: () => Promise<void>;
   onTabChange: (tab: DetailTab) => void;
   onCompleteTask: (taskId: string) => Promise<void>;
+  onComposeEmail: () => void;
   onBack: () => void;
 }): React.JSX.Element {
   if (!lead) {
@@ -2974,9 +3166,9 @@ function LeadDetail({
         </div>
         <div className="profile-quick-actions">
           {lead.contact.email ? (
-            <a href={`mailto:${lead.contact.email}`}>
+            <button onClick={onComposeEmail} type="button">
               <Mail size={16} /> Email
-            </a>
+            </button>
           ) : null}
           {lead.contact.phone ? (
             <a href={`tel:${lead.contact.phone}`}>
@@ -3095,6 +3287,7 @@ function LeadDetail({
         onStartConversation={onStartConversation}
         onStartHumanTakeover={onStartHumanTakeover}
         onCompleteTask={onCompleteTask}
+        onComposeEmail={onComposeEmail}
       />
     </main>
   );
@@ -3192,7 +3385,8 @@ function DetailTabPanel({
   onStartFollowUp,
   onStartConversation,
   onStartHumanTakeover,
-  onCompleteTask
+  onCompleteTask,
+  onComposeEmail
 }: {
   accessToken: string;
   activities: ActivityDto[];
@@ -3237,6 +3431,7 @@ function DetailTabPanel({
   onStartConversation: () => Promise<void>;
   onStartHumanTakeover: () => Promise<void>;
   onCompleteTask: (taskId: string) => Promise<void>;
+  onComposeEmail: () => void;
 }): React.JSX.Element {
   if (tab === "Conversation") {
     return (
@@ -3338,6 +3533,8 @@ function DetailTabPanel({
             loading={taskState.loading}
             error={taskState.error}
             onComplete={onCompleteTask}
+            onComposeEmail={onComposeEmail}
+            automationOwnershipState={lead.automationOwnershipState}
           />
         </TabSection>
       </div>

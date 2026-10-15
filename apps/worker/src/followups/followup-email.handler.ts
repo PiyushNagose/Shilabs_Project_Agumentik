@@ -505,16 +505,16 @@ async function sendFollowUpEmail(input: {
     });
     activityId = activity?.id ?? null;
   }
+  await reconcileFollowUpSequenceAfterSend({
+    sequenceId: attempt.sequenceId,
+    currentEventId: input.event.id,
+    env: input.env ?? process.env
+  });
   await syncZohoTimelineAfterSend({
     attemptId,
     activityId: activityId ?? outbound.id,
     env: input.env ?? process.env,
     timelineSyncer: input.timelineSyncer
-  });
-  await reconcileFollowUpSequenceAfterSend({
-    sequenceId: attempt.sequenceId,
-    currentEventId: input.event.id,
-    env: input.env ?? process.env
   });
 }
 

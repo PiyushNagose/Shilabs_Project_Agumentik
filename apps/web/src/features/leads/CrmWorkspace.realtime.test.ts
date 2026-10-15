@@ -103,6 +103,35 @@ describe("CRM realtime refresh planning", () => {
     });
   });
 
+  it("refreshes each persisted lead surface from its direct entity event", () => {
+    const expectations = [
+      ["conversation", "conversations"],
+      ["qualification", "qualification"],
+      ["meeting", "meetings"],
+      ["proposal", "proposals"]
+    ] as const;
+
+    for (const [entityType, target] of expectations) {
+      const plan = planCrmRealtimeRefresh(
+        {
+          type: "realtime:update",
+          entityType,
+          action: `${entityType}-updated`,
+          leadId: "lead_1",
+          occurredAt: new Date().toISOString()
+        },
+        "lead_1"
+      );
+
+      expect(plan).toMatchObject({
+        fullWorkspace: false,
+        leadList: true,
+        lead: true,
+        [target]: true
+      });
+    }
+  });
+
   it("keeps broad workspace reloads for reconnect only", () => {
     expect(
       planCrmRealtimeRefresh(

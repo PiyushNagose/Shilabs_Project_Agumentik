@@ -374,6 +374,9 @@ describe("R13 follow-up email worker handler", () => {
     await expect(sendFollowUpEmail({ event, provider, env, timelineSyncer })).rejects.toThrow(
       "Zoho timeout"
     );
+    await expect(
+      workerPrisma.followUpSequence.findUniqueOrThrow({ where: { id: attempt.sequenceId } })
+    ).resolves.toMatchObject({ currentStep: 1 });
     await sendFollowUpEmail({ event, provider, env, timelineSyncer });
 
     expect(provider.calls).toHaveLength(1);

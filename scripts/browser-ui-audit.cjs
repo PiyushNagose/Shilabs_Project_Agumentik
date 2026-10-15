@@ -5,8 +5,12 @@ const os = require("node:os");
 const ts = require("typescript");
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
 const demoMode = process.env.UI_AUDIT_DEMO === "true";
+const realMode = process.env.UI_AUDIT_REAL === "true";
 const buildersOnly = process.env.UI_AUDIT_BUILDERS_ONLY === "true";
 const requestedRoutes = process.env.UI_AUDIT_ROUTES?.split(",").filter(Boolean) ?? [];
+const requestedWidths = process.env.UI_AUDIT_WIDTHS?.split(",")
+  .map(Number)
+  .filter((width) => Number.isFinite(width) && width > 0);
 const baseUrl = process.env.UI_AUDIT_BASE_URL || "http://localhost:5174";
 
 async function main() {
@@ -20,6 +24,86 @@ async function main() {
     compiled +
       ";return { adminUser, crmFetch, generatedProposal, currentMeetingRequest, followUpSequence };"
   )();
+  let auditUser = data.adminUser;
+  let auditToken = "header.payload.signature";
+  let realRoutes = [];
+  if (realMode) {
+    const apiBaseUrl =
+      process.env.UI_AUDIT_API_BASE_URL || process.env.VITE_API_BASE_URL || "http://localhost:4010";
+    const loginResponse = await fetch(`${apiBaseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: process.env.DEV_ADMIN_EMAIL,
+        password: process.env.DEV_ADMIN_PASSWORD
+      })
+    });
+    if (!loginResponse.ok)
+      throw new Error(`Real browser audit login failed (${loginResponse.status})`);
+    const auth = await loginResponse.json();
+    auditUser = auth.user;
+    auditToken = auth.accessToken;
+    const get = async (route) => {
+      const response = await fetch(`${apiBaseUrl}${route}`, {
+        headers: { Authorization: `Bearer ${auditToken}` }
+      });
+      if (!response.ok)
+        throw new Error(`Real browser audit lookup failed: ${route} (${response.status})`);
+      return response.json();
+    };
+    const [leads, deals, agents, workflows, orders] = await Promise.all([
+      get("/api/leads?pageSize=1"),
+      get("/api/deals?pageSize=1"),
+      get("/api/agents"),
+      get("/api/workflows"),
+      get("/api/orders?pageSize=1")
+    ]);
+    const leadId = leads.items?.[0]?.id;
+    const dealId = deals.items?.[0]?.id;
+    const agentId = agents.agents?.[0]?.id;
+    const workflowId = workflows.workflows?.[0]?.id ?? workflows.items?.[0]?.id ?? workflows[0]?.id;
+    const orderId = orders.items?.[0]?.id;
+    realRoutes = [
+      "/dashboard",
+      "/crm",
+      "/contacts",
+      "/companies",
+      "/companies?audit=list",
+      "/deals",
+      "/deals?audit=board",
+      "/agents",
+      "/workflows",
+      "/integrations",
+      "/ai-command-center",
+      "/orders",
+      "/operations",
+      "/users",
+      "/settings",
+      ...(dealId ? [`/deals/${dealId}`] : []),
+      ...(orderId ? [`/orders/${orderId}`] : []),
+      ...(agentId
+        ? [
+            `/agents/${agentId}?tab=composer`,
+            `/agents/${agentId}?tab=executions`,
+            `/agents/${agentId}?tab=evaluation`
+          ]
+        : []),
+      ...(workflowId ? [`/workflows/${workflowId}?tab=builder`] : []),
+      ...(leadId
+        ? [
+            "Overview",
+            "Conversation",
+            "Qualification",
+            "Proposals",
+            "Activities",
+            "Tasks",
+            "Meetings",
+            "Deal",
+            "AI Insights"
+          ].map((tab) => `/crm/leads/${leadId}?tab=${encodeURIComponent(tab)}`)
+        : [])
+    ];
+  }
   const output = path.join(os.tmpdir(), "shilabs-ui-audit", "screenshots");
   fs.mkdirSync(output, { recursive: true });
   const browser = await chromium.launch({ channel: "msedge", headless: true });
@@ -40,26 +124,30 @@ async function main() {
     }
   }
   try {
-    for (const width of [1440, 768, 390]) {
+    for (const width of requestedWidths?.length ? requestedWidths : [1440, 768, 390]) {
       const context = await browser.newContext({ viewport: { width, height: 1000 } });
       const page = await context.newPage();
       const errors = [];
       const requests = [];
       page.on("pageerror", (error) => errors.push(error.message));
-      await page.addInitScript((user) => {
-        localStorage.setItem("shilabs.accessToken", "header.payload.signature");
-        localStorage.setItem("shilabs.user", JSON.stringify(user));
-        window.WebSocket = class {
-          constructor() {
-            window.auditSocket = this;
-            setTimeout(() => this.onopen?.(), 0);
-          }
-          close() {
-            this.onclose?.();
-          }
-        };
-      }, data.adminUser);
-      if (!demoMode) {
+      await page.addInitScript(
+        ({ user, token, mockRealtime }) => {
+          localStorage.setItem("shilabs.accessToken", token);
+          localStorage.setItem("shilabs.user", JSON.stringify(user));
+          if (mockRealtime)
+            window.WebSocket = class {
+              constructor() {
+                window.auditSocket = this;
+                setTimeout(() => this.onopen?.(), 0);
+              }
+              close() {
+                this.onclose?.();
+              }
+            };
+        },
+        { user: auditUser, token: auditToken, mockRealtime: !demoMode && !realMode }
+      );
+      if (!demoMode && !realMode) {
         await page.route("**/api/**", async (route) => {
           const request = route.request();
           const requestPath = new URL(request.url()).pathname;
@@ -134,23 +222,46 @@ async function main() {
           ];
       const auditedRoutes = requestedRoutes.length
         ? requestedRoutes
-        : buildersOnly
-          ? [
-              "/agents/agent-outreach?tab=composer",
-              "/agents/agent-outreach?tab=executions",
-              "/agents/agent-outreach?tab=evaluation",
-              "/workflows/workflow-governed-follow-up?tab=builder",
-              "/integrations"
-            ]
-          : routes;
+        : realMode
+          ? realRoutes
+          : buildersOnly
+            ? [
+                "/agents/agent-outreach?tab=composer",
+                "/agents/agent-outreach?tab=executions",
+                "/agents/agent-outreach?tab=evaluation",
+                "/workflows/workflow-governed-follow-up?tab=builder",
+                "/integrations"
+              ]
+            : routes;
       for (const route of auditedRoutes) {
         errors.length = 0;
         await page.goto(baseUrl + route);
         await page.waitForLoadState("domcontentloaded");
         await page.waitForTimeout(250);
+        if (realMode) {
+          try {
+            await page.waitForFunction(
+              () =>
+                ![...document.querySelectorAll("h1, h2, h3, .state-block strong")].some((heading) =>
+                  /^(Loading|Preparing)\b/i.test(heading.textContent?.trim() ?? "")
+                ),
+              null,
+              { timeout: 10000 }
+            );
+          } catch {
+            errors.push("The screen did not finish loading persisted data within 10 seconds");
+          }
+        }
         if (route.includes("audit=board")) {
-          await page.getByRole("button", { name: "Pipeline view" }).click();
-          await page.waitForTimeout(150);
+          try {
+            await page.getByRole("button", { name: "Pipeline view" }).click();
+            await page.waitForTimeout(150);
+          } catch (error) {
+            const body = await page.locator("body").innerText();
+            throw new Error(
+              `Unable to open the deal pipeline at ${route}: ${error.message}; browser errors: ${errors.join(" | ")}; requests: ${requests.join(", ")}; body: ${body.slice(0, 500)}`
+            );
+          }
         }
         if (route.includes("audit=board-scroll")) {
           const board = page.locator(".deal-board");
@@ -447,7 +558,7 @@ async function main() {
             }
           }
         }
-        if (route.endsWith("tab=Proposals") && !demoMode) {
+        if (route.endsWith("tab=Proposals") && !demoMode && !realMode) {
           await waitForRealtime(page, errors, requests);
           await page.getByLabel("Title", { exact: true }).fill("Unsaved title");
           await page.locator(".proposal-field textarea").first().fill("Unsaved proposal content");
@@ -477,7 +588,7 @@ async function main() {
             errors.push("Proposal refresh replaced the editor or lost unsaved changes");
           }
         }
-        if (!demoMode && (route === "/dashboard" || route === "/operations")) {
+        if (!demoMode && !realMode && (route === "/dashboard" || route === "/operations")) {
           await waitForRealtime(page, errors, requests);
           const endpoint =
             route === "/dashboard" ? "/api/action-dashboard" : "/api/operations/dashboard";
