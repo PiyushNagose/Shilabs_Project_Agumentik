@@ -1142,25 +1142,21 @@ export function CrmWorkspace({
       const selectedLead = leadId
         ? await getLead(accessToken, leadId)
         : (leadsPage.items[0] ?? null);
-      const activities = selectedLead
-        ? await listLeadActivities(accessToken, selectedLead.id).catch(() => [])
-        : [];
-      const notifications = selectedLead
-        ? await listNotifications(accessToken, { leadId: selectedLead.id, limit: 10 }).catch(
-            () => []
-          )
-        : [];
-      const qualification = selectedLead
-        ? await getLeadQualification(accessToken, selectedLead.id).catch(() => null)
-        : null;
-      const tasks = selectedLead
-        ? await listTasks(accessToken, { leadId: selectedLead.id })
-            .then((items) => (Array.isArray(items) ? items : []))
-            .catch(() => [])
-        : [];
-      const allTasks = await listTasks(accessToken, {})
-        .then((items) => (Array.isArray(items) ? items : []))
-        .catch(() => []);
+      const [activities, notifications, qualification, tasks, allTasks] = await Promise.all([
+        selectedLead ? listLeadActivities(accessToken, selectedLead.id).catch(() => []) : [],
+        selectedLead
+          ? listNotifications(accessToken, { leadId: selectedLead.id, limit: 10 }).catch(() => [])
+          : [],
+        selectedLead ? getLeadQualification(accessToken, selectedLead.id).catch(() => null) : null,
+        selectedLead
+          ? listTasks(accessToken, { leadId: selectedLead.id })
+              .then((items) => (Array.isArray(items) ? items : []))
+              .catch(() => [])
+          : [],
+        listTasks(accessToken, {})
+          .then((items) => (Array.isArray(items) ? items : []))
+          .catch(() => [])
+      ]);
 
       if (request !== workspaceRequestRef.current || selection !== selectionRequestRef.current)
         return;
