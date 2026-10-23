@@ -1,5 +1,5 @@
 import type { User } from "@prisma/client";
-import { UserStatus } from "@prisma/client";
+import { UserStatus, WorkspaceMemberStatus } from "@prisma/client";
 import { prisma } from "../../shared/prisma.js";
 
 export type AuthUserRecord = Pick<
@@ -28,6 +28,15 @@ export async function findActiveUserById(userId: string): Promise<AuthUserRecord
       status: UserStatus.ACTIVE
     }
   });
+}
+
+export async function hasActiveWorkspaceMembership(userId: string): Promise<boolean> {
+  return (
+    (await prisma.workspaceMember.count({
+      where: { userId, status: WorkspaceMemberStatus.ACTIVE },
+      take: 1
+    })) > 0
+  );
 }
 
 export async function createAuthSession(input: {

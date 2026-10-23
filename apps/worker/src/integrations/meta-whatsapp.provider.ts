@@ -7,6 +7,12 @@ export interface WorkerMessagingProvider {
     templateName: string;
     templateLanguage: string;
     idempotencyKey: string;
+    textBody?: string | null;
+    mediaUrl?: string | null;
+    mediaContentType?: string | null;
+    mediaFileName?: string | null;
+    voiceNote?: boolean;
+    replyToProviderMessageId?: string | null;
   }): Promise<{
     status: "ACCEPTED" | "FAILED" | "NOT_CONFIGURED";
     providerMessageId: string | null;
@@ -126,6 +132,23 @@ export class WorkerMetaWhatsAppProvider implements WorkerMessagingProvider {
     }
 
     try {
+      const mediaType = input.voiceNote
+        ? "audio"
+        : input.mediaContentType?.startsWith("image/")
+          ? "image"
+          : input.mediaContentType?.startsWith("audio/")
+            ? "audio"
+            : input.mediaContentType?.startsWith("video/")
+              ? "video"
+              : "document";
+      const mediaObject = input.mediaUrl
+        ? {
+            link: input.mediaUrl,
+            ...(mediaType === "document" && input.mediaFileName
+              ? { filename: input.mediaFileName }
+              : {})
+          }
+        : null;
       const response = await requestWithRetry(
         this.config,
         this.transport,
@@ -141,11 +164,20 @@ export class WorkerMetaWhatsAppProvider implements WorkerMessagingProvider {
           body: JSON.stringify({
             messaging_product: "whatsapp",
             to: input.to,
-            type: "template",
-            template: {
-              name: input.templateName,
-              language: { code: input.templateLanguage }
-            }
+            ...(input.replyToProviderMessageId
+              ? { context: { message_id: input.replyToProviderMessageId } }
+              : {}),
+            ...(mediaObject
+              ? { type: mediaType, [mediaType]: mediaObject }
+              : input.textBody
+                ? { type: "text", text: { body: input.textBody, preview_url: false } }
+                : {
+                    type: "template",
+                    template: {
+                      name: input.templateName,
+                      language: { code: input.templateLanguage }
+                    }
+                  })
           })
         }
       );
@@ -203,10 +235,13 @@ export class WorkerTwilioWhatsAppProvider implements WorkerMessagingProvider {
         From: twilioWhatsAppAddress(this.config.twilioWhatsApp.sandboxFrom),
         To: twilioWhatsAppAddress(input.to)
       });
-      if (this.config.twilioWhatsApp.contentSid) {
+      if (input.mediaUrl) {
+        body.set("MediaUrl", input.mediaUrl);
+        if (input.textBody) body.set("Body", input.textBody);
+      } else if (this.config.twilioWhatsApp.contentSid) {
         body.set("ContentSid", this.config.twilioWhatsApp.contentSid);
       } else {
-        body.set("Body", this.config.twilioWhatsApp.defaultBody);
+        body.set("Body", input.textBody ?? this.config.twilioWhatsApp.defaultBody);
       }
       const response = await requestWithRetry(
         this.config,

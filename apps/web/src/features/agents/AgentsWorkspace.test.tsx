@@ -123,6 +123,9 @@ describe("AgentsWorkspace", () => {
       />
     );
     expect(screen.getByText("Proposal generated successfully")).toBeTruthy();
+    expect(screen.getByText(/Proposal generation -/)).toBeTruthy();
+    expect(screen.queryByText("PROPOSAL_GENERATION")).toBeNull();
+    expect(screen.getByText("Completed")).toBeTruthy();
     expect(screen.getAllByText("Passed").length).toBeGreaterThan(0);
   });
 
@@ -147,17 +150,17 @@ describe("AgentsWorkspace", () => {
       "Question",
       "Condition",
       "AI Decision",
-      "Tool / CRM Action",
-      "Integration Action",
+      "Action",
+      "Integration",
       "Wait",
-      "Human Handoff",
+      "Handoff",
       "End"
     ]) {
       expect(within(palette).getByRole("button", { name: new RegExp(label, "i") })).toBeTruthy();
     }
     expect(screen.getAllByText("Evaluate context").length).toBeGreaterThan(0);
-    fireEvent.click(screen.getByRole("button", { name: /Tool \/ CRM Action Proposal Agent/i }));
-    expect(screen.getByText("Existing capability")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Action Proposal Agent/i }));
+    expect(screen.getAllByLabelText("Action").length).toBeGreaterThan(0);
   });
 
   it("opens a deep-linked Composer read-only for sales reps", () => {
@@ -180,7 +183,7 @@ describe("AgentsWorkspace", () => {
     expect(screen.getByRole("button", { name: "Preview" }).hasAttribute("disabled")).toBe(false);
   });
 
-  it("shows persisted evaluation references to managers without exposing them to sales reps", () => {
+  it("shows governed evaluation references without exposing raw run IDs", () => {
     const { rerender } = render(
       <AgentsWorkspace
         accessToken="token"
@@ -198,7 +201,12 @@ describe("AgentsWorkspace", () => {
     expect(screen.getByText("Tools")).toBeTruthy();
     expect(screen.getByLabelText("Latest execution trace")).toBeTruthy();
     expect(screen.getByLabelText("Agent evaluation log")).toBeTruthy();
-    expect(screen.getByText("run_1")).toBeTruthy();
+    const evaluationLog = screen.getByLabelText("Agent evaluation log");
+    expect(
+      within(evaluationLog).getByText("Passed").closest("[data-label]")?.getAttribute("data-label")
+    ).toBe("Outcome");
+    expect(within(evaluationLog).getByText("1s").getAttribute("data-label")).toBe("Duration");
+    expect(screen.queryByText(/run_1/)).toBeNull();
 
     rerender(
       <AgentsWorkspace
@@ -214,5 +222,40 @@ describe("AgentsWorkspace", () => {
     expect(screen.getByText(/Technical configuration is restricted/)).toBeTruthy();
     expect(screen.queryByText("run_1")).toBeNull();
     expect(screen.getAllByText("Passed").length).toBeGreaterThan(0);
+  });
+
+  it("shows an execution's schedule without presenting its creation time as completion", () => {
+    const original = agent.executions;
+    const first = original[0];
+    if (!first) throw new Error("Execution fixture is missing");
+    agent.executions = [
+      {
+        ...first,
+        status: "QUEUED",
+        completedAt: null,
+        actualStartedAt: null,
+        durationMs: null,
+        nextRunAt: "2026-10-22T05:57:00.000Z",
+        summary: "Scheduled discovery follow-up"
+      }
+    ];
+    try {
+      render(
+        <AgentsWorkspace
+          accessToken="token"
+          currentUser={admin}
+          initialAgentId="agent_1"
+          initialTab="evaluation"
+          onRouteChange={vi.fn()}
+        />
+      );
+      const log = screen.getByLabelText("Agent evaluation log");
+      expect(within(log).queryByText("Completed")).toBeNull();
+      expect(within(log).getByText("Scheduled for")).toBeTruthy();
+      expect(log.querySelector("time")?.dateTime).toBe("2026-10-22T05:57:00.000Z");
+      expect(within(log).queryByText("Passed")).toBeNull();
+    } finally {
+      agent.executions = original;
+    }
   });
 });

@@ -1,5 +1,5 @@
 import request from "supertest";
-import { UserRole, UserStatus } from "@prisma/client";
+import { UserRole, UserStatus, WorkspaceRole } from "@prisma/client";
 import type {
   ApprovedKnowledgeDto,
   AuthResponse,
@@ -56,6 +56,18 @@ async function seedUsers(): Promise<void> {
         status: UserStatus.ACTIVE
       }
     ]
+  });
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
+  const users = await prisma.user.findMany({
+    where: { email: { in: [adminEmail, repEmail] } }
+  });
+  await prisma.workspaceMember.createMany({
+    data: users.map((user) => ({
+      workspaceId: workspace.id,
+      userId: user.id,
+      role: user.role === UserRole.ADMIN ? WorkspaceRole.ADMIN : WorkspaceRole.SALES_REP,
+      status: "ACTIVE"
+    }))
   });
 }
 

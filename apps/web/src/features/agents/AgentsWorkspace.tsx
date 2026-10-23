@@ -1,4 +1,6 @@
 import type React from "react";
+import { ExecutionTiming } from "../../components/ExecutionTiming.js";
+import { executionStatusLabel, formatDateTime } from "../../utils/date-time.js";
 import { useEffect, useMemo, useState } from "react";
 import type {
   AgentDetailDto,
@@ -34,6 +36,7 @@ import {
 import { Badge, Button, Card, Modal, Select } from "../../components/ui/index.js";
 import { StateBlock } from "../../components/StateBlock.js";
 import { usePersistedResource } from "../../hooks/usePersistedResource.js";
+import { isWorkspaceManager } from "../auth/workspace-access.js";
 import {
   createAgent,
   getAgent,
@@ -59,17 +62,18 @@ function statusTone(status: AgentStatusName): "neutral" | "success" | "warning" 
 }
 
 function formatDate(value: string | null): string {
-  return value
-    ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(
-        new Date(value)
-      )
-    : "Not yet";
+  return formatDateTime(value, "Not yet");
 }
 
-function duration(value: number | null): string {
-  if (value === null) return "-";
+function duration(value: number | null, status?: string): string {
+  if (value === null) return status === "QUEUED" ? "Not started" : "Not recorded";
   if (value < 1000) return `${String(value)} ms`;
   return `${String(Math.round(value / 100) / 10)}s`;
+}
+
+function businessLabel(value: string): string {
+  const label = value.replaceAll("_", " ").toLowerCase();
+  return `${label.charAt(0).toUpperCase()}${label.slice(1)}`;
 }
 
 function configReference(value: unknown, keys: readonly string[], fallback: string): string {
@@ -90,6 +94,10 @@ function configReference(value: unknown, keys: readonly string[], fallback: stri
 }
 
 function evaluationOutcome(execution: AgentExecutionDto): string {
+  if (execution.status === "QUEUED") return execution.nextRunAt ? "Scheduled" : "Queued";
+  if (execution.status === "WAITING") return "Waiting";
+  if (execution.status === "HUMAN_REQUIRED") return "Needs your response";
+  if (execution.status === "CANCELED") return "Canceled";
   const evaluation = execution.evaluation;
   if (evaluation && typeof evaluation === "object" && !Array.isArray(evaluation)) {
     const record = evaluation as Record<string, unknown>;
@@ -293,7 +301,18 @@ function AgentsList({
   const resource = usePersistedResource({
     scope: "agents",
     load: () => listAgents(accessToken),
-    accepts: (event) => event.entityType === "agent" || event.entityType === "workspace",
+    accepts: (event) =>
+      [
+        "agent",
+        "workspace",
+        "lead",
+        "conversation",
+        "qualification",
+        "proposal",
+        "meeting",
+        "domain-event",
+        "operations"
+      ].includes(event.entityType),
     errorMessage: "Agent data could not be loaded."
   });
   const agents = useMemo(
@@ -307,7 +326,7 @@ function AgentsList({
       ) ?? [],
     [query, resource.data, status]
   );
-  const canManage = currentUser.role === "ADMIN" || currentUser.role === "SALES_MANAGER";
+  const canManage = isWorkspaceManager(currentUser);
 
   return (
     <div className="agents-workspace">
@@ -461,11 +480,22 @@ function AgentDetail({
   const resource = usePersistedResource({
     scope: `agent:${agentId}`,
     load: () => getAgent(accessToken, agentId),
-    accepts: (event) => event.entityType === "agent" || event.entityType === "workspace",
+    accepts: (event) =>
+      [
+        "agent",
+        "workspace",
+        "lead",
+        "conversation",
+        "qualification",
+        "proposal",
+        "meeting",
+        "domain-event",
+        "operations"
+      ].includes(event.entityType),
     errorMessage: "Agent details could not be loaded."
   });
   const agent = resource.data;
-  const canManage = currentUser.role === "ADMIN" || currentUser.role === "SALES_MANAGER";
+  const canManage = isWorkspaceManager(currentUser);
   const openTab = (nextTab: AgentDetailTab): void => {
     setTab(nextTab);
     onTabChange(nextTab);
@@ -696,6 +726,9 @@ function AgentExecutions({
   agent: AgentDetailDto;
   canViewTechnical: boolean;
 }): React.JSX.Element {
+  const [showAll, setShowAll] = useState(false);
+  const visibleExecutions = showAll ? agent.executions : agent.executions.slice(0, 10);
+
   if (agent.executions.length === 0)
     return (
       <section className="ui-card">
@@ -707,7 +740,7 @@ function AgentExecutions({
     );
   return (
     <section className="agent-execution-list">
-      {agent.executions.map((execution) => {
+      {visibleExecutions.map((execution) => {
         const passed = execution.status === "SUCCEEDED";
         const failed = execution.status === "FAILED";
         return (
@@ -727,16 +760,18 @@ function AgentExecutions({
               <div>
                 <strong>{execution.summary ?? "Agent execution"}</strong>
                 <small>
-                  {execution.source.replaceAll("_", " ")} / {formatDate(execution.startedAt)}
+                  {businessLabel(execution.source)} - Recorded{" "}
+                  {formatDate(execution.createdAt ?? execution.startedAt)}
                 </small>
               </div>
               <Badge tone={failed ? "danger" : passed ? "success" : "warning"}>
-                {execution.status}
+                {executionStatusLabel(execution.status, Boolean(execution.nextRunAt))}
               </Badge>
             </header>
             <div className="agent-execution-meta">
+              <ExecutionTiming run={execution} />
               <span>
-                Duration <strong>{duration(execution.durationMs)}</strong>
+                Duration <strong>{duration(execution.durationMs, execution.status)}</strong>
               </span>
               <span>
                 Entity{" "}
@@ -747,14 +782,25 @@ function AgentExecutions({
               </span>
             </div>
             {canViewTechnical ? (
-              <div className="agent-execution-reference">
-                <span>Version {execution.versionId}</span>
-                <span>Correlation {execution.correlationId}</span>
-              </div>
+              <details className="agent-execution-reference">
+                <summary>Technical details</summary>
+                <span>Version reference: {execution.versionId}</span>
+                <span>Run reference: {execution.correlationId}</span>
+              </details>
             ) : null}
           </Card>
         );
       })}
+      {agent.executions.length > 10 ? (
+        <div className="agent-list-footer">
+          <span>
+            Showing {showAll ? "all" : "latest 10 of"} {agent.executions.length} runs
+          </span>
+          <Button variant="secondary" onClick={() => setShowAll((current) => !current)}>
+            {showAll ? "Show latest 10" : `Show all ${String(agent.executions.length)}`}
+          </Button>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -766,8 +812,10 @@ function AgentEvaluation({
   agent: AgentDetailDto;
   canViewTechnical: boolean;
 }): React.JSX.Element {
+  const [showAll, setShowAll] = useState(false);
   const version = agent.draftVersion ?? agent.currentVersion;
   const latest = agent.executions[0] ?? null;
+  const visibleExecutions = showAll ? agent.executions : agent.executions.slice(0, 10);
   const definition = version?.definition;
   const references = [
     {
@@ -831,7 +879,7 @@ function AgentEvaluation({
         <header>
           <div>
             <span className="records-eyebrow">EXECUTION GRAPH</span>
-            <h3>Latest governed run</h3>
+            <h3>{latest?.nextRunAt ? "Next scheduled run" : "Latest governed run"}</h3>
           </div>
           <Badge
             tone={
@@ -844,14 +892,14 @@ function AgentEvaluation({
                     : "warning"
             }
           >
-            {latest?.status ?? "NO RUN"}
+            {latest ? executionStatusLabel(latest.status, Boolean(latest.nextRunAt)) : "No run"}
           </Badge>
         </header>
         {latest ? (
           <div className="agent-execution-trace" aria-label="Latest execution trace">
             <span>
               <small>Source</small>
-              <strong>{latest.source.replaceAll("_", " ")}</strong>
+              <strong>{businessLabel(latest.source)}</strong>
             </span>
             <i aria-hidden="true" />
             <span>
@@ -867,13 +915,14 @@ function AgentEvaluation({
         ) : (
           <StateBlock title="No execution trace" detail="A trace appears after the first run." />
         )}
+        {latest ? <ExecutionTiming run={latest} /> : null}
       </Card>
 
       <Card className="agent-evaluation-log">
         <header>
           <div>
             <span className="records-eyebrow">EVALUATION LOG</span>
-            <h3>Persisted outcomes</h3>
+            <h3>Run schedule and outcomes</h3>
           </div>
           <Badge>{agent.executions.length}</Badge>
         </header>
@@ -883,34 +932,42 @@ function AgentEvaluation({
               <span>Run</span>
               <span>Outcome</span>
               <span>Duration</span>
-              <span>Completed</span>
+              <span>Timing</span>
             </div>
-            {agent.executions.map((execution) => (
+            {visibleExecutions.map((execution) => (
               <div className="agent-evaluation-row" key={execution.id} role="row">
                 <span>
                   <strong>{execution.summary ?? "Agent execution"}</strong>
-                  {canViewTechnical ? <small>{execution.correlationId}</small> : null}
                 </span>
-                <Badge
-                  tone={
-                    execution.status === "FAILED"
-                      ? "danger"
-                      : execution.status === "SUCCEEDED"
-                        ? "success"
-                        : "warning"
-                  }
-                >
-                  {evaluationOutcome(execution)}
-                </Badge>
-                <span data-label="Duration">{duration(execution.durationMs)}</span>
-                <time
-                  data-label="Completed"
-                  dateTime={execution.completedAt ?? execution.startedAt}
-                >
-                  {formatDate(execution.completedAt ?? execution.startedAt)}
-                </time>
+                <span className="agent-evaluation-outcome" data-label="Outcome">
+                  <Badge
+                    tone={
+                      execution.status === "FAILED"
+                        ? "danger"
+                        : execution.status === "SUCCEEDED"
+                          ? "success"
+                          : "warning"
+                    }
+                  >
+                    {evaluationOutcome(execution)}
+                  </Badge>
+                </span>
+                <span data-label="Duration">
+                  {duration(execution.durationMs, execution.status)}
+                </span>
+                <ExecutionTiming run={execution} />
               </div>
             ))}
+            {agent.executions.length > 10 ? (
+              <div className="agent-list-footer">
+                <span>
+                  Showing {showAll ? "all" : "latest 10 of"} {agent.executions.length} outcomes
+                </span>
+                <Button variant="secondary" onClick={() => setShowAll((current) => !current)}>
+                  {showAll ? "Show latest 10" : `Show all ${String(agent.executions.length)}`}
+                </Button>
+              </div>
+            ) : null}
           </div>
         ) : (
           <StateBlock title="No evaluations yet" detail="Evaluated runs will appear here." />

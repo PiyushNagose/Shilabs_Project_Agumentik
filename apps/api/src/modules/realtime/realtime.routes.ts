@@ -19,14 +19,22 @@ const realtimeEventSchema = z.object({
     "dashboard",
     "operations",
     "notifications",
-    "domain-event"
+    "domain-event",
+    "deal",
+    "pipeline",
+    "agent",
+    "workflow",
+    "integration",
+    "order"
   ]),
   action: z.string().trim().min(1),
   leadId: z.string().trim().min(1).nullable().optional(),
   conversationId: z.string().trim().min(1).nullable().optional(),
   domainEventId: z.string().trim().min(1).nullable().optional(),
   sourceEventType: z.string().trim().min(1).nullable().optional(),
-  taskId: z.string().trim().min(1).nullable().optional()
+  taskId: z.string().trim().min(1).nullable().optional(),
+  orderId: z.string().trim().min(1).nullable().optional(),
+  workspaceId: z.string().trim().min(1).nullable().optional()
 });
 
 export const realtimeRoutes = Router();
@@ -46,7 +54,9 @@ realtimeRoutes.post(
       conversationId: parsed.conversationId ?? null,
       domainEventId: parsed.domainEventId ?? null,
       sourceEventType: parsed.sourceEventType ?? null,
-      taskId: parsed.taskId ?? null
+      taskId: parsed.taskId ?? null,
+      orderId: parsed.orderId ?? null,
+      workspaceId: parsed.workspaceId ?? null
     });
     response.status(202).json({ accepted: true });
   })

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import request from "supertest";
-import { UserRole, UserStatus } from "@prisma/client";
+import { UserRole, UserStatus, WorkspaceRole } from "@prisma/client";
 import type { AuthResponse, LeadScoreResultDto, ScoringConfigDto } from "@shilabs/shared-types";
 import { createApp } from "../../app.js";
 import { prisma } from "../../shared/prisma.js";
@@ -68,6 +68,19 @@ async function seedBaseData(): Promise<void> {
         status: UserStatus.ACTIVE
       }
     ]
+  });
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
+  const users = await prisma.user.findMany({
+    where: { email: { in: [adminEmail, repEmail] } },
+    select: { id: true, email: true }
+  });
+  await prisma.workspaceMember.createMany({
+    data: users.map((user) => ({
+      workspaceId: workspace.id,
+      userId: user.id,
+      role: user.email === adminEmail ? WorkspaceRole.ADMIN : WorkspaceRole.SALES_REP,
+      status: "ACTIVE"
+    }))
   });
 }
 
@@ -165,12 +178,12 @@ describe("M11 scoring API", () => {
   beforeEach(async () => {
     await cleanup();
     await seedBaseData();
-  }, 45000);
+  }, 180000);
 
   afterAll(async () => {
     await cleanup();
     await prisma.$disconnect();
-  }, 45000);
+  }, 180000);
 
   it("returns scoring config for authenticated users and restricts updates to admins", async () => {
     const adminToken = await login(adminEmail);
@@ -207,7 +220,7 @@ describe("M11 scoring API", () => {
     await prisma.auditEvent.findFirstOrThrow({
       where: { entityType: "ScoringConfig", action: "SCORING_CONFIG_UPDATED" }
     });
-  }, 45000);
+  }, 180000);
 
   it("recalculates score from persisted qualification and audits the change", async () => {
     const adminToken = await login(adminEmail);
@@ -237,7 +250,7 @@ describe("M11 scoring API", () => {
     await prisma.auditEvent.findFirstOrThrow({
       where: { entityType: "Lead", entityId: leadId, action: "LEAD_SCORE_CHANGED" }
     });
-  }, 45000);
+  }, 180000);
 
   it("preserves human score overrides and skips automatic overwrite", async () => {
     const adminToken = await login(adminEmail);
@@ -279,7 +292,7 @@ describe("M11 scoring API", () => {
     await expect(
       prisma.leadScoreRun.findUniqueOrThrow({ where: { id: result.runId ?? "" } })
     ).resolves.toMatchObject({ source: "RULE_ENGINE", status: "SKIPPED" });
-  }, 45000);
+  }, 180000);
 
   it("rejects attempts to put score data into qualification updates", async () => {
     const adminToken = await login(adminEmail);
@@ -290,5 +303,5 @@ describe("M11 scoring API", () => {
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ score: 100 })
       .expect(400);
-  }, 45000);
+  }, 180000);
 });

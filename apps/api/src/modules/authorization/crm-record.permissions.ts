@@ -1,11 +1,12 @@
-import { Prisma, UserRole } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { AppError } from "../../shared/errors.js";
 import { prisma } from "../../shared/prisma.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
 import { leadVisibilityWhere } from "../leads/lead.permissions.js";
+import { isWorkspaceManager } from "./workspace-permissions.js";
 
 function hasGlobalCrmAccess(actor: AuthenticatedUser): boolean {
-  return actor.role === UserRole.ADMIN || actor.role === UserRole.SALES_MANAGER;
+  return isWorkspaceManager(actor);
 }
 
 function workspaceScope(actor: AuthenticatedUser): Prisma.StringNullableFilter | undefined {

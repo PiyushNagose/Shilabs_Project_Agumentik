@@ -1,5 +1,9 @@
-import { AgentType, Prisma } from "@prisma/client";
-import type { FollowUpAttemptDto, FollowUpSequenceDto } from "@shilabs/shared-types";
+import { AgentType, LeadPreferredChannel, Prisma } from "@prisma/client";
+import type {
+  FollowUpAttemptDto,
+  FollowUpPolicyCriteriaDto,
+  FollowUpSequenceDto
+} from "@shilabs/shared-types";
 import { getFollowUpTimingConfig } from "@shilabs/shared-config";
 import { AppError } from "../../shared/errors.js";
 import { prisma } from "../../shared/prisma.js";
@@ -12,8 +16,13 @@ import { publishDomainEvent } from "../domain-events/domain-events.service.js";
 import { validateOutboundEmailPreSend } from "../email/email.service.js";
 import { assertCanAccessLead, assertCanMutateLead } from "../leads/lead.permissions.js";
 import type { StartFollowUpSequenceInput } from "./followup.schemas.js";
+import { getFollowUpDays } from "./followup-timing.js";
+import {
+  followUpPolicyCriteria,
+  selectFollowUpPolicy,
+  resolveFollowUpCommunicationPersonality
+} from "./followup-policy.service.js";
 
-const DEFAULT_CADENCE_DAYS = [0, 1, 5, 9] as const;
 const FOLLOW_UP_CADENCE_MODES = {
   production_days: "PRODUCTION_DAYS",
   e2e_accelerated_minutes: "E2E_ACCELERATED_MINUTES"
@@ -29,6 +38,31 @@ interface StartOptions {
   provider?: AIProvider;
   env?: NodeJS.ProcessEnv;
   now?: Date;
+}
+
+function policyCriteriaJson(
+  policy: Awaited<ReturnType<typeof selectFollowUpPolicy>>
+): Prisma.InputJsonObject {
+  return followUpPolicyCriteria(policy) as unknown as Prisma.InputJsonObject;
+}
+
+export function assertSafeFollowUpDraft(body: string, contactName: string): void {
+  const normalizedBody = body.toLocaleLowerCase();
+  const normalizedContact = contactName.trim().toLocaleLowerCase();
+  const signOffPosition = Math.max(
+    normalizedBody.lastIndexOf("best regards"),
+    normalizedBody.lastIndexOf("regards"),
+    normalizedBody.lastIndexOf("sincerely")
+  );
+  const signatureArea =
+    signOffPosition >= 0 ? normalizedBody.slice(signOffPosition) : normalizedBody.slice(-120);
+  if (!body.trim() || (normalizedContact.length > 2 && signatureArea.includes(normalizedContact))) {
+    throw new AppError(
+      422,
+      "PROVIDER_ERROR",
+      "AI follow-up draft appeared to impersonate the customer"
+    );
+  }
 }
 
 function toAttemptDto(attempt: SequenceRecord["attempts"][number]): FollowUpAttemptDto {
@@ -59,6 +93,13 @@ function toSequenceDto(
   sequence: SequenceRecord,
   e2eAccelerationEligible = false
 ): FollowUpSequenceDto {
+  const reviewAttempt =
+    sequence.status === "ATTENTION_REQUIRED"
+      ? sequence.attempts.find(
+          (attempt) =>
+            attempt.status === "BLOCKED" && attempt.failureCode === "FOLLOW_UP_REQUIRES_REVIEW" && attempt.textBody.trim()
+        )
+      : undefined;
   return {
     id: sequence.id,
     leadId: sequence.leadId,
@@ -68,6 +109,9 @@ function toSequenceDto(
     cadenceDays: sequence.cadenceDays,
     cadenceMode: sequence.cadenceMode,
     cadenceOffsetsMinutes: sequence.cadenceOffsetsMinutes,
+    policyId: sequence.policyId,
+    policyName: sequence.policyName,
+    policyCriteria: sequence.policyCriteria as FollowUpPolicyCriteriaDto | null,
     e2eAccelerationEligible,
     currentStep: sequence.currentStep,
     stopReason: sequence.stopReason,
@@ -77,6 +121,14 @@ function toSequenceDto(
     lastErrorMessage: sequence.lastErrorMessage,
     idempotencyKey: sequence.idempotencyKey,
     attempts: sequence.attempts.sort((a, b) => a.stepIndex - b.stepIndex).map(toAttemptDto),
+    reviewDraft: reviewAttempt
+      ? {
+          attemptId: reviewAttempt.id,
+          subject: reviewAttempt.subject,
+          body: reviewAttempt.textBody,
+          reason: reviewAttempt.failureMessage ?? "Review this message before sending."
+        }
+      : null,
     createdAt: sequence.createdAt.toISOString(),
     updatedAt: sequence.updatedAt.toISOString()
   };
@@ -172,6 +224,9 @@ async function createAttentionSequence(input: {
   idempotencyKey: string;
   code: string;
   message: string;
+  policy: Awaited<ReturnType<typeof selectFollowUpPolicy>>;
+  cadenceDays: number[];
+  reviewDraft?: { body: string; reason: string; stepIndex: number; subject: string };
 }): Promise<FollowUpSequenceDto> {
   const sequence = await prisma.followUpSequence.upsert({
     where: { idempotencyKey: input.idempotencyKey },
@@ -181,12 +236,33 @@ async function createAttentionSequence(input: {
       contactId: input.contactId,
       conversationId: input.conversationId,
       status: "ATTENTION_REQUIRED",
-      cadenceDays: [...DEFAULT_CADENCE_DAYS],
+      cadenceDays: input.cadenceDays,
       cadenceMode: FOLLOW_UP_CADENCE_MODES.production_days,
-      cadenceOffsetsMinutes: DEFAULT_CADENCE_DAYS.map((day) => day * 24 * 60),
+      cadenceOffsetsMinutes: input.cadenceDays.map((day) => day * 24 * 60),
+      policyId: input.policy.id,
+      policyName: input.policy.name,
+      policyCriteria: policyCriteriaJson(input.policy),
       idempotencyKey: input.idempotencyKey,
       lastErrorCode: input.code,
-      lastErrorMessage: input.message
+      lastErrorMessage: input.message,
+      ...(input.reviewDraft
+        ? {
+            attempts: {
+              create: {
+                leadId: input.leadId,
+                stepIndex: input.reviewDraft.stepIndex,
+                kind: input.reviewDraft.stepIndex === 0 ? "FIRST_EMAIL" : "FOLLOW_UP",
+                status: "BLOCKED",
+                scheduledAt: new Date(),
+                subject: input.reviewDraft.subject,
+                textBody: input.reviewDraft.body,
+                failureCode: "FOLLOW_UP_REQUIRES_REVIEW",
+                failureMessage: input.reviewDraft.reason,
+                idempotencyKey: `review:${input.idempotencyKey}`
+              }
+            }
+          }
+        : {})
     },
     update: {},
     include: { attempts: true }
@@ -201,26 +277,77 @@ export async function startFollowUpSequence(
   options?: StartOptions
 ): Promise<FollowUpSequenceDto> {
   const idempotencyKey = input.idempotencyKey ?? `follow-up:lead:${leadId}`;
-  const existing = await prisma.followUpSequence.findUnique({
-    where: { idempotencyKey },
-    include: { attempts: true }
-  });
-  if (existing) return loadSequence(existing.id);
-
   const lead = await prisma.lead.findUnique({
     where: { id: leadId },
     include: {
       company: true,
       contact: true,
       qualification: true,
+      intelligence: true,
+      intelligenceDocuments: {
+        where: { status: "INDEXED" },
+        include: { chunks: { orderBy: { position: "asc" }, take: 20 } },
+        orderBy: { indexedAt: "desc" },
+        take: 10
+      },
       conversations: { where: { channel: "EMAIL" }, orderBy: { createdAt: "desc" }, take: 1 }
     }
   });
   if (!lead) throw new AppError(404, "NOT_FOUND", "Lead not found");
   assertCanMutateLead(actor, lead);
+  if (!lead.workspaceId) {
+    throw new AppError(409, "CONFLICT", "Lead has no persisted workspace");
+  }
+  const existing = await prisma.followUpSequence.findUnique({
+    where: { idempotencyKey },
+    include: { attempts: true }
+  });
+  if (existing) {
+    if (existing.leadId !== lead.id || existing.workspaceId !== lead.workspaceId) {
+      throw new AppError(409, "CONFLICT", "Idempotency key is already in use");
+    }
+    return loadSequence(existing.id);
+  }
   if (lead.workspaceId) await assertAgentCapabilityActive(lead.workspaceId, AgentType.OUTREACH);
 
-  const eligibility = await validateOutboundEmailPreSend(actor, { leadId });
+  const policy = await selectFollowUpPolicy(lead.workspaceId, {
+    companyId: lead.companyId,
+    service: lead.serviceInterest,
+    leadType: lead.leadType,
+    source: lead.source,
+    country: lead.country ?? lead.company.location,
+    priority: lead.priority ?? lead.temperature,
+    managerId: lead.ownerId,
+    campaign: lead.campaign,
+    pipelineStageId: lead.stageId
+  });
+  const timing = getFollowUpTimingConfig(options?.env);
+  const cadenceDays =
+    timing.mode === "e2e_accelerated_minutes"
+      ? timing.e2eBaselineCadenceDays
+      : getFollowUpDays(
+          policy.cadenceDays,
+          lead.intelligence?.followUpMode,
+          lead.intelligence?.customCadenceDays
+        );
+  const cadenceOffsetsMinutes =
+    timing.mode === "e2e_accelerated_minutes"
+      ? timing.offsetsMinutes
+      : cadenceDays.map((day) => day * 24 * 60);
+
+  const preferredChannel = lead.intelligence?.preferredChannel ??
+    Object.values(LeadPreferredChannel).find((channel) => channel === lead.contact.preferredChannel) ?? "EMAIL";
+  const eligibility = ["PHONE", "WHATSAPP"].includes(preferredChannel)
+    ? {
+        allowed:
+          !lead.contact.doNotContact &&
+          !["WON", "LOST", "DISQUALIFIED"].includes(lead.status) &&
+          !["OFF", "PAUSED"].includes(lead.intelligence?.aiControlStatus ?? "") &&
+          !lead.intelligence?.humanInterventionRequired,
+        code: "LEAD_CONTROLS_BLOCK_OUTREACH",
+        message: "This lead is not available for automatic follow-up."
+      }
+    : await validateOutboundEmailPreSend(actor, { leadId });
   if (!eligibility.allowed) {
     return createAttentionSequence({
       workspaceId: lead.workspaceId,
@@ -229,7 +356,9 @@ export async function startFollowUpSequence(
       conversationId: lead.conversations[0]?.id ?? null,
       idempotencyKey,
       code: eligibility.code ?? "FOLLOW_UP_BLOCKED",
-      message: eligibility.message ?? "Follow-up automation is blocked"
+      message: eligibility.message ?? "Follow-up automation is blocked",
+      policy,
+      cadenceDays
     });
   }
   if (lead.automationOwnershipState !== "AI_ACTIVE") {
@@ -248,7 +377,9 @@ export async function startFollowUpSequence(
       conversationId: conversation.id,
       idempotencyKey,
       code: "CONVERSATION_NOT_AUTOMATED",
-      message: `Conversation mode ${conversation.mode} blocks follow-up automation`
+      message: `Conversation mode ${conversation.mode} blocks follow-up automation`,
+      policy,
+      cadenceDays
     });
   }
   const activeTakeover = await prisma.humanTakeover.findFirst({
@@ -267,7 +398,9 @@ export async function startFollowUpSequence(
       conversationId: conversation?.id ?? null,
       idempotencyKey,
       code: "HUMAN_TAKEOVER_ACTIVE",
-      message: "Human takeover blocks follow-up automation"
+      message: "Human takeover blocks follow-up automation",
+      policy,
+      cadenceDays
     });
   }
 
@@ -278,8 +411,7 @@ export async function startFollowUpSequence(
   });
   if (activeSequence) return loadSequence(activeSequence.id);
 
-  const approvedKnowledge = await listApprovedKnowledge({ limit: 20 });
-  const timing = getFollowUpTimingConfig(options?.env);
+  const approvedKnowledge = await listApprovedKnowledge(lead.workspaceId, { limit: 20 });
   const messages = conversation
     ? await prisma.message.findMany({
         where: { conversationId: conversation.id },
@@ -289,10 +421,34 @@ export async function startFollowUpSequence(
       })
     : [];
   const now = options?.now ?? new Date();
+  const automaticAction =
+    lead.nextAction === "Send first follow-up email" ||
+    lead.nextAction?.startsWith("Send follow-up email ") === true ||
+    lead.nextAction?.startsWith("Automatic follow-up ") === true;
+  const promisedDelay =
+    timing.mode === "production_days" && !automaticAction && lead.nextActionAt
+      ? Math.max(
+          0,
+          lead.nextActionAt.getTime() - scheduleAt(now, cadenceOffsetsMinutes[0] ?? 0).getTime()
+        )
+      : 0;
   const drafts: string[] = [];
+  let draftRequiresReview = false;
+  let reviewDraft: { body: string; reason: string; stepIndex: number; subject: string } | undefined;
+  const communicationPersonality = await resolveFollowUpCommunicationPersonality(lead.workspaceId, {
+    companyId: lead.companyId,
+    service: lead.serviceInterest,
+    leadType: lead.leadType,
+    source: lead.source,
+    country: lead.country ?? lead.company.location,
+    priority: lead.priority ?? lead.temperature,
+    managerId: lead.ownerId,
+    campaign: lead.campaign,
+    pipelineStageId: lead.stageId
+  });
   try {
     const provider = options?.provider ?? createAIProvider(options?.env);
-    for (const [index, day] of DEFAULT_CADENCE_DAYS.entries()) {
+    for (const [index, day] of cadenceDays.entries()) {
       const output = await provider.generateFollowUp({
         messages,
         approvedKnowledge: approvedKnowledge.map((item) => ({
@@ -303,15 +459,49 @@ export async function startFollowUpSequence(
           stepIndex: index,
           cadenceDay: day,
           cadenceMode: timing.mode,
-          cadenceOffsetMinutes: timing.offsetsMinutes[index],
+          cadenceOffsetMinutes: cadenceOffsetsMinutes[index],
           leadId: lead.id,
+          communicationPersonality,
           company: lead.company.name,
           contact: `${lead.contact.firstName} ${lead.contact.lastName}`.trim(),
           requirement: lead.requirement,
           serviceInterest: lead.serviceInterest,
-          qualification: lead.qualification
+          qualification: lead.qualification,
+          intelligence: lead.intelligence
+            ? {
+                communicationStyle: lead.intelligence.communicationStyle,
+                objections: lead.intelligence.objections,
+                commitments: lead.intelligence.commitments,
+                nextObjective: lead.intelligence.nextObjective,
+                preferredChannel: lead.intelligence.preferredChannel
+              }
+            : null,
+          approvedLeadDocuments: lead.intelligenceDocuments.map((document) => ({
+            id: document.id,
+            title: document.title,
+            kind: document.kind,
+            evidence: document.chunks.map((chunk) => chunk.content)
+          }))
         })
       });
+      assertSafeFollowUpDraft(
+        output.body,
+        `${lead.contact.firstName} ${lead.contact.lastName}`.trim()
+      );
+      if (output.requiresHumanReview) {
+        draftRequiresReview = true;
+        reviewDraft = {
+          body: output.body,
+          reason: output.reason?.trim() ?? "This follow-up needs a salesperson's approval.",
+          stepIndex: index,
+          subject: subjectFor({
+            stepIndex: index,
+            serviceInterest: lead.serviceInterest,
+            requirement: lead.requirement
+          })
+        };
+        throw new AppError(422, "PROVIDER_ERROR", "A salesperson must review this follow-up.");
+      }
       drafts.push(output.body);
     }
   } catch (error) {
@@ -321,8 +511,13 @@ export async function startFollowUpSequence(
       contactId: lead.contactId,
       conversationId: conversation?.id ?? null,
       idempotencyKey,
-      code: "AI_FOLLOW_UP_DRAFT_FAILED",
-      message: error instanceof Error ? error.message : "AI follow-up draft generation failed"
+      code: draftRequiresReview ? "AI_FOLLOW_UP_REQUIRES_REVIEW" : "AI_FOLLOW_UP_DRAFT_FAILED",
+      message:
+        reviewDraft?.reason ??
+        (error instanceof Error ? error.message : "AI follow-up draft generation failed"),
+      reviewDraft,
+      policy,
+      cadenceDays
     });
   }
 
@@ -331,24 +526,48 @@ export async function startFollowUpSequence(
       const emailConversation =
         conversation ??
         (await tx.conversation.create({
-          data: { leadId, channel: "EMAIL", mode: "AUTO", status: "OPEN" }
+          data: {
+            workspaceId: lead.workspaceId,
+            leadId,
+            channel: "EMAIL",
+            mode: "AUTO",
+            status: "OPEN"
+          }
         }));
+      await tx.followUpSequence.updateMany({
+        where: {
+          workspaceId: lead.workspaceId,
+          leadId,
+          status: "ATTENTION_REQUIRED",
+          OR: [
+            { lastErrorCode: "AI_FOLLOW_UP_REQUIRES_REVIEW" },
+            { lastErrorMessage: "A salesperson must review this follow-up." }
+          ]
+        },
+        data: { status: "STOPPED", stopReason: "DRAFT_REPLACED", stoppedAt: now }
+      });
       const created = await tx.followUpSequence.create({
         data: {
           workspaceId: lead.workspaceId,
           leadId,
           contactId: lead.contactId,
           conversationId: emailConversation.id,
-          cadenceDays: [...DEFAULT_CADENCE_DAYS],
+          cadenceDays,
           cadenceMode: FOLLOW_UP_CADENCE_MODES[timing.mode],
-          cadenceOffsetsMinutes: timing.offsetsMinutes,
-          idempotencyKey
+          cadenceOffsetsMinutes,
+          policyId: policy.id,
+          policyName: policy.name,
+          policyCriteria: policyCriteriaJson(policy),
+          idempotencyKey,
+          createdAt: now
         }
       });
       let firstScheduledAttempt: FollowUpLeadActionAttempt | null = null;
 
-      for (const [index, day] of DEFAULT_CADENCE_DAYS.entries()) {
-        const scheduledAt = scheduleAt(now, timing.offsetsMinutes[index] ?? day * 24 * 60);
+      for (const [index, day] of cadenceDays.entries()) {
+        const scheduledAt = new Date(
+          scheduleAt(now, cadenceOffsetsMinutes[index] ?? day * 24 * 60).getTime() + promisedDelay
+        );
         const attempt = await tx.followUpAttempt.create({
           data: {
             sequenceId: created.id,
@@ -404,9 +623,12 @@ export async function startFollowUpSequence(
           action: "FOLLOW_UP_SEQUENCE_STARTED",
           after: {
             leadId,
-            cadenceDays: [...DEFAULT_CADENCE_DAYS],
+            cadenceDays,
             cadenceMode: FOLLOW_UP_CADENCE_MODES[timing.mode],
-            cadenceOffsetsMinutes: timing.offsetsMinutes
+            cadenceOffsetsMinutes,
+            policyId: policy.id,
+            policyName: policy.name,
+            policyCriteria: policyCriteriaJson(policy)
           }
         }
       });
@@ -552,35 +774,38 @@ export async function runCallingAttemptNowForE2E(
   const lead = await prisma.lead.findUnique({ where: { id: leadId } });
   if (!lead) throw new AppError(404, "NOT_FOUND", "Lead not found");
   assertCanMutateLead(actor, lead);
+  if (!lead.workspaceId) {
+    throw new AppError(409, "CONFLICT", "Lead has no persisted workspace");
+  }
 
   const sequences = await prisma.callingSequence.findMany({
     where: { leadId, status: { in: ["ACTIVE", "ATTENTION_REQUIRED"] } },
     include: { attempts: { orderBy: { attemptIndex: "asc" } } },
     orderBy: { createdAt: "desc" }
   });
-  const sequence = sequences.find(
-    (candidate) =>
-      candidate.attempts.some((item) => item.status === "SCHEDULED") &&
-      candidate.attempts.some((item) => item.voiceCallAttemptId)
+  const sequence = sequences.find((candidate) =>
+    candidate.attempts.some((item) => item.status === "SCHEDULED")
   );
   const attempt = sequence?.attempts.find((item) => item.status === "SCHEDULED");
   const exhausted = sequences.find(
     (candidate) =>
-      candidate.attempts.some((item) => item.voiceCallAttemptId) &&
       candidate.attempts.length > 0 &&
       candidate.attempts.every((item) => item.status !== "SCHEDULED")
   );
 
-  if (!attempt && exhausted) {
+  if (!attempt) {
     const scheduledAt = options?.now ?? new Date();
-    const retryKey = `calling-sequence:e2e-retry:${exhausted.id}`;
+    const retryKey = exhausted
+      ? `calling-sequence:e2e-retry:${exhausted.id}`
+      : `calling-sequence:e2e:${lead.id}`;
     const retry = await prisma.$transaction(async (tx) => {
       const createdSequence = await tx.callingSequence.upsert({
         where: { idempotencyKey: retryKey },
         create: {
+          workspaceId: lead.workspaceId,
           leadId,
-          contactId: exhausted.contactId,
-          followUpSequenceId: exhausted.followUpSequenceId,
+          contactId: exhausted?.contactId ?? lead.contactId,
+          followUpSequenceId: exhausted?.followUpSequenceId,
           cadenceOffsets: [0],
           maxAttempts: 1,
           idempotencyKey: retryKey
@@ -592,7 +817,7 @@ export async function runCallingAttemptNowForE2E(
         create: {
           sequenceId: createdSequence.id,
           leadId,
-          contactId: exhausted.contactId,
+          contactId: exhausted?.contactId ?? lead.contactId,
           attemptIndex: 0,
           scheduledAt,
           idempotencyKey: `calling-attempt:${createdSequence.id}:0`
@@ -602,12 +827,13 @@ export async function runCallingAttemptNowForE2E(
       const event = await tx.domainEventOutbox.upsert({
         where: { idempotencyKey: `domain-event:calling-attempt:${createdAttempt.id}` },
         create: {
+          workspaceId: lead.workspaceId,
           eventType: "CALL_AUTOMATION_ATTEMPT_DUE",
           aggregateType: "CallingAttempt",
           aggregateId: createdAttempt.id,
           payload: {
             leadId,
-            contactId: exhausted.contactId,
+            contactId: exhausted?.contactId ?? lead.contactId,
             callingSequenceId: createdSequence.id,
             callingAttemptId: createdAttempt.id
           },
@@ -630,12 +856,13 @@ export async function runCallingAttemptNowForE2E(
       await tx.domainEventOutbox.upsert({
         where: { idempotencyKey: `domain-event:whatsapp-send:${createdAttempt.id}` },
         create: {
+          workspaceId: lead.workspaceId,
           eventType: "WHATSAPP_SEND_REQUESTED",
           aggregateType: "CallingAttempt",
           aggregateId: createdAttempt.id,
           payload: {
             leadId,
-            contactId: exhausted.contactId,
+            contactId: exhausted?.contactId ?? lead.contactId,
             callingSequenceId: createdSequence.id,
             callingAttemptId: createdAttempt.id
           },
@@ -659,7 +886,7 @@ export async function runCallingAttemptNowForE2E(
     };
   }
 
-  if (!attempt?.domainEventId || !sequence) {
+  if (!attempt.domainEventId || !sequence) {
     throw new AppError(409, "CONFLICT", "No active scheduled AI calling attempt is available");
   }
   const event = await prisma.domainEventOutbox.findUnique({

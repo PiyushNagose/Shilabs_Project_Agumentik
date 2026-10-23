@@ -3,6 +3,7 @@ import { AppError } from "../../shared/errors.js";
 import { prisma } from "../../shared/prisma.js";
 import type { AIProvider } from "../ai/ai.provider.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
+import { requireHumanActionInTransaction } from "../leads/lead-automation-ownership.service.js";
 import { publishRealtimeEvent } from "../realtime/realtime.service.js";
 import { startFollowUpSequence } from "./followup.service.js";
 
@@ -40,24 +41,58 @@ async function markLeadAutomationStartupFailure(input: {
   message: string;
 }): Promise<void> {
   const now = new Date();
-  await prisma.$transaction(async (tx) => {
+  const workspaceId = await prisma.$transaction(async (tx) => {
+    const lead = await tx.lead.findUnique({
+      where: { id: input.leadId },
+      select: {
+        workspaceId: true,
+        automationOwnershipState: true,
+        status: true,
+        contact: { select: { doNotContact: true } }
+      }
+    });
+    if (
+      !lead?.workspaceId ||
+      lead.automationOwnershipState !== "AI_ACTIVE" ||
+      lead.contact.doNotContact ||
+      ["WON", "LOST", "DISQUALIFIED"].includes(lead.status)
+    ) return null;
+    const needsReview = input.code === "AI_FOLLOW_UP_REQUIRES_REVIEW" ||
+      input.message === "A salesperson must review this follow-up.";
+    const summary = needsReview
+      ? "The suggested follow-up needs your approval before AI can continue."
+      : "Automatic follow-up could not start. Review the integration and follow-up settings.";
+    await requireHumanActionInTransaction({
+      client: tx,
+      leadId: input.leadId,
+      reason: needsReview ? "FOLLOW_UP_REQUIRES_REVIEW" : "AI_AUTOMATION_START_FAILED",
+      actorType: "SYSTEM",
+      sourceType: "FOLLOW_UP"
+    });
     await tx.lead.update({
       where: { id: input.leadId },
       data: {
-        nextAction: "Review AI automation startup",
+        nextAction: needsReview ? "Review the suggested follow-up before replying" : "Review automatic follow-up settings",
         nextActionAt: now,
         lastActivityAt: now
       }
     });
     await tx.activity.create({
       data: {
+        workspaceId: lead.workspaceId,
         leadId: input.leadId,
-        type: "MESSAGE_RECEIVED",
-        description: `AI lead automation startup failed: ${input.message}`
+        actorType: "SYSTEM",
+        sourceType: "FOLLOW_UP",
+        type: "FOLLOW_UP_DECISION_RECORDED",
+        title: needsReview ? "Follow-up needs your review" : "Automatic follow-up needs attention",
+        description: summary,
+        metadata: { decision: "ASK_HUMAN", code: input.code },
+        visibility: "BUSINESS"
       }
     });
     await tx.auditEvent.create({
       data: {
+        workspaceId: lead.workspaceId,
         actorType: "SYSTEM",
         entityType: "Lead",
         entityId: input.leadId,
@@ -68,8 +103,11 @@ async function markLeadAutomationStartupFailure(input: {
         }
       }
     });
-  });
+    return lead.workspaceId;
+  }, { maxWait: 10_000, timeout: 30_000 });
+  if (!workspaceId) return;
   await publishRealtimeEvent({
+    workspaceId,
     entityType: "lead",
     action: "lead-ai-automation-start-failed",
     leadId: input.leadId
@@ -104,6 +142,7 @@ export async function autoStartLeadAiAutomation(
         code: sequence.lastErrorCode ?? "AI_LEAD_AUTOMATION_BLOCKED",
         message: sequence.lastErrorMessage ?? "AI lead automation needs review before it can start"
       });
+      return sequence;
     }
 
     await prisma.auditEvent.create({

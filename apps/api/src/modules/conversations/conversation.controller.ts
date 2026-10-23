@@ -4,9 +4,11 @@ import type {
   HumanTakeoverBriefingDto,
   HumanTakeoverDto,
   HumanConversationReplyDto,
+  HumanWhatsAppReplyDto,
   MessageDto
 } from "@shilabs/shared-types";
 import { AppError } from "../../shared/errors.js";
+import { downloadConversationAttachment } from "./conversation-attachments.service.js";
 import {
   appendMessage,
   createConversation,
@@ -15,6 +17,7 @@ import {
   listConversations,
   listMessages,
   sendHumanReply,
+  sendHumanWhatsAppReply,
   startHumanTakeover,
   updateConversationMode
 } from "./conversation.service.js";
@@ -33,6 +36,27 @@ function requireRequestUser(request: Request) {
   }
 
   return request.user;
+}
+
+export async function downloadConversationAttachmentController(
+  request: Request<{ id: string; messageId: string; index: string }>,
+  response: Response
+): Promise<void> {
+  response.set({ "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" });
+  const attachment = await downloadConversationAttachment(
+    requireRequestUser(request),
+    request.params.id,
+    request.params.messageId,
+    request.params.index
+  );
+  response
+    .set({
+      "Content-Type": attachment.contentType,
+      "Content-Disposition": `attachment; filename="${attachment.fileName}"`,
+      "Content-Length": String(attachment.bytes.length)
+    })
+    .status(200)
+    .send(attachment.bytes);
 }
 
 export async function listConversationsController(
@@ -106,6 +130,13 @@ export async function sendHumanReplyController(
   response
     .status(200)
     .json(await sendHumanReply(requireRequestUser(request), request.params.id, request.body));
+}
+
+export async function sendHumanWhatsAppReplyController(
+  request: Request<{ id: string }, HumanWhatsAppReplyDto, SendHumanReplyInput>,
+  response: Response<HumanWhatsAppReplyDto>
+): Promise<void> {
+  response.status(200).json(await sendHumanWhatsAppReply(requireRequestUser(request), request.params.id, request.body));
 }
 
 export async function getHumanTakeoverBriefingController(

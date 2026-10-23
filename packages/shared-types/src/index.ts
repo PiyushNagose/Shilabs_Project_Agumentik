@@ -18,6 +18,15 @@ export interface WorkerStatus {
 
 export const USER_ROLES = ["ADMIN", "SALES_MANAGER", "SALES_REP"] as const;
 export type UserRoleName = (typeof USER_ROLES)[number];
+export const WORKSPACE_ROLES = [
+  "OWNER",
+  "ADMIN",
+  "SALES_MANAGER",
+  "SALES_REP",
+  "OPERATIONS",
+  "VIEWER"
+] as const;
+export type WorkspaceRoleName = (typeof WORKSPACE_ROLES)[number];
 
 export const USER_STATUSES = ["ACTIVE", "INACTIVE"] as const;
 export type UserStatusName = (typeof USER_STATUSES)[number];
@@ -28,6 +37,7 @@ export interface PublicUser {
   firstName: string;
   lastName: string;
   role: UserRoleName;
+  workspaceRole?: WorkspaceRoleName;
   status: UserStatusName;
   createdAt: string;
   updatedAt: string;
@@ -107,6 +117,10 @@ export interface LeadDto {
   contactId: string;
   ownerId: string | null;
   source: string;
+  leadType: string | null;
+  country: string | null;
+  priority: string | null;
+  campaign: string | null;
   status: LeadStatusName;
   stageId: string;
   requirement: string | null;
@@ -614,6 +628,31 @@ export interface AiCommandCenterDto {
   recommendations: AiCommandCenterLeadDto[];
 }
 
+export interface ManagerAccountabilityReportDto {
+  generatedAt: string;
+  scopeLabel: string;
+  humanKpis: AiCommandCenterDto["humanKpis"];
+  aiKpis: AiCommandCenterDto["aiKpis"];
+  team: {
+    userId: string;
+    name: string;
+    role: string;
+    leadsAssigned: number;
+    humanNeeded: number;
+    overdueTasks: number;
+    completedTasks: number;
+    emailsSent: number;
+    wonDeals: number;
+  }[];
+  attention: {
+    humanRequired: number;
+    overdueHumanActions: number;
+    pendingProposalApprovals: number;
+    automationFailures: number;
+    totalOpenItems: number;
+  };
+}
+
 export interface ProposalSendResultDto {
   proposal: ProposalDto;
   outboundEmail: OutboundEmailDto;
@@ -703,6 +742,17 @@ export const MESSAGE_DELIVERY_STATUSES = [
 ] as const;
 export type MessageDeliveryStatusName = (typeof MESSAGE_DELIVERY_STATUSES)[number];
 
+export interface CommunicationAttachmentDto {
+  fileName: string;
+  contentType: string;
+  sizeBytes: number;
+  contentId: string | null;
+  disposition: "attachment" | "inline";
+  providerAttachmentId: string | null;
+  mediaType: "document" | "image" | "audio" | "video" | "sticker" | "file";
+  voiceNote: boolean;
+}
+
 export interface ConversationDto {
   id: string;
   leadId: string;
@@ -729,6 +779,9 @@ export interface MessageDto {
   readAt: string | null;
   failedAt: string | null;
   metadata: unknown;
+  attachments: CommunicationAttachmentDto[];
+  providerThreadId: string | null;
+  providerReferences: string[];
   createdAt: string;
   senderUser: PublicUser | null;
 }
@@ -737,6 +790,12 @@ export interface HumanConversationReplyDto {
   message: MessageDto | null;
   outboundEmail: OutboundEmailDto;
   zohoTimeline: ZohoTimelineAppendDto | null;
+}
+
+export interface HumanWhatsAppReplyDto {
+  message: MessageDto | null;
+  status: "PENDING" | "SENT" | "FAILED" | "NOT_CONFIGURED";
+  failureMessage: string | null;
 }
 
 export const HUMAN_TAKEOVER_STATUSES = ["ACTIVE"] as const;
@@ -781,7 +840,7 @@ export interface HumanTakeoverBriefingDto {
   latestActions: ActivityDto[];
 }
 
-export const NEGOTIATION_HANDOFF_STATUSES = ["ACTIVE", "ATTENTION_REQUIRED"] as const;
+export const NEGOTIATION_HANDOFF_STATUSES = ["ACTIVE", "ATTENTION_REQUIRED", "RESOLVED"] as const;
 export type NegotiationHandoffStatusName = (typeof NEGOTIATION_HANDOFF_STATUSES)[number];
 
 export const INTERNAL_NOTIFICATION_TYPES = ["NEGOTIATION_HANDOFF", "MEETING_CONFIRMATION"] as const;
@@ -859,6 +918,7 @@ export type SalesActionDashboardItemSeverity = "INFO" | "WARNING" | "CRITICAL";
 
 export interface SalesActionDashboardItemDto {
   id: string;
+  notificationDeliveryState?: "Pending" | "Disabled" | "NeedsAttention" | "Accepted";
   type: SalesActionDashboardItemType;
   severity: SalesActionDashboardItemSeverity;
   title: string;
@@ -973,6 +1033,13 @@ export interface MeetingRequestDto {
   timeZone: string;
   durationMinutes: number;
   slotMinutes: number;
+  meetingMode: "VIDEO" | "PHONE" | "IN_PERSON";
+  location: string | null;
+  reminderMinutes: number;
+  reminderSentAt: string | null;
+  outcome: "COMPLETED" | "NO_SHOW" | null;
+  outcomeNotes: string | null;
+  completedAt: string | null;
   windowStart: string;
   windowEnd: string;
   selectedSlotId: string | null;
@@ -1310,7 +1377,14 @@ export interface OutboundEmailDto {
   toEmail: string;
   fromEmail: string;
   replyToEmail: string | null;
+  ccEmails: string[];
   subject: string;
+  attachments: CommunicationAttachmentDto[];
+  threadId: string | null;
+  inReplyTo: string | null;
+  providerReferences: string[];
+  senderType: MessageSenderTypeName;
+  deliveryStatus: MessageDeliveryStatusName;
   provider: IntegrationProviderName;
   providerMessageId: string | null;
   idempotencyKey: string;
@@ -1344,14 +1418,44 @@ export interface InboundEmailDto {
   messageId: string | null;
   fromEmail: string;
   toEmails: string[];
+  ccEmails: string[];
   subject: string | null;
   textBody: string;
+  attachments: CommunicationAttachmentDto[];
+  threadId: string | null;
+  inReplyTo: string | null;
+  providerReferences: string[];
+  senderType: MessageSenderTypeName;
+  deliveryStatus: MessageDeliveryStatusName;
   status: "PROCESSED" | "FAILED";
   failureCode: string | null;
   failureMessage: string | null;
   replyProcessingStatus: "PENDING" | "PROCESSED" | "FAILED" | "SKIPPED" | null;
   receivedAt: string;
   processedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OutboundWhatsAppMessageDto {
+  id: string;
+  leadId: string;
+  contactId: string;
+  conversationId: string | null;
+  provider: "META_WHATSAPP" | "TWILIO";
+  providerMessageId: string | null;
+  replyToProviderMessageId: string | null;
+  messageType: string;
+  textBody: string | null;
+  media: CommunicationAttachmentDto[];
+  senderType: MessageSenderTypeName;
+  deliveryStatus: MessageDeliveryStatusName;
+  providerStatus: string | null;
+  status: string;
+  sentAt: string | null;
+  deliveredAt: string | null;
+  readAt: string | null;
+  failedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -1443,6 +1547,7 @@ export interface KnowledgeBaseVersionDto {
 
 export interface KnowledgeBaseEntryDto {
   id: string;
+  workspaceId: string;
   key: string;
   title: string;
   category: KnowledgeBaseCategoryName;
@@ -1579,6 +1684,7 @@ export interface OperationsWorkItemDto {
   status: string;
   detail: string;
   occurredAt: string;
+  nextRunAt?: string | null;
 }
 
 export interface OperationsSyncStatusDto {
@@ -1594,6 +1700,7 @@ export interface OperationsProviderErrorDto {
   status: string;
   message: string;
   occurredAt: string;
+  nextRunAt?: string | null;
 }
 
 export interface OperationsUsageIndicatorDto {
@@ -1644,6 +1751,8 @@ export type AgentStatusName = (typeof AGENT_STATUSES)[number];
 export const AGENT_EXECUTION_STATUSES = [
   "QUEUED",
   "RUNNING",
+  "WAITING",
+  "HUMAN_REQUIRED",
   "SUCCEEDED",
   "FAILED",
   "CANCELED"
@@ -1740,6 +1849,10 @@ export interface AgentExecutionDto {
   entityId: string | null;
   leadId: string | null;
   status: AgentExecutionStatusName;
+  currentNodeId?: string | null;
+  nextRunAt?: string | null;
+  createdAt?: string;
+  actualStartedAt?: string | null;
   startedAt: string;
   completedAt: string | null;
   durationMs: number | null;
@@ -1890,6 +2003,7 @@ export interface WorkflowExecutionDto {
   source: string;
   status: WorkflowExecutionStatusName;
   currentNodeId: string | null;
+  nextRunAt?: string | null;
   correlationId: string;
   failureCode: string | null;
   failureMessage: string | null;
@@ -1991,6 +2105,9 @@ export interface FollowUpSequenceDto {
   cadenceDays: number[];
   cadenceMode: string;
   cadenceOffsetsMinutes: number[];
+  policyId: string | null;
+  policyName: string | null;
+  policyCriteria: FollowUpPolicyCriteriaDto | null;
   e2eAccelerationEligible: boolean;
   currentStep: number;
   stopReason: string | null;
@@ -2000,6 +2117,37 @@ export interface FollowUpSequenceDto {
   lastErrorMessage: string | null;
   idempotencyKey: string;
   attempts: FollowUpAttemptDto[];
+  reviewDraft?: {
+    attemptId: string;
+    subject: string;
+    body: string;
+    reason: string;
+  } | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FollowUpPolicyCriteriaDto {
+  companyId?: string | null;
+  service: string | null;
+  leadType: string | null;
+  source: string | null;
+  country: string | null;
+  priority: string | null;
+  managerId: string | null;
+  campaign: string | null;
+  pipelineStageId: string | null;
+}
+
+export interface FollowUpPolicyDto extends FollowUpPolicyCriteriaDto {
+  id: string;
+  workspaceId: string;
+  name: string;
+  enabled: boolean;
+  isDefault: boolean;
+  selectionPriority: number;
+  cadenceDays: number[];
+  communicationPersonality: string | null;
   createdAt: string;
   updatedAt: string;
 }

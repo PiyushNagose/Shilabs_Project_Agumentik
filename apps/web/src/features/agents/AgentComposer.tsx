@@ -47,26 +47,30 @@ const nodeCatalog: readonly {
   { type: "QUESTION", label: "Question", icon: Bot },
   { type: "CONDITION", label: "Condition", icon: GitBranch },
   { type: "AI_DECISION", label: "AI Decision", icon: Sparkles },
-  { type: "TOOL_CRM_ACTION", label: "Tool / CRM Action", icon: Wrench },
-  { type: "INTEGRATION_ACTION", label: "Integration Action", icon: Link2 },
+  { type: "TOOL_CRM_ACTION", label: "Action", icon: Wrench },
+  { type: "INTEGRATION_ACTION", label: "Integration", icon: Link2 },
   { type: "WAIT", label: "Wait", icon: Clock3 },
-  { type: "HUMAN_HANDOFF", label: "Human Handoff", icon: Hand },
+  { type: "HUMAN_HANDOFF", label: "Handoff", icon: Hand },
   { type: "END", label: "End", icon: Square }
 ];
 
-const capabilityOptions = [
-  "outreach",
-  "reply-understanding",
-  "qualification",
-  "proposal",
-  "meeting",
-  "voice",
-  "whatsapp",
-  "sales-copilot",
-  "create-task",
-  "update-lead",
-  "assign-owner"
-].map((value) => ({ value, label: value.replaceAll("-", " ") }));
+const capabilityOptions = ["outreach", "create-task", "update-lead", "assign-owner"].map(
+  (value) => ({
+    value,
+    label: value
+      .split("-")
+      .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+      .join(" ")
+  })
+);
+
+const integrationOptions = ["email", "whatsapp", "voice"].map((value) => ({
+  value,
+  label: value
+    .split("-")
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(" ")
+}));
 
 function defaultConfig(type: AgentComposerNodeType): AgentComposerNodeDto["config"] {
   if (type === "TRIGGER") return { event: "Lead activity received" };
@@ -75,14 +79,22 @@ function defaultConfig(type: AgentComposerNodeType): AgentComposerNodeDto["confi
   if (type === "CONDITION") return { expression: "lead.score >= 60" };
   if (type === "AI_DECISION") return { instruction: "Choose the safest relevant next step." };
   if (type === "TOOL_CRM_ACTION") return { capability: "update-lead" };
-  if (type === "INTEGRATION_ACTION") return { capability: "meeting" };
+  if (type === "INTEGRATION_ACTION") return { capability: "email" };
   if (type === "WAIT") return { durationMinutes: 30 };
   if (type === "HUMAN_HANDOFF") return { reason: "Human judgment is required." };
   return { outcome: "Completed" };
 }
 
 function defaultDefinition(agent: AgentDetailDto): AgentComposerDefinitionDto {
-  const capability = agent.type.toLowerCase().replaceAll("_", "-");
+  const integration = agent.type === "VOICE" || agent.type === "WHATSAPP";
+  const capability =
+    agent.type === "OUTREACH"
+      ? "outreach"
+      : agent.type === "QUALIFICATION"
+        ? "update-lead"
+        : integration
+          ? agent.type.toLowerCase()
+          : "create-task";
   return {
     schemaVersion: 1,
     kind: "AGENT_COMPOSER",
@@ -105,7 +117,7 @@ function defaultDefinition(agent: AgentDetailDto): AgentComposerDefinitionDto {
       },
       {
         id: "action",
-        type: "TOOL_CRM_ACTION",
+        type: integration ? "INTEGRATION_ACTION" : "TOOL_CRM_ACTION",
         label: agent.name,
         position: { x: 250, y: 316 },
         config: { capability }
@@ -142,12 +154,12 @@ function composerDefinition(agent: AgentDetailDto): AgentComposerDefinitionDto {
 }
 
 function configField(type: AgentComposerNodeType): { key: string; label: string } | null {
-  if (type === "TRIGGER") return { key: "event", label: "Trigger event" };
+  if (type === "TRIGGER") return { key: "event", label: "Starts when" };
   if (type === "MESSAGE") return { key: "message", label: "Message" };
   if (type === "QUESTION") return { key: "question", label: "Question" };
-  if (type === "CONDITION") return { key: "expression", label: "Condition expression" };
-  if (type === "AI_DECISION") return { key: "instruction", label: "Decision instruction" };
-  if (type === "HUMAN_HANDOFF") return { key: "reason", label: "Handoff reason" };
+  if (type === "CONDITION") return { key: "expression", label: "Rule" };
+  if (type === "AI_DECISION") return { key: "instruction", label: "How AI should decide" };
+  if (type === "HUMAN_HANDOFF") return { key: "reason", label: "Why a person is needed" };
   if (type === "END") return { key: "outcome", label: "Outcome" };
   return null;
 }
@@ -279,7 +291,7 @@ export function AgentComposer({
         <div>
           <span className="records-eyebrow">AGENT / COMPOSER</span>
           <h3>Visual behavior</h3>
-          <p>Configure this agent with versioned, reusable platform capabilities.</p>
+          <p>Choose how this agent responds, makes decisions, and hands work to a person.</p>
         </div>
         <div className="composer-toolbar-actions">
           <Badge tone={dirty ? "warning" : agent.draftVersion ? "neutral" : "success"}>
@@ -310,8 +322,8 @@ export function AgentComposer({
       ) : null}
       <div className="composer-layout">
         <aside className="composer-palette" aria-label="Composer nodes">
-          <strong>Nodes</strong>
-          <p>Add behavior to the canvas.</p>
+          <strong>Steps</strong>
+          <p>Add a step to the flow.</p>
           {nodeCatalog.map(({ type, label, icon: Icon }) => (
             <button
               disabled={!canManage}
@@ -355,10 +367,14 @@ export function AgentComposer({
               const tx = target.position.x + 100;
               const ty = target.position.y;
               return (
-                <path
-                  d={["M", sx, sy, "C", sx, sy + 42, tx, ty - 42, tx, ty].join(" ")}
-                  key={edge.id}
-                />
+                <g key={edge.id}>
+                  <path d={["M", sx, sy, "C", sx, sy + 42, tx, ty - 42, tx, ty].join(" ")} />
+                  {edge.branch ? (
+                    <text className="composer-branch-label" x={(sx + tx) / 2} y={(sy + ty) / 2}>
+                      {edge.branch}
+                    </text>
+                  ) : null}
+                </g>
               );
             })}
           </svg>
@@ -382,9 +398,6 @@ export function AgentComposer({
                   <Icon size={15} /> {catalog.label}
                 </span>
                 <strong>{node.label}</strong>
-                <small>
-                  {definition.edges.filter((edge) => edge.source === node.id).length} connection(s)
-                </small>
               </button>
             );
           })}
@@ -403,13 +416,13 @@ export function AgentComposer({
             <>
               <header>
                 <div>
-                  <span>NODE CONFIGURATION</span>
+                  <span>STEP SETTINGS</span>
                   <h4>{selected.label}</h4>
                 </div>
                 <Badge>{selected.type.replaceAll("_", " ")}</Badge>
               </header>
               <label>
-                Node label
+                Label
                 <input
                   disabled={!canManage}
                   value={selected.label}
@@ -417,6 +430,27 @@ export function AgentComposer({
                 />
               </label>
               <NodeConfig node={selected} disabled={!canManage} onChange={updateConfig} />
+              {selected.type === "AI_DECISION" && outgoing.some((edge) => edge.branch) ? (
+                <label>
+                  When uncertain
+                  <Select
+                    ariaLabel="AI decision fallback route"
+                    disabled={!canManage}
+                    options={[
+                      { value: "", label: "Send for human review" },
+                      ...outgoing
+                        .filter((edge) => Boolean(edge.branch))
+                        .map((edge) => ({ value: edge.branch ?? "", label: edge.branch ?? "" }))
+                    ]}
+                    value={
+                      typeof selected.config.defaultBranch === "string"
+                        ? selected.config.defaultBranch
+                        : ""
+                    }
+                    onChange={(value) => updateConfig("defaultBranch", value)}
+                  />
+                </label>
+              ) : null}
               <div className="inspector-section">
                 <div className="inspector-heading">
                   <strong>Connections</strong>
@@ -487,36 +521,6 @@ export function AgentComposer({
                   ))
                 )}
               </div>
-              <div className="inspector-position">
-                <label>
-                  X
-                  <input
-                    disabled={!canManage}
-                    min="0"
-                    type="number"
-                    value={selected.position.x}
-                    onChange={(event) =>
-                      updateNode(selected.id, {
-                        position: { ...selected.position, x: Number(event.target.value) }
-                      })
-                    }
-                  />
-                </label>
-                <label>
-                  Y
-                  <input
-                    disabled={!canManage}
-                    min="0"
-                    type="number"
-                    value={selected.position.y}
-                    onChange={(event) =>
-                      updateNode(selected.id, {
-                        position: { ...selected.position, y: Number(event.target.value) }
-                      })
-                    }
-                  />
-                </label>
-              </div>
               <Button disabled={!canManage} variant="danger" onClick={removeNode}>
                 <Trash2 size={15} /> Delete node
               </Button>
@@ -547,19 +551,21 @@ function NodeConfig({
   onChange: (key: string, value: string | number) => void;
 }): React.JSX.Element {
   const field = configField(node.type);
-  if (node.type === "TOOL_CRM_ACTION" || node.type === "INTEGRATION_ACTION")
+  if (node.type === "TOOL_CRM_ACTION" || node.type === "INTEGRATION_ACTION") {
+    const options = node.type === "TOOL_CRM_ACTION" ? capabilityOptions : integrationOptions;
     return (
       <label>
-        Existing capability
+        Action
         <Select
-          ariaLabel="Existing capability"
+          ariaLabel="Action"
           disabled={disabled}
-          options={capabilityOptions}
-          value={stringConfig(node.config.capability, capabilityOptions[0]?.value ?? "outreach")}
+          options={options}
+          value={stringConfig(node.config.capability, options[0]?.value ?? "outreach")}
           onChange={(value) => onChange("capability", value)}
         />
       </label>
     );
+  }
   if (node.type === "WAIT")
     return (
       <label>
@@ -639,23 +645,27 @@ function PreviewInspector({
     <div className="composer-preview">
       <header>
         <div>
-          <span>SAFE PREVIEW</span>
-          <h4>Sandbox trace</h4>
+          <span>PREVIEW</span>
+          <h4>Steps that will run</h4>
         </div>
-        <Badge tone="success">NO LIVE ACTIONS</Badge>
+        <Badge tone="success">SAFE PREVIEW ONLY</Badge>
       </header>
       {preview.steps.map((step) => (
         <article key={step.nodeId}>
           <span>{step.order}</span>
           <div>
             <strong>{step.label}</strong>
-            <small>{step.outcome}</small>
+            <small>
+              {step.outcome.startsWith("Simulated")
+                ? "Checked without sending or changing data"
+                : "Ready"}
+            </small>
           </div>
         </article>
       ))}
       {preview.blockedActions.length ? (
         <p>
-          <ShieldCheck size={15} /> Blocked live actions: {preview.blockedActions.join(", ")}
+          <ShieldCheck size={15} /> Actions checked safely: {preview.blockedActions.join(", ")}
         </p>
       ) : null}
       <Button onClick={onClose}>Back to inspector</Button>

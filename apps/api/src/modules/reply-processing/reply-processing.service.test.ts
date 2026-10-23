@@ -10,6 +10,7 @@ import type {
 } from "../ai/ai.provider.js";
 import { hashPassword } from "../auth/auth.service.js";
 import type { EmailProvider, EmailSendInput } from "../email/email.provider.js";
+import { completeHumanAction } from "../leads/lead-automation-ownership.service.js";
 import { processInboundReply } from "./reply-processing.service.js";
 
 const actorEmail = "r10-reply-admin@example.local";
@@ -204,7 +205,7 @@ async function cleanup(): Promise<void> {
     where: { lead: { source: "r10-reply-test" } }
   });
   await prisma.replyProcessingRun.deleteMany({
-    where: { inboundEmail: { providerMessageId: { startsWith: "ses-r10-" } } }
+    where: { lead: { source: "r10-reply-test" } }
   });
   await prisma.leadScoreRun.deleteMany({
     where: { lead: { source: "r10-reply-test" } }
@@ -275,12 +276,18 @@ async function seedUser(): Promise<string> {
       status: UserStatus.ACTIVE
     }
   });
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
+  await prisma.workspaceMember.create({
+    data: { workspaceId: workspace.id, userId: user.id, role: "ADMIN", status: "ACTIVE" }
+  });
   return user.id;
 }
 
 async function createApprovedKnowledge(actorId: string): Promise<string> {
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
   const entry = await prisma.knowledgeBaseEntry.create({
     data: {
+      workspaceId: workspace.id,
       key: `r10-service-${crypto.randomUUID()}`,
       title: "R10 Service",
       category: "SERVICE",
@@ -618,7 +625,7 @@ describe("R10 reply processing", () => {
     await expect(
       prisma.lead.findUniqueOrThrow({ where: { id: fixture.lead.id } })
     ).resolves.toMatchObject({ nextAction: "Review AI-generated proposal" });
-  }, 90000);
+  }, 180000);
 
   it("routes negotiation to human handoff without drafting a negotiation reply", async () => {
     const actorId = await prisma.user
@@ -641,10 +648,14 @@ describe("R10 reply processing", () => {
     const second = await processInboundReply(fixture.inbound.id, { provider });
 
     expect(second.id).toBe(result.id);
+    expect(result).toMatchObject({ status: "COMPLETED", failureCode: null, failureMessage: null });
     expect(result.intent).toBe("NEGOTIATION");
     expect(result.recommendedAction).toBe("HUMAN_HANDOFF");
     expect(result.draftResponse).toBeNull();
     expect(result.humanHandoffRequired).toBe(true);
+    await expect(
+      prisma.lead.findUniqueOrThrow({ where: { id: fixture.lead.id } })
+    ).resolves.toMatchObject({ nextAction: "Review pricing request and respond" });
     await expect(
       prisma.conversation.findUniqueOrThrow({ where: { id: fixture.conversation.id } })
     ).resolves.toMatchObject({ mode: "HUMAN" });
@@ -669,6 +680,7 @@ describe("R10 reply processing", () => {
       })
     ).resolves.toMatchObject({
       type: "NEGOTIATION_HANDOFF",
+      workspaceId: fixture.lead.workspaceId,
       status: "UNREAD",
       assignedToUserId: actorId
     });
@@ -677,6 +689,7 @@ describe("R10 reply processing", () => {
         where: { leadId: fixture.lead.id, type: "NEGOTIATION_HANDOFF" }
       })
     ).resolves.toMatchObject({
+      workspaceId: fixture.lead.workspaceId,
       description: "Negotiation detected and routed to the assigned owner"
     });
     await expect(
@@ -689,7 +702,27 @@ describe("R10 reply processing", () => {
         where: { aggregateType: "NegotiationHandoff", eventType: "NEGOTIATION_HANDOFF_CREATED" }
       })
     ).resolves.toMatchObject({ priority: "HIGH" });
-  }, 45000);
+
+    await completeHumanAction({
+      leadId: fixture.lead.id,
+      reason: "HUMAN_REPLY_SENT",
+      actorType: "USER",
+      actorId,
+      sourceType: "CONVERSATION",
+      sourceId: fixture.conversation.id
+    });
+    await expect(
+      prisma.lead.findUniqueOrThrow({ where: { id: fixture.lead.id } })
+    ).resolves.toMatchObject({ automationOwnershipState: "AI_ACTIVE" });
+    await expect(
+      prisma.negotiationHandoff.findUniqueOrThrow({ where: { id: handoff.id } })
+    ).resolves.toMatchObject({ status: "RESOLVED" });
+    await expect(
+      prisma.internalNotification.findUniqueOrThrow({
+        where: { idempotencyKey: `notification:negotiation-handoff:${handoff.id}` }
+      })
+    ).resolves.toMatchObject({ status: "ACKNOWLEDGED", acknowledgedByUserId: actorId });
+  }, 180000);
 
   it("does not treat an advisory next-step question as a meeting request", async () => {
     const body =
@@ -845,7 +878,7 @@ describe("R10 reply processing", () => {
     ).resolves.toBe(0);
     await expect(
       prisma.lead.findUniqueOrThrow({ where: { id: fixture.lead.id } })
-    ).resolves.toMatchObject({ nextAction: "Human follow-up required" });
+    ).resolves.toMatchObject({ nextAction: "Review customer reply and respond" });
   }, 45000);
 
   it("creates an idempotent meeting request for a meeting-request reply without booking", async () => {

@@ -1,9 +1,11 @@
-import { Prisma, UserRole } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import type { InternalNotificationDto, NegotiationHandoffDto } from "@shilabs/shared-types";
 import { AppError } from "../../shared/errors.js";
+import { getNotificationConfig } from "../../config/notifications.js";
 import { prisma } from "../../shared/prisma.js";
 import { toPublicUser } from "../auth/auth.service.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
+import { isWorkspaceManager } from "../authorization/workspace-permissions.js";
 import { publishDomainEvent } from "../domain-events/domain-events.service.js";
 import type { TransactionClient } from "../domain-events/domain-events.repository.js";
 import { publishRealtimeEvent } from "../realtime/realtime.service.js";
@@ -74,7 +76,14 @@ export function toInternalNotificationDto(
 }
 
 function canSeeAll(actor: AuthenticatedUser): boolean {
-  return actor.role === UserRole.ADMIN || actor.role === UserRole.SALES_MANAGER;
+  return isWorkspaceManager(actor);
+}
+
+function requireActiveWorkspaceId(actor: AuthenticatedUser): string {
+  if (!actor.activeWorkspaceId) {
+    throw new AppError(403, "AUTHORIZATION_ERROR", "An active workspace is required");
+  }
+  return actor.activeWorkspaceId;
 }
 
 function canAccessNotification(
@@ -90,8 +99,8 @@ async function getVisibleNotificationOrThrow(
   actor: AuthenticatedUser,
   notificationId: string
 ): Promise<InternalNotificationRecord> {
-  const notification = await prisma.internalNotification.findUnique({
-    where: { id: notificationId },
+  const notification = await prisma.internalNotification.findFirst({
+    where: { id: notificationId, workspaceId: requireActiveWorkspaceId(actor) },
     include: { negotiationHandoff: { include: { assignedOwner: true } } }
   });
   if (!notification) throw new AppError(404, "NOT_FOUND", "Notification not found");
@@ -109,12 +118,13 @@ function statusAfterRead(
 }
 
 async function publishNotificationUpdate(
-  notification: Pick<InternalNotificationRecord, "leadId">,
+  notification: Pick<InternalNotificationRecord, "leadId" | "workspaceId">,
   action: string
 ): Promise<void> {
   await publishRealtimeEvent({
     entityType: "notifications",
     action,
+    workspaceId: notification.workspaceId,
     leadId: notification.leadId ?? undefined
   });
 }
@@ -128,6 +138,7 @@ async function publishNotificationLifecycleEvent(input: {
 }): Promise<void> {
   await input.client.auditEvent.create({
     data: {
+      workspaceId: requireActiveWorkspaceId(input.actor),
       actorType: "USER",
       actorId: input.actor.id,
       entityType: "InternalNotification",
@@ -148,7 +159,7 @@ async function publishNotificationLifecycleEvent(input: {
     aggregateId: input.notification.id,
     correlationId: input.notification.sourceEntityId,
     idempotencyKey: `domain-event:notification:${input.notification.id}:${input.action.toLowerCase()}`,
-    maxAttempts: 1,
+    maxAttempts: input.action === "NOTIFICATION_ESCALATED" ? getNotificationConfig().maxAttempts : 1,
     payload: {
       notificationId: input.notification.id,
       sourceEntityType: input.notification.sourceEntityType,
@@ -161,12 +172,20 @@ async function publishNotificationLifecycleEvent(input: {
 
 export async function createNegotiationHandoffForReply(input: {
   client: TransactionClient;
-  lead: { id: string; ownerId: string | null; company: { name: string } };
+  lead: {
+    id: string;
+    workspaceId: string | null;
+    ownerId: string | null;
+    company: { name: string };
+  };
   conversationId: string;
   replyProcessingRunId: string;
   summary: string;
   inboundEmailId: string | null;
 }): Promise<NegotiationHandoffDto> {
+  if (!input.lead.workspaceId) {
+    throw new AppError(409, "CONFLICT", "Lead workspace is required for a negotiation handoff");
+  }
   const existing = await input.client.negotiationHandoff.findUnique({
     where: { idempotencyKey: `negotiation-handoff:reply:${input.replyProcessingRunId}` },
     include: { assignedOwner: true }
@@ -193,6 +212,7 @@ export async function createNegotiationHandoffForReply(input: {
 
   await input.client.internalNotification.create({
     data: {
+      workspaceId: input.lead.workspaceId,
       type: "NEGOTIATION_HANDOFF",
       status: hasOwner ? "UNREAD" : "ATTENTION_REQUIRED",
       severity: hasOwner ? "WARNING" : "CRITICAL",
@@ -210,6 +230,7 @@ export async function createNegotiationHandoffForReply(input: {
 
   await input.client.activity.create({
     data: {
+      workspaceId: input.lead.workspaceId,
       leadId: input.lead.id,
       type: "NEGOTIATION_HANDOFF",
       description: hasOwner
@@ -220,6 +241,7 @@ export async function createNegotiationHandoffForReply(input: {
 
   await input.client.auditEvent.create({
     data: {
+      workspaceId: input.lead.workspaceId,
       actorType: "SYSTEM",
       entityType: "NegotiationHandoff",
       entityId: handoff.id,
@@ -262,6 +284,7 @@ export async function listNotifications(
   const managerCanSeeAll = canSeeAll(actor);
   const notifications = await prisma.internalNotification.findMany({
     where: {
+      workspaceId: requireActiveWorkspaceId(actor),
       leadId: query.leadId,
       status: query.status,
       OR: managerCanSeeAll
@@ -283,24 +306,27 @@ export async function markNotificationRead(
   const existing = await getVisibleNotificationOrThrow(actor, notificationId);
   if (existing.readAt && existing.status !== "UNREAD") return toInternalNotificationDto(existing);
 
-  const updated = await prisma.$transaction(async (tx) => {
-    const notification = await tx.internalNotification.update({
-      where: { id: notificationId },
-      data: {
-        status: statusAfterRead(existing.status),
-        readAt: existing.readAt ?? new Date(),
-        readByUserId: existing.readByUserId ?? actor.id
-      },
-      include: { negotiationHandoff: { include: { assignedOwner: true } } }
-    });
-    await publishNotificationLifecycleEvent({
-      client: tx,
-      actor,
-      notification,
-      action: "NOTIFICATION_READ"
-    });
-    return notification;
-  });
+  const updated = await prisma.$transaction(
+    async (tx) => {
+      const notification = await tx.internalNotification.update({
+        where: { id: notificationId },
+        data: {
+          status: statusAfterRead(existing.status),
+          readAt: existing.readAt ?? new Date(),
+          readByUserId: existing.readByUserId ?? actor.id
+        },
+        include: { negotiationHandoff: { include: { assignedOwner: true } } }
+      });
+      await publishNotificationLifecycleEvent({
+        client: tx,
+        actor,
+        notification,
+        action: "NOTIFICATION_READ"
+      });
+      return notification;
+    },
+    { maxWait: 10000, timeout: 30000 }
+  );
 
   await publishNotificationUpdate(updated, "notification-read");
   return toInternalNotificationDto(updated);
@@ -314,27 +340,30 @@ export async function acknowledgeNotification(
   const existing = await getVisibleNotificationOrThrow(actor, notificationId);
   if (existing.status === "ACKNOWLEDGED") return toInternalNotificationDto(existing);
 
-  const updated = await prisma.$transaction(async (tx) => {
-    const notification = await tx.internalNotification.update({
-      where: { id: notificationId },
-      data: {
-        status: "ACKNOWLEDGED",
-        acknowledgedAt: existing.acknowledgedAt ?? new Date(),
-        acknowledgedByUserId: existing.acknowledgedByUserId ?? actor.id,
-        readAt: existing.readAt ?? new Date(),
-        readByUserId: existing.readByUserId ?? actor.id
-      },
-      include: { negotiationHandoff: { include: { assignedOwner: true } } }
-    });
-    await publishNotificationLifecycleEvent({
-      client: tx,
-      actor,
-      notification,
-      action: "NOTIFICATION_ACKNOWLEDGED",
-      payload: { note: input.note ?? null }
-    });
-    return notification;
-  });
+  const updated = await prisma.$transaction(
+    async (tx) => {
+      const notification = await tx.internalNotification.update({
+        where: { id: notificationId },
+        data: {
+          status: "ACKNOWLEDGED",
+          acknowledgedAt: existing.acknowledgedAt ?? new Date(),
+          acknowledgedByUserId: existing.acknowledgedByUserId ?? actor.id,
+          readAt: existing.readAt ?? new Date(),
+          readByUserId: existing.readByUserId ?? actor.id
+        },
+        include: { negotiationHandoff: { include: { assignedOwner: true } } }
+      });
+      await publishNotificationLifecycleEvent({
+        client: tx,
+        actor,
+        notification,
+        action: "NOTIFICATION_ACKNOWLEDGED",
+        payload: { note: input.note ?? null }
+      });
+      return notification;
+    },
+    { maxWait: 10000, timeout: 30000 }
+  );
 
   await publishNotificationUpdate(updated, "notification-acknowledged");
   return toInternalNotificationDto(updated);
@@ -346,46 +375,56 @@ export async function escalateNotification(
   input: EscalateNotificationInput
 ): Promise<InternalNotificationDto> {
   const existing = await getVisibleNotificationOrThrow(actor, notificationId);
-  if (existing.status === "ESCALATED" && existing.escalationStatus === "ESCALATED") {
-    return toInternalNotificationDto(existing);
-  }
   if (!canSeeAll(actor)) {
     throw new AppError(403, "AUTHORIZATION_ERROR", "Only managers can escalate notifications");
   }
+  if (existing.escalationStatus === "ESCALATED") return toInternalNotificationDto(existing);
 
   const dueAt = input.escalationDueAt ? new Date(input.escalationDueAt) : null;
-  const updated = await prisma.$transaction(async (tx) => {
-    const notification = await tx.internalNotification.update({
-      where: { id: notificationId },
-      data: {
-        status: "ESCALATED",
-        severity: "CRITICAL",
-        escalationStatus: "ESCALATED",
-        escalatedAt: existing.escalatedAt ?? new Date(),
-        escalatedByUserId: existing.escalatedByUserId ?? actor.id,
-        escalationDueAt: dueAt,
-        escalationReason: input.reason,
-        escalationEvidence: {
+  const updated = await prisma.$transaction(
+    async (tx) => {
+      const claimed = await tx.internalNotification.updateMany({
+        where: {
+          id: notificationId,
+          workspaceId: requireActiveWorkspaceId(actor),
+          escalationStatus: { not: "ESCALATED" }
+        },
+        data: {
+          status: "ESCALATED",
+          severity: "CRITICAL",
+          escalationStatus: "ESCALATED",
+          escalatedAt: existing.escalatedAt ?? new Date(),
+          escalatedByUserId: existing.escalatedByUserId ?? actor.id,
+          escalationDueAt: dueAt,
+          escalationReason: input.reason,
+          escalationEvidence: {
+            reason: input.reason,
+            escalationDueAt: dueAt?.toISOString() ?? null,
+            delivery: { state: "Pending", channel: "EMAIL" }
+          }
+        }
+      });
+      const notification = await tx.internalNotification.findFirstOrThrow({
+        where: { id: notificationId, workspaceId: requireActiveWorkspaceId(actor) },
+        include: { negotiationHandoff: { include: { assignedOwner: true } } }
+      });
+      if (claimed.count !== 1) return notification;
+      await publishNotificationLifecycleEvent({
+        client: tx,
+        actor,
+        notification,
+        action: "NOTIFICATION_ESCALATED",
+        payload: {
           reason: input.reason,
           escalationDueAt: dueAt?.toISOString() ?? null,
-          channels: "UNRESOLVED_CLIENT_DECISION"
+          externalChannels: "EMAIL",
+          deliveryState: "Pending"
         }
-      },
-      include: { negotiationHandoff: { include: { assignedOwner: true } } }
-    });
-    await publishNotificationLifecycleEvent({
-      client: tx,
-      actor,
-      notification,
-      action: "NOTIFICATION_ESCALATED",
-      payload: {
-        reason: input.reason,
-        escalationDueAt: dueAt?.toISOString() ?? null,
-        externalChannels: "NOT_IMPLEMENTED"
-      }
-    });
-    return notification;
-  });
+      });
+      return notification;
+    },
+    { maxWait: 10000, timeout: 30000 }
+  );
 
   await publishNotificationUpdate(updated, "notification-escalated");
   return toInternalNotificationDto(updated);

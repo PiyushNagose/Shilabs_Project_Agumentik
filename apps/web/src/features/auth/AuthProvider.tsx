@@ -3,8 +3,6 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import type { PublicUser } from "@shilabs/shared-types";
 import { clearAuth, loadAuth, saveAuth } from "./auth-storage.js";
 import { AuthApiError, loginRequest, logoutRequest, meRequest } from "../../services/api/auth.js";
-import { demoAccessToken, isDemoMode } from "../../demo/config.js";
-import { demoUser } from "../../demo/demo-data.js";
 
 type AuthStatus = "checking" | "authenticated" | "unauthenticated" | "unavailable";
 
@@ -19,6 +17,7 @@ interface AuthContextValue {
   user: PublicUser | null;
   status: AuthStatus;
   retryAuthValidation: () => Promise<void>;
+  updateCurrentUser: (user: PublicUser) => void;
   login: (input: { email: string; password: string }) => Promise<void>;
   logout: () => Promise<void>;
 }
@@ -27,9 +26,6 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }): React.JSX.Element {
   const [auth, setAuth] = useState<AuthState>(() => {
-    if (isDemoMode) {
-      return { accessToken: demoAccessToken, user: demoUser, status: "authenticated" };
-    }
     const stored = loadAuth();
     if (!stored) {
       return { accessToken: null, user: null, status: "unauthenticated" };
@@ -39,10 +35,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
   });
 
   const validateStoredAuth = useCallback(async (): Promise<void> => {
-    if (isDemoMode) {
-      setAuth({ accessToken: demoAccessToken, user: demoUser, status: "authenticated" });
-      return;
-    }
     const stored = loadAuth();
     if (!stored) {
       setAuth({ accessToken: null, user: null, status: "unauthenticated" });
@@ -88,20 +80,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
       user: auth.user,
       status: auth.status,
       retryAuthValidation: validateStoredAuth,
+      updateCurrentUser(user) {
+        if (!auth.accessToken) return;
+        saveAuth({ accessToken: auth.accessToken, user });
+        setAuth({ accessToken: auth.accessToken, user, status: "authenticated" });
+      },
       async login(input) {
-        if (isDemoMode) {
-          setAuth({ accessToken: demoAccessToken, user: demoUser, status: "authenticated" });
-          return;
-        }
         const response = await loginRequest(input);
         saveAuth(response);
         setAuth({ ...response, status: "authenticated" });
       },
       async logout() {
-        if (isDemoMode) {
-          setAuth({ accessToken: demoAccessToken, user: demoUser, status: "authenticated" });
-          return;
-        }
         if (auth.accessToken) {
           await logoutRequest(auth.accessToken).catch(() => undefined);
         }

@@ -4,6 +4,7 @@ import { AppError } from "../../shared/errors.js";
 import { createAIProvider } from "../ai/ai.factory.js";
 import type { AIProvider } from "../ai/ai.provider.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
+import { isNonMeaningfulInboundMetadata } from "../email/inbound-email-classification.js";
 import { findLeadById } from "../leads/lead.repository.js";
 import { assertCanMutateLead } from "../leads/lead.permissions.js";
 import { publishRealtimeEvent } from "../realtime/realtime.service.js";
@@ -37,6 +38,37 @@ const textQualificationFields = [
 
 type TextQualificationField = (typeof textQualificationFields)[number];
 type QualificationField = TextQualificationField | "decisionMakerIdentified";
+
+const unknownQualificationValue =
+  /^(?:unknown|not known|not provided|not specified|not confirmed|n\/a)$/iu;
+const budgetDisclosure =
+  /(?:\b(?:our|the|approved|allocated|available|project|total|maximum|max)\s+budget\b|\bbudget\s+(?:is|of|around|approximately|about|up to|under|between|has been|was|approved|allocated)\b|(?:₹|\$|usd|inr|eur|gbp)\s*[\d,.]+\s+(?:budget|allocation))/iu;
+const authorityDisclosure =
+  /(?:\bi am\s+(?:the\s+)?(?:owner|founder|decision[- ]maker|approver|ceo|cfo|cto|director|head)\b|\bi (?:can|cannot|can't|will|won't) approve\b|\b(?:decision[- ]maker|approver)\s+(?:is|will be)\b)/iu;
+
+function sanitizeAIQualification(
+  input: QualificationResultWithNulls,
+  messages: { body: string }[]
+): QualificationResultWithNulls {
+  const conversation = messages.map((message) => message.body).join("\n");
+  const clean = (value: string | null): string | null =>
+    value && !unknownQualificationValue.test(value.trim()) ? value : null;
+  const hasBudgetDisclosure = budgetDisclosure.test(conversation);
+  const hasAuthorityDisclosure = authorityDisclosure.test(conversation);
+
+  return {
+    ...input,
+    need: clean(input.need),
+    requirement: clean(input.requirement),
+    budget: hasBudgetDisclosure ? clean(input.budget) : null,
+    budgetBand: hasBudgetDisclosure ? clean(input.budgetBand) : null,
+    authority: hasAuthorityDisclosure ? clean(input.authority) : null,
+    decisionMakerIdentified: hasAuthorityDisclosure ? input.decisionMakerIdentified : null,
+    timeline: clean(input.timeline),
+    businessFit: clean(input.businessFit),
+    urgency: clean(input.urgency)
+  };
+}
 
 export function toQualificationDto(qualification: LeadQualificationRecord): LeadQualificationDto {
   return {
@@ -202,9 +234,12 @@ export async function recalculateQualification(
   const lead = await findLeadById(leadId);
   if (!lead) throw new AppError(404, "NOT_FOUND", "Lead not found");
 
-  const messages = (await listRecentMessagesForLead({ leadId, take: RECENT_MESSAGE_LIMIT }))
+  const recentMessages = await listRecentMessagesForLead({ leadId, take: RECENT_MESSAGE_LIMIT });
+  const messages = recentMessages
+    .filter((message) => !isNonMeaningfulInboundMetadata(message.metadata))
     .reverse()
     .map((message) => ({ id: message.id, senderType: message.senderType, body: message.body }));
+  if (recentMessages.length > 0 && messages.length === 0) return getQualification(leadId);
   const extraction = qualificationResultWithNullsSchema.safeParse(
     await provider.extractQualification({
       messages,
@@ -223,9 +258,10 @@ export async function recalculateQualification(
     throw new AppError(502, "PROVIDER_ERROR", "AI provider returned an unusable response");
   }
 
-  const evidence = await validateEvidence(leadId, extraction.data.evidence);
+  const sanitized = sanitizeAIQualification(extraction.data, messages);
+  const evidence = await validateEvidence(leadId, sanitized.evidence);
   const existing = await findQualificationByLeadId(leadId);
-  const data = mergeQualification(existing, toMergeableFields(extraction.data));
+  const data = mergeQualification(existing, toMergeableFields(sanitized));
   const qualification = await upsertQualificationWithEvidence({
     leadId,
     data,

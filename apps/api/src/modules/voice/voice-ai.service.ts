@@ -308,7 +308,7 @@ export async function finalizeVoiceConversationRun(input: {
     return { conversation: conversationRecord, message: messageRecord };
   });
 
-  const approvedKnowledge = await listApprovedKnowledge({ limit: 20 });
+  const approvedKnowledge = await listApprovedKnowledge(call.workspaceId, { limit: 20 });
   const approvedKnowledgeIds = new Set(approvedKnowledge.map((item) => item.versionId));
   const messages = [
     {

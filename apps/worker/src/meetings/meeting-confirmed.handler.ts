@@ -2,6 +2,7 @@ import type { DomainEventHandlerMap } from "../domain-events/domain-event.proces
 import { PermanentDomainEventError } from "../domain-events/domain-event.errors.js";
 import { workerPrisma } from "../domain-events/domain-event.repository.js";
 import { ZohoTimelineSyncer } from "../followups/zoho-timeline.syncer.js";
+import { handleMeetingReminder } from "./meeting-reminder.handler.js";
 
 function payloadString(event: { payload: unknown }, key: string): string | null {
   const payload = event.payload;
@@ -26,7 +27,7 @@ async function syncConfirmedMeeting(
   await workerPrisma.meetingRequest.update({
     where: { id: event.aggregateId },
     data: {
-      zohoSyncStatus: result.status === "SKIPPED" ? "SYNCED" : result.status,
+      zohoSyncStatus: result.status === "SKIPPED" ? "NOT_REQUIRED" : result.status,
       zohoLastError:
         result.status === "SYNCED" || result.status === "SKIPPED" ? null : result.lastError
     }
@@ -38,5 +39,6 @@ async function syncConfirmedMeeting(
 }
 
 export const meetingDomainEventHandlers: DomainEventHandlerMap = {
-  MEETING_CONFIRMED: { handle: syncConfirmedMeeting }
+  MEETING_CONFIRMED: { handle: syncConfirmedMeeting },
+  MEETING_REMINDER_DUE: { handle: handleMeetingReminder }
 };

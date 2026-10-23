@@ -54,7 +54,7 @@ npm run db:migrate
 npm run db:seed
 ```
 
-The root scripts load `.env` automatically. The seed creates the canonical pipeline stages and one development-only admin user. Configure the seed with:
+The root scripts load `.env` automatically. Bootstrap creates only the canonical pipeline/scoring configuration and the administrator account configured below. It never creates sample leads, contacts, companies, deals, or orders. Configure bootstrap with:
 
 - `DATABASE_URL`
 - `DEV_ADMIN_EMAIL`
@@ -67,17 +67,19 @@ The default development admin password is for local development only. Set a real
 
 M2 adds authentication and user management. Manual developer entry points:
 
-- Web app: `npm run dev:web`, then open `http://localhost:5173`
-- API: `npm run dev:api`, then call `http://localhost:4000/health` or `/api/auth/login`
+- Web app: `npm run dev:web`, then open `http://localhost:5174`
+- API: `npm run dev:api`, then call `http://localhost:4010/health` or `/api/auth/login`
 - Worker: `npm run dev:worker` when later queue milestones need it
 
 Local Docker maps PostgreSQL to host port `5433` and Redis to host port `6380` to avoid collisions with developer machines already using the default ports.
 
-## Local E2E Environment
+## Local And Production
 
-The normal `.env` may point at Neon or another shared development database. For local E2E
-testing, use the explicit `dev:e2e:*` commands. They load `.env` first for existing real
-test integration credentials, then `.env.e2e.local` for local-only overrides:
+There is one application and one local configuration: the root `.env`.
+Local development uses the real API, authentication, worker, WebSocket connection,
+and Docker PostgreSQL database. There is no demo mode or sample-data fallback.
+
+Local services:
 
 - local PostgreSQL: `localhost:5433`
 - Redis: `localhost:6380`
@@ -91,22 +93,27 @@ Start dependencies:
 docker compose up -d postgres redis mailpit
 ```
 
-Then start each long-running process in its own terminal:
+Start each application process in its own terminal:
 
 ```bash
-npm run dev:e2e:api
-npm run dev:e2e:worker
-npm run dev:e2e:web
+npm run dev:api
+npm run dev:worker
+npm run dev:web
 ```
 
-Do not mix `dev:*` and `dev:e2e:*` processes for the same manual test run. The E2E scripts
-force API and worker to use the same local Docker PostgreSQL database and a separate local
-BullMQ queue name.
+Deploy the same code and migrations to production. Configure production database,
+Redis, frontend/API origins, secrets, and provider credentials in the deployment
+environment. Local database contents are not copied by pushing code.
+
+`npm run test:visual` opens the real local app and captures its persisted desktop/mobile
+screens. It does not insert CRM records. Detail checks require an existing record.
+Automated tests that create synthetic records use disposable schemas and never the
+local application's `public` schema or production data.
 
 ## Architecture Rules
 
-PostgreSQL is the Shilabs source of truth for local automation state, not a replacement
-CRM. CRM identity, pipeline and timeline state belong to Zoho Bigin in Phase 1. External
+PostgreSQL is the Shilabs source of truth for CRM identity, pipeline, timeline and
+automation state. Zoho Bigin is an optional import/sync integration. External
 services must remain behind internal adapters. AI may extract, summarize and generate
 language, but it must never own authoritative permissions, lead score, pipeline stage,
 opt-out state, meeting state, workflow state, retry state, delivery state or audit history.
@@ -210,7 +217,7 @@ mapping is created.
 
 # Local Email For Development
 
-Local development/demo email uses the real Mailpit SMTP service from Docker Compose:
+Local development email uses the real Mailpit SMTP service from Docker Compose:
 
 ```text
 EMAIL_PROVIDER=MAILPIT

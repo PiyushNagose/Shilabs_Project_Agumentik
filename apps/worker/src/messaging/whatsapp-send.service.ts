@@ -11,6 +11,8 @@ import {
 import { ZohoTimelineSyncer, type TimelineSyncer } from "../followups/zoho-timeline.syncer.js";
 import { normalizeAutomationPhone } from "../shared/automation-phone.js";
 import { isAgentCapabilityActive } from "../shared/agent-control.js";
+import { hasProspectInboundAfter } from "../shared/prospect-inbound.js";
+import { deferChannelAttemptForPromise, recordPreferredFollowUpAccepted, resolvePreferredFollowUpChannel } from "../followups/preferred-followup.service.js";
 
 type WhatsAppBlock = readonly [
   code: string,
@@ -22,6 +24,23 @@ function payloadString(event: DomainEventOutbox, key: string): string | null {
   const payload = event.payload as Prisma.JsonObject;
   const value = payload[key];
   return typeof value === "string" ? value : null;
+}
+
+function payloadBoolean(event: DomainEventOutbox, key: string): boolean {
+  const payload = event.payload as Prisma.JsonObject;
+  return payload[key] === true;
+}
+
+function safeMediaUrl(value: string | null): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash)
+      return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
 }
 
 function missingMessagingConfig(config: MessagingConfig): string[] {
@@ -80,12 +99,14 @@ async function markWhatsAppBlocked(input: {
         toWhatsAppId: "not-configured",
         idempotencyKey: input.idempotencyKey,
         status: input.status,
+        deliveryStatus: "FAILED",
         failureCode: input.code,
         failureMessage: input.message,
         failedAt: now
       },
       update: {
         status: input.status,
+        deliveryStatus: "FAILED",
         failureCode: input.code,
         failureMessage: input.message,
         failedAt: now
@@ -151,12 +172,50 @@ export async function executeWhatsAppSend(input: {
   const callingAttemptId = payloadString(input.event, "callingAttemptId");
   const leadId = payloadString(input.event, "leadId");
   const contactId = payloadString(input.event, "contactId");
+  const textBody = payloadString(input.event, "textBody");
+  const requestedMediaUrl = payloadString(input.event, "mediaUrl");
+  const mediaUrl = safeMediaUrl(requestedMediaUrl);
+  const mediaContentType = payloadString(input.event, "mediaContentType");
+  const mediaFileName = payloadString(input.event, "mediaFileName");
+  const voiceNote = payloadBoolean(input.event, "voiceNote");
+  const replyToProviderMessageId = payloadString(input.event, "replyToProviderMessageId");
   if (!callingAttemptId || !leadId || !contactId) {
     throw new PermanentDomainEventError(
       "WHATSAPP_CONTEXT_MISSING",
       "WhatsApp send event context is incomplete"
     );
   }
+  if (requestedMediaUrl && !mediaUrl) {
+    throw new PermanentDomainEventError(
+      "WHATSAPP_MEDIA_URL_INVALID",
+      "WhatsApp media URL must be a public HTTPS URL without credentials or query secrets"
+    );
+  }
+  const messageType = mediaUrl
+    ? voiceNote || mediaContentType?.startsWith("audio/")
+      ? "audio"
+      : mediaContentType?.startsWith("image/")
+        ? "image"
+        : mediaContentType?.startsWith("video/")
+          ? "video"
+          : "document"
+    : textBody
+      ? "text"
+      : "template";
+  const mediaMetadata: Prisma.InputJsonArray = mediaUrl
+    ? [
+        {
+          fileName: mediaFileName ?? `${messageType}-attachment`,
+          contentType: mediaContentType ?? "application/octet-stream",
+          sizeBytes: 0,
+          contentId: null,
+          disposition: "attachment",
+          providerAttachmentId: null,
+          mediaType: messageType,
+          voiceNote
+        }
+      ]
+    : [];
 
   const attempt = await workerPrisma.callingAttempt.findFirst({
     where: {
@@ -166,9 +225,9 @@ export async function executeWhatsAppSend(input: {
       sequence: { workspaceId: eventWorkspaceId }
     },
     include: {
-      sequence: true,
+      sequence: { include: { followUpSequence: true } },
       lead: {
-        include: { contact: true, conversations: { where: { channel: "WHATSAPP" }, take: 1 } }
+        include: { contact: true, intelligence: true, conversations: true }
       }
     }
   });
@@ -185,6 +244,7 @@ export async function executeWhatsAppSend(input: {
     existing?.status === "DELIVERED" ||
     existing?.status === "READ"
   ) {
+    await recordPreferredFollowUpAccepted(input.event);
     const activity = await workerPrisma.activity.findFirst({
       where: { leadId: existing.leadId, type: "WHATSAPP_SENT" },
       orderBy: { createdAt: "desc" }
@@ -204,7 +264,7 @@ export async function executeWhatsAppSend(input: {
   const persistedProvider = persistedMessagingProvider(config);
   const providerLabel = messagingProviderLabel(config);
   const lead = attempt.lead;
-  const conversation = lead.conversations[0];
+  const conversation = lead.conversations.find((item) => item.channel === "WHATSAPP");
   const activeTakeover = await workerPrisma.humanTakeover.findFirst({
     where: {
       status: "ACTIVE",
@@ -212,60 +272,82 @@ export async function executeWhatsAppSend(input: {
     },
     select: { id: true }
   });
-  const inboundAfterSequence = await workerPrisma.message.count({
-    where: {
-      conversation: { leadId: lead.id },
-      direction: "INBOUND",
-      createdAt: { gte: attempt.sequence.createdAt }
-    }
+  const inboundAfterSequence = await hasProspectInboundAfter({
+    leadId: lead.id,
+    since: attempt.sequence.followUpSequence?.createdAt ?? attempt.sequence.createdAt
   });
   const to =
     lead.contact.whatsappId ??
     normalizeAutomationPhone(lead.contact.phone, config.e2eAllowedToNumbers);
   const agentActive = await isAgentCapabilityActive(eventWorkspaceId, AgentType.WHATSAPP);
-  const block: WhatsAppBlock | null = !agentActive
-    ? ["AGENT_PAUSED", "WhatsApp agent is paused", "BLOCKED"]
-    : !to
-      ? ["WHATSAPP_ID_MISSING", "Contact WhatsApp identity is not usable", "FAILED"]
-      : lead.contact.doNotContact
-        ? ["CONTACT_DO_NOT_CONTACT", "Contact is marked do-not-contact", "BLOCKED"]
-        : ["WON", "LOST", "DISQUALIFIED"].includes(lead.status)
-          ? ["TERMINAL_LEAD", `Lead status ${lead.status} forbids WhatsApp automation`, "BLOCKED"]
-          : lead.automationOwnershipState !== "AI_ACTIVE"
-            ? [
-                "AI_OWNERSHIP_INACTIVE",
-                `Lead automation ownership is ${lead.automationOwnershipState}`,
-                "BLOCKED"
-              ]
-            : conversation && ["HUMAN", "PAUSED", "CLOSED"].includes(conversation.mode)
+  const preferredChannel = payloadString(input.event, "preferredChannel");
+  const controlsBlocked =
+    attempt.sequence.status === "STOPPED" ||
+    (Boolean(preferredChannel) && attempt.sequence.status !== "ACTIVE") ||
+    ["OFF", "PAUSED"].includes(lead.intelligence?.aiControlStatus ?? "") ||
+    lead.intelligence?.humanInterventionRequired === true ||
+    lead.conversations.some((item) => ["HUMAN", "PAUSED", "CLOSED"].includes(item.mode));
+  const block: WhatsAppBlock | null = controlsBlocked
+    ? ["AUTOMATION_PAUSED", "Lead or sequence controls block WhatsApp", "BLOCKED"]
+    : preferredChannel &&
+        (resolvePreferredFollowUpChannel(lead) !== preferredChannel ||
+          attempt.sequence.followUpSequence?.status !== "ACTIVE")
+      ? [
+          "PREFERRED_CHANNEL_CHANGED",
+          "Preferred channel or source follow-up sequence changed",
+          "BLOCKED"
+        ]
+      : !agentActive
+        ? ["AGENT_PAUSED", "WhatsApp agent is paused", "BLOCKED"]
+        : !to
+          ? ["WHATSAPP_ID_MISSING", "Contact WhatsApp identity is not usable", "FAILED"]
+          : lead.contact.doNotContact
+            ? ["CONTACT_DO_NOT_CONTACT", "Contact is marked do-not-contact", "BLOCKED"]
+            : ["WON", "LOST", "DISQUALIFIED"].includes(lead.status)
               ? [
-                  "AUTOMATION_PAUSED",
-                  `Conversation mode ${conversation.mode} blocks WhatsApp automation`,
+                  "TERMINAL_LEAD",
+                  `Lead status ${lead.status} forbids WhatsApp automation`,
                   "BLOCKED"
                 ]
-              : activeTakeover
-                ? ["HUMAN_TAKEOVER_ACTIVE", "Human takeover blocks WhatsApp automation", "BLOCKED"]
-                : inboundAfterSequence > 0
+              : lead.automationOwnershipState !== "AI_ACTIVE"
+                ? [
+                    "AI_OWNERSHIP_INACTIVE",
+                    `Lead automation ownership is ${lead.automationOwnershipState}`,
+                    "BLOCKED"
+                  ]
+                : conversation && ["HUMAN", "PAUSED", "CLOSED"].includes(conversation.mode)
                   ? [
-                      "INBOUND_REPLY_RECEIVED",
-                      "Inbound reply stopped WhatsApp automation",
+                      "AUTOMATION_PAUSED",
+                      `Conversation mode ${conversation.mode} blocks WhatsApp automation`,
                       "BLOCKED"
                     ]
-                  : config.nodeEnv !== "production" &&
-                      config.e2eAllowedToNumbers.length > 0 &&
-                      !config.e2eAllowedToNumbers.includes(to)
+                  : activeTakeover
                     ? [
-                        "E2E_NUMBER_NOT_ALLOWED",
-                        "Destination number is not allowed for local E2E WhatsApp testing",
-                        "FAILED"
+                        "HUMAN_TAKEOVER_ACTIVE",
+                        "Human takeover blocks WhatsApp automation",
+                        "BLOCKED"
                       ]
-                    : missingMessagingConfig(config).length > 0
+                    : inboundAfterSequence
                       ? [
-                          "WHATSAPP_NOT_CONFIGURED",
-                          `Missing configuration: ${missingMessagingConfig(config).join(", ")}`,
-                          "NOT_CONFIGURED"
+                          "INBOUND_REPLY_RECEIVED",
+                          "Inbound reply stopped WhatsApp automation",
+                          "BLOCKED"
                         ]
-                      : null;
+                      : config.nodeEnv !== "production" &&
+                          config.e2eAllowedToNumbers.length > 0 &&
+                          !config.e2eAllowedToNumbers.includes(to)
+                        ? [
+                            "E2E_NUMBER_NOT_ALLOWED",
+                            "Destination number is not allowed for local E2E WhatsApp testing",
+                            "FAILED"
+                          ]
+                        : missingMessagingConfig(config).length > 0
+                          ? [
+                              "WHATSAPP_NOT_CONFIGURED",
+                              `Missing configuration: ${missingMessagingConfig(config).join(", ")}`,
+                              "NOT_CONFIGURED"
+                            ]
+                          : null;
 
   if (block) {
     await markWhatsAppBlocked({
@@ -290,6 +372,7 @@ export async function executeWhatsAppSend(input: {
     );
   }
 
+  if (await deferChannelAttemptForPromise(input.event, attempt.id)) return;
   const outbound = await workerPrisma.outboundWhatsAppMessage.upsert({
     where: { idempotencyKey },
     create: {
@@ -310,30 +393,70 @@ export async function executeWhatsAppSend(input: {
           ? config.twilioWhatsApp.contentSid || config.metaWhatsApp.defaultTemplateName
           : config.metaWhatsApp.defaultTemplateName,
       templateLanguage: config.metaWhatsApp.defaultTemplateLanguage,
+      textBody,
+      messageType,
+      mediaMetadata,
+      replyToProviderMessageId,
+      senderType: "SYSTEM",
+      deliveryStatus: "PENDING",
       idempotencyKey,
       status: "PROVIDER_PENDING"
     },
-    update: { status: "PROVIDER_PENDING", failureCode: null, failureMessage: null }
+    update: {
+      status: "PROVIDER_PENDING",
+      deliveryStatus: "PENDING",
+      providerStatus: "pending",
+      failureCode: null,
+      failureMessage: null
+    }
   });
 
-  await assertWorkspaceIntegrationEnabled({
-    workspaceId: eventWorkspaceId,
-    provider: config.provider === "meta_whatsapp" ? "META_WHATSAPP" : "TWILIO",
-    key: config.provider === "meta_whatsapp" ? "default" : "whatsapp"
-  });
-  const provider = input.provider ?? createWorkerMessagingProvider(config);
-  const result = await provider.sendTemplateMessage({
-    to: toWhatsAppId,
-    templateName: config.metaWhatsApp.defaultTemplateName,
-    templateLanguage: config.metaWhatsApp.defaultTemplateLanguage,
-    idempotencyKey
-  });
+  const result = await (async () => {
+    try {
+      await assertWorkspaceIntegrationEnabled({
+        workspaceId: eventWorkspaceId,
+        provider: config.provider === "meta_whatsapp" ? "META_WHATSAPP" : "TWILIO",
+        key: config.provider === "meta_whatsapp" ? "default" : "whatsapp"
+      });
+      if (await deferChannelAttemptForPromise(input.event, attempt.id)) return null;
+      const provider = input.provider ?? createWorkerMessagingProvider(config);
+      return await provider.sendTemplateMessage({
+        to: toWhatsAppId,
+        templateName: config.metaWhatsApp.defaultTemplateName,
+        templateLanguage: config.metaWhatsApp.defaultTemplateLanguage,
+        idempotencyKey,
+        textBody,
+        mediaUrl,
+        mediaContentType,
+        mediaFileName,
+        voiceNote,
+        replyToProviderMessageId
+      });
+    } catch (error) {
+      await workerPrisma.outboundWhatsAppMessage.update({
+        where: { id: outbound.id },
+        data: {
+          status: "FAILED",
+          deliveryStatus: "FAILED",
+          failureCode: "WHATSAPP_PROVIDER_ERROR",
+          failureMessage:
+            error instanceof Error ? error.message : "WhatsApp provider request failed",
+          failedAt: new Date()
+        }
+      });
+      throw error;
+    }
+  })();
+
+  if (!result) return;
 
   if (result.status !== "ACCEPTED" || !result.providerMessageId) {
     await workerPrisma.outboundWhatsAppMessage.update({
       where: { id: outbound.id },
       data: {
         status: result.status === "NOT_CONFIGURED" ? "NOT_CONFIGURED" : "FAILED",
+        deliveryStatus: "FAILED",
+        providerStatus: result.providerStatus,
         failureCode:
           result.status === "NOT_CONFIGURED"
             ? "WHATSAPP_NOT_CONFIGURED"
@@ -363,11 +486,50 @@ export async function executeWhatsAppSend(input: {
       where: { id: outbound.id },
       data: {
         status: "SENT",
+        deliveryStatus: "SENT",
+        providerStatus: result.providerStatus,
         providerMessageId,
         sentAt: now,
         failureCode: null,
         failureMessage: null
       }
+    });
+    const messageConversation =
+      conversation ??
+      (await tx.conversation.create({
+        data: {
+          workspaceId: attempt.sequence.workspaceId,
+          leadId,
+          channel: "WHATSAPP",
+          mode: "AUTO",
+          status: "OPEN",
+          lastMessageAt: now
+        }
+      }));
+    await tx.message.upsert({
+      where: { providerMessageId },
+      create: {
+        workspaceId: attempt.sequence.workspaceId,
+        conversationId: messageConversation.id,
+        providerMessageId,
+        direction: "OUTBOUND",
+        senderType: preferredChannel ? "AI" : "SYSTEM",
+        body: textBody ?? `[WhatsApp ${messageType} sent]`,
+        deliveryStatus: "SENT",
+        sentAt: now,
+        attachmentMetadata: mediaMetadata,
+        providerReferences: replyToProviderMessageId ? [replyToProviderMessageId] : [],
+        metadata: {
+          outboundWhatsAppMessageId: updated.id,
+          provider: persistedProvider,
+          messageType
+        }
+      },
+      update: {}
+    });
+    await tx.conversation.update({
+      where: { id: messageConversation.id },
+      data: { lastMessageAt: now }
     });
     const activity = await tx.activity.create({
       data: {
@@ -436,6 +598,7 @@ export async function executeWhatsAppSend(input: {
     return { outboundMessageId: updated.id, activityId: activity.id };
   });
 
+  await recordPreferredFollowUpAccepted(input.event);
   await syncWhatsAppToZoho({
     outboundMessageId: saved.outboundMessageId,
     activityId: saved.activityId,

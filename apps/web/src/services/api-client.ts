@@ -8,6 +8,7 @@ import type {
   HumanTakeoverBriefingDto,
   HumanTakeoverDto,
   HumanConversationReplyDto,
+  HumanWhatsAppReplyDto,
   FollowUpSequenceDto,
   InternalNotificationDto,
   LeadQualificationDto,
@@ -25,6 +26,7 @@ import type {
   ProposalSendResultDto,
   ProposalWorkflowStatusName,
   PublicUser,
+  ScoringConfigDto,
   ReplyProcessingRunDto,
   SalesActionDashboardDto,
   SesInboundEmailDto,
@@ -32,7 +34,15 @@ import type {
 } from "@shilabs/shared-types";
 
 export { ApiClientError, apiBaseUrl, apiErrorMessage } from "./api/core.js";
+export { getManagerAccountabilityReport } from "./api/analytics.js";
 export { completeTask, listTasks, type TaskListParams } from "./api/tasks.js";
+export {
+  createFollowUpPolicy,
+  deleteFollowUpPolicy,
+  listFollowUpPolicies,
+  updateFollowUpPolicy,
+  type FollowUpPolicyBody
+} from "./api/followup-policies.js";
 export { createCompany, listCompanies, type CompanyBody } from "./api/companies.js";
 export {
   createOrder,
@@ -71,6 +81,7 @@ export {
   getAiCommandCenter,
   getLeadIntelligence,
   refreshLeadIntelligence,
+  uploadLeadIntelligenceDocument,
   updateLeadIntelligenceControls,
   type LeadDocumentBody,
   type LeadIntelligenceControlsBody
@@ -118,6 +129,10 @@ export interface LeadBody {
   contactId: string;
   ownerId?: string | null;
   source: string;
+  leadType?: string | null;
+  country?: string | null;
+  priority?: string | null;
+  campaign?: string | null;
   requirement?: string | null;
   serviceInterest?: string | null;
   estimatedValue?: string | null;
@@ -230,6 +245,9 @@ export interface CreateMeetingRequestBody {
   windowEnd: string;
   durationMinutes: number;
   slotMinutes?: number;
+  meetingMode?: "VIDEO" | "PHONE" | "IN_PERSON";
+  location?: string;
+  reminderMinutes?: number;
   idempotencyKey?: string;
 }
 
@@ -277,6 +295,17 @@ export function getLead(accessToken: string, leadId: string): Promise<LeadDto> {
   return apiRequest<LeadDto>(`/api/leads/${leadId}`, accessToken);
 }
 
+export function updateLeadDetails(
+  accessToken: string,
+  leadId: string,
+  body: Partial<Pick<LeadBody, "source" | "leadType" | "country" | "priority" | "campaign">>
+): Promise<LeadDto> {
+  return apiRequest<LeadDto>(`/api/leads/${leadId}`, accessToken, {
+    method: "PATCH",
+    body: JSON.stringify(body)
+  });
+}
+
 export function getLeadQualification(
   accessToken: string,
   leadId: string
@@ -286,6 +315,68 @@ export function getLeadQualification(
 
 export function listUsers(accessToken: string): Promise<PublicUser[]> {
   return apiRequest<PublicUser[]>("/api/users", accessToken);
+}
+
+export function createUser(
+  accessToken: string,
+  body: {
+    email: string;
+    password: string;
+    firstName: string;
+    lastName: string;
+    role: NonNullable<PublicUser["workspaceRole"]>;
+  }
+): Promise<PublicUser> {
+  return apiRequest<PublicUser>("/api/users", accessToken, {
+    method: "POST",
+    body: JSON.stringify(body)
+  });
+}
+
+export function updateUser(
+  accessToken: string,
+  userId: string,
+  body: { firstName?: string; lastName?: string; role?: NonNullable<PublicUser["workspaceRole"]> }
+): Promise<PublicUser> {
+  return apiRequest<PublicUser>(`/api/users/${encodeURIComponent(userId)}`, accessToken, {
+    method: "PATCH",
+    body: JSON.stringify(body)
+  });
+}
+
+export function updateUserStatus(
+  accessToken: string,
+  userId: string,
+  status: PublicUser["status"]
+): Promise<PublicUser> {
+  return apiRequest<PublicUser>(`/api/users/${encodeURIComponent(userId)}/status`, accessToken, {
+    method: "PATCH",
+    body: JSON.stringify({ status })
+  });
+}
+
+export function updateOwnProfile(
+  accessToken: string,
+  body: { firstName: string; lastName: string }
+): Promise<PublicUser> {
+  return apiRequest<PublicUser>("/api/users/me/profile", accessToken, {
+    method: "PATCH",
+    body: JSON.stringify(body)
+  });
+}
+
+export function getScoringConfig(accessToken: string): Promise<ScoringConfigDto> {
+  return apiRequest<ScoringConfigDto>("/api/scoring/config", accessToken);
+}
+
+export function updateScoringConfig(
+  accessToken: string,
+  body: Partial<Omit<ScoringConfigDto, "id" | "key" | "createdAt" | "updatedAt">>
+): Promise<ScoringConfigDto> {
+  return apiRequest<ScoringConfigDto>("/api/scoring/config", accessToken, {
+    method: "PATCH",
+    body: JSON.stringify(body)
+  });
 }
 
 export function listPipelineStages(accessToken: string): Promise<PipelineStageDto[]> {
@@ -413,6 +504,33 @@ export function confirmMeetingRequest(
       body: JSON.stringify(body)
     }
   );
+}
+
+export function cancelMeetingRequest(
+  accessToken: string,
+  meetingRequestId: string,
+  reason: string
+): Promise<MeetingRequestDto> {
+  return apiRequest<MeetingRequestDto>(`/api/meetings/requests/${meetingRequestId}/cancel`, accessToken, {
+    method: "POST",
+    body: JSON.stringify({ reason })
+  });
+}
+
+export function rescheduleMeetingRequest(accessToken: string, meetingRequestId: string, body: {
+  startsAt: string; endsAt: string; reason: string;
+}): Promise<MeetingRequestDto> {
+  return apiRequest<MeetingRequestDto>(`/api/meetings/requests/${meetingRequestId}/reschedule`, accessToken, {
+    method: "POST", body: JSON.stringify(body)
+  });
+}
+
+export function recordMeetingOutcome(accessToken: string, meetingRequestId: string, body: {
+  outcome: "COMPLETED" | "NO_SHOW"; notes: string; idempotencyKey: string;
+}): Promise<MeetingRequestDto> {
+  return apiRequest<MeetingRequestDto>(`/api/meetings/requests/${meetingRequestId}/outcome`, accessToken, {
+    method: "POST", body: JSON.stringify(body)
+  });
 }
 
 export function listBriefings(
@@ -561,6 +679,18 @@ export function sendHumanConversationReply(
       method: "POST",
       body: JSON.stringify(body)
     }
+  );
+}
+
+export function sendHumanWhatsAppConversationReply(
+  accessToken: string,
+  conversationId: string,
+  body: { body: string; idempotencyKey: string }
+): Promise<HumanWhatsAppReplyDto> {
+  return apiRequest<HumanWhatsAppReplyDto>(
+    `/api/conversations/${conversationId}/human-whatsapp-reply`,
+    accessToken,
+    { method: "POST", body: JSON.stringify(body) }
   );
 }
 

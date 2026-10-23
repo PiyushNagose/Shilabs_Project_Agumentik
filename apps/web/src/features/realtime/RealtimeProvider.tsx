@@ -9,7 +9,6 @@ import {
   useState
 } from "react";
 import { apiBaseUrl } from "../../services/api/core.js";
-import { isDemoMode } from "../../demo/config.js";
 import { useAuth } from "../auth/AuthProvider.js";
 
 export type RealtimeEntityType =
@@ -54,12 +53,11 @@ interface RealtimeContextValue {
 
 const RealtimeContext = createContext<RealtimeContextValue | null>(null);
 
-function realtimeUrl(accessToken: string): string {
+function realtimeUrl(): string {
   const url = new URL(apiBaseUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.pathname = "/realtime";
   url.search = "";
-  url.searchParams.set("token", accessToken);
   return url.toString();
 }
 
@@ -114,10 +112,6 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }): R
   }, []);
 
   useEffect(() => {
-    if (isDemoMode) {
-      setStatus("disconnected");
-      return undefined;
-    }
     if (authStatus !== "authenticated" || !accessToken) {
       connectedOnce.current = false;
       socketRef.current?.close();
@@ -140,7 +134,7 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }): R
       clearReconnect();
       if (disposed) return;
       setStatus("connecting");
-      const socket = new WebSocket(realtimeUrl(accessToken));
+      const socket = new WebSocket(realtimeUrl(), ["shilabs.realtime.v1", `bearer.${accessToken}`]);
       socketRef.current = socket;
       socket.onopen = () => {
         if (disposed || socketRef.current !== socket) return;

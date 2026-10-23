@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import request from "supertest";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { UserRole, UserStatus } from "@prisma/client";
+import { UserRole, UserStatus, WorkspaceMemberStatus, WorkspaceRole } from "@prisma/client";
 import type { AuthResponse, SesInboundEmailDto } from "@shilabs/shared-types";
 import { createApp } from "../../app.js";
 import { prisma } from "../../shared/prisma.js";
@@ -18,6 +18,7 @@ const originalSesEnv = {
   AWS_SES_ACCESS_KEY_ID: process.env.AWS_SES_ACCESS_KEY_ID,
   AWS_SES_SECRET_ACCESS_KEY: process.env.AWS_SES_SECRET_ACCESS_KEY,
   AWS_SES_WEBHOOK_SECRET: process.env.AWS_SES_WEBHOOK_SECRET,
+  AWS_SES_TIMEOUT_MS: process.env.AWS_SES_TIMEOUT_MS,
   E2E_INBOUND_EMAIL_WEBHOOK_SECRET: process.env.E2E_INBOUND_EMAIL_WEBHOOK_SECRET
 };
 
@@ -77,7 +78,14 @@ async function createLead(): Promise<string> {
       firstName: "Inbound",
       lastName: "API",
       role: UserRole.ADMIN,
-      status: UserStatus.ACTIVE
+      status: UserStatus.ACTIVE,
+      workspaceMemberships: {
+        create: {
+          workspaceId: workspace.id,
+          role: WorkspaceRole.ADMIN,
+          status: WorkspaceMemberStatus.ACTIVE
+        }
+      }
     }
   });
   const stage = await prisma.pipelineStage.findFirstOrThrow({ where: { key: "NEW" } });
@@ -137,6 +145,7 @@ describe("SES inbound email API", () => {
     process.env.AWS_SES_ACCESS_KEY_ID = originalSesEnv.AWS_SES_ACCESS_KEY_ID;
     process.env.AWS_SES_SECRET_ACCESS_KEY = originalSesEnv.AWS_SES_SECRET_ACCESS_KEY;
     process.env.AWS_SES_WEBHOOK_SECRET = originalSesEnv.AWS_SES_WEBHOOK_SECRET;
+    process.env.AWS_SES_TIMEOUT_MS = originalSesEnv.AWS_SES_TIMEOUT_MS;
     process.env.E2E_INBOUND_EMAIL_WEBHOOK_SECRET = originalSesEnv.E2E_INBOUND_EMAIL_WEBHOOK_SECRET;
     await cleanup();
     await prisma.$disconnect();
@@ -146,90 +155,149 @@ describe("SES inbound email API", () => {
     await request(app).post("/api/email/inbound").send({}).expect(401);
   });
 
-  it("accepts signed inbound SES webhooks and persists the inbound message", async () => {
-    const leadId = await createLead();
-    const payload = {
-      notificationType: "Received",
-      mail: {
-        messageId: "ses-r6-api-success",
-        timestamp: new Date().toISOString(),
-        source: "r6-api@example.com",
-        destination: ["sales@example.com"],
-        commonHeaders: {
-          from: ["r6-api@example.com"],
-          to: ["sales@example.com"],
-          subject: "API reply"
+  it.each([
+    { name: "client reply", headers: [], textBody: "API inbound body", skipped: false },
+    {
+      name: "automatic receipt",
+      headers: [{ name: "Auto-Submitted", value: "auto-generated" }],
+      textBody: "Your message was received.",
+      skipped: true
+    },
+    {
+      name: "client reply quoting OOO",
+      headers: [],
+      textBody: "Please send pricing.\n> I am out of the office.",
+      skipped: false
+    }
+  ])(
+    "accepts a signed $name and records processing truthfully",
+    async ({ headers, textBody, skipped }) => {
+      const leadId = await createLead();
+      const payload = {
+        notificationType: "Received",
+        mail: {
+          messageId: "ses-r6-api-success",
+          timestamp: new Date().toISOString(),
+          source: "r6-api@example.com",
+          destination: ["sales@example.com"],
+          commonHeaders: {
+            from: ["r6-api@example.com"],
+            to: ["sales@example.com"],
+            subject: "API reply"
+          },
+          headers: [{ name: "X-Shilabs-Lead-Id", value: leadId }, ...headers]
         },
-        headers: [{ name: "X-Shilabs-Lead-Id", value: leadId }]
-      },
-      receipt: { action: { type: "SNS" } },
-      textBody: "API inbound body"
-    };
-    const rawBody = JSON.stringify(payload);
-    const signed = sign(rawBody);
+        receipt: { action: { type: "SNS" } },
+        textBody
+      };
+      const rawBody = JSON.stringify(payload);
+      const signed = sign(rawBody);
 
-    const response = await request(app)
-      .post("/api/email/inbound")
-      .set("x-shilabs-webhook-timestamp", signed.timestamp)
-      .set("x-shilabs-webhook-signature", signed.signature)
-      .send(payload)
-      .expect(200);
-    const body = response.body as unknown as SesInboundEmailDto;
+      const response = await request(app)
+        .post("/api/email/inbound")
+        .set("x-shilabs-webhook-timestamp", signed.timestamp)
+        .set("x-shilabs-webhook-signature", signed.signature)
+        .send(payload)
+        .expect(200);
+      const body = response.body as unknown as SesInboundEmailDto;
 
-    expect(body.status).toBe("PROCESSED");
-    expect(body.inboundEmail.leadId).toBe(leadId);
-    await expect(
-      prisma.message.findUnique({ where: { providerMessageId: "ses-r6-api-success" } })
-    ).resolves.toMatchObject({ body: "API inbound body" });
-  });
-
-  it("lets an admin submit a local E2E customer reply through the signed inbound boundary", async () => {
-    const leadId = await createLead();
-    const token = await login();
-
-    const response = await request(app)
-      .post("/api/email/e2e/customer-reply")
-      .set("Authorization", `Bearer ${token}`)
-      .send({
-        leadId,
-        subject: "E2E reply",
-        body: "This is a real local E2E customer reply."
-      })
-      .expect(200);
-    const body = response.body as unknown as SesInboundEmailDto;
-
-    expect(body.status).toBe("PROCESSED");
-    expect(body.inboundEmail.leadId).toBe(leadId);
-    expect(body.inboundEmail.replyProcessingStatus).toBe("PENDING");
-    expect(body.inboundEmail.providerMessageId).toMatch(/^e2e-customer-reply-/);
-    await expect(
-      prisma.message.findUnique({
-        where: { providerMessageId: body.inboundEmail.providerMessageId }
-      })
-    ).resolves.toMatchObject({
-      body: "This is a real local E2E customer reply.",
-      direction: "INBOUND",
-      senderType: "PROSPECT"
-    });
-    await expect(
-      prisma.emailProviderEvent.findFirst({
-        where: {
-          providerMessageId: body.inboundEmail.providerMessageId,
-          type: "INBOUND_RECEIVED"
+      expect(body.status).toBe("PROCESSED");
+      expect(body.inboundEmail.leadId).toBe(leadId);
+      expect(body.inboundEmail.replyProcessingStatus).toBe(skipped ? "SKIPPED" : "PENDING");
+      expect(body.inboundEmail.failureCode).toBeNull();
+      await expect(
+        prisma.message.findUnique({ where: { providerMessageId: "ses-r6-api-success" } })
+      ).resolves.toMatchObject({
+        body: textBody,
+        metadata: {
+          inboundClassification: { version: 1, kind: skipped ? "NONMEANINGFUL" : "MEANINGFUL" }
         }
-      })
-    ).resolves.toBeTruthy();
-  });
+      });
+      const lead = await prisma.lead.findUniqueOrThrow({ where: { id: leadId } });
+      expect(lead.automationOwnershipState === "HUMAN_REQUIRED").toBe(!skipped);
+    }
+  );
 
-  it("does not expose the local E2E customer reply helper outside e2e-local", async () => {
+  it.each(["development", "e2e-local"])(
+    "lets an admin submit a local customer reply through the signed inbound boundary in %s",
+    async (appEnv) => {
+      const leadId = await createLead();
+      const token = await login();
+      process.env.AWS_SES_TIMEOUT_MS = "0";
+      process.env.APP_ENV = appEnv;
+      delete process.env.AWS_SES_WEBHOOK_SECRET;
+      delete process.env.E2E_INBOUND_EMAIL_WEBHOOK_SECRET;
+
+      const response = await request(app)
+        .post("/api/email/e2e/customer-reply")
+        .set("Authorization", `Bearer ${token}`)
+        .send({
+          leadId,
+          subject: "E2E reply",
+          body: "This is a real local E2E customer reply."
+        })
+        .expect(200);
+      const body = response.body as unknown as SesInboundEmailDto;
+
+      expect(body.status).toBe("PROCESSED");
+      expect(body.inboundEmail.leadId).toBe(leadId);
+      expect(body.inboundEmail.replyProcessingStatus).toBe("PENDING");
+      await expect(prisma.lead.findUniqueOrThrow({ where: { id: leadId } })).resolves.toMatchObject(
+        {
+          automationOwnershipState: "HUMAN_REQUIRED"
+        }
+      );
+      expect(body.inboundEmail.providerMessageId).toMatch(/^e2e-customer-reply-/);
+      await expect(
+        prisma.message.findUnique({
+          where: { providerMessageId: body.inboundEmail.providerMessageId }
+        })
+      ).resolves.toMatchObject({
+        body: "This is a real local E2E customer reply.",
+        direction: "INBOUND",
+        senderType: "PROSPECT"
+      });
+      await expect(
+        prisma.emailProviderEvent.findFirst({
+          where: {
+            providerMessageId: body.inboundEmail.providerMessageId,
+            type: "INBOUND_RECEIVED"
+          }
+        })
+      ).resolves.toBeTruthy();
+    }
+  );
+
+  it("does not expose the local customer reply helper in production", async () => {
     const leadId = await createLead();
     const token = await login();
-    process.env.APP_ENV = "development";
+    process.env.APP_ENV = "production";
 
     await request(app)
       .post("/api/email/e2e/customer-reply")
       .set("Authorization", `Bearer ${token}`)
       .send({ leadId, body: "Not available outside local E2E." })
       .expect(404);
+  });
+
+  it("does not allow local customer replies for another workspace", async () => {
+    const leadId = await createLead();
+    const token = await login();
+    const workspace = await prisma.workspace.create({
+      data: { name: "Inbound isolation", slug: `inbound-isolation-${crypto.randomUUID()}` }
+    });
+    try {
+      await prisma.lead.update({ where: { id: leadId }, data: { workspaceId: workspace.id } });
+      await request(app)
+        .post("/api/email/e2e/customer-reply")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ leadId, body: "Please send the proposal." })
+        .expect(403);
+      expect(await prisma.inboundEmail.count({ where: { leadId } })).toBe(0);
+    } finally {
+      const original = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
+      await prisma.lead.update({ where: { id: leadId }, data: { workspaceId: original.id } });
+      await prisma.workspace.delete({ where: { id: workspace.id } });
+    }
   });
 });

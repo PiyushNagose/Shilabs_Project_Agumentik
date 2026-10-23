@@ -1,4 +1,4 @@
-import type { UserRole, UserStatus } from "@prisma/client";
+import type { UserRole, UserStatus, WorkspaceRole } from "@prisma/client";
 
 export interface AuthenticatedUser {
   id: string;
@@ -10,6 +10,7 @@ export interface AuthenticatedUser {
   createdAt: Date;
   updatedAt: Date;
   activeWorkspaceId?: string;
+  activeWorkspaceRole?: WorkspaceRole;
 }
 
 export interface AccessTokenClaims {

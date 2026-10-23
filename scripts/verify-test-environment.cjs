@@ -19,8 +19,10 @@ function assertTestDatabaseEnvironment(env = process.env) {
     fail("TEST_DATABASE_URL must use postgres:// or postgresql://");
   }
   const databaseName = decodeURIComponent(parsed.pathname.replace(/^\//, ""));
-  if (!/(^|[-_])test($|[-_])/iu.test(databaseName)) {
-    fail("the database name must contain a distinct test segment");
+  const schemaName = decodeURIComponent(parsed.searchParams.get("schema") ?? "");
+  const hasTestSegment = (value) => /(^|[-_])test($|[-_])/iu.test(value);
+  if (!hasTestSegment(databaseName) && !hasTestSegment(schemaName)) {
+    fail("the database name or schema must contain a distinct test segment");
   }
   const localHosts = new Set(["localhost", "127.0.0.1", "::1", "postgres"]);
   if (!localHosts.has(parsed.hostname) && env.ALLOW_REMOTE_TEST_DATABASE !== "true") {

@@ -7,10 +7,15 @@ coverage/
 .env.*
 !.env.example
 !.env.test.example
-!apps/web/.env.demo
 npm-debug.log*
 docker/postgres-data/
 docker/redis-data/
 *.tsbuildinfo
 
 .vercel
+
+# Local browser evidence, sessions, and test/service logs are not release inputs.
+artifacts/
+test-results/
+playwright-report/
+.tmp/

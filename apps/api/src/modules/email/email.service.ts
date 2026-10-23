@@ -15,6 +15,7 @@ import type {
   EmailDeliverabilityScanDto,
   EmailPreSendValidationDto,
   EmailSuppressionDto,
+  CommunicationAttachmentDto,
   InboundEmailDto,
   IntegrationHealthDto,
   OutboundEmailDto,
@@ -35,8 +36,11 @@ import { upsertIntegrationAccount } from "../integrations/integration-mapping.re
 import { AwsSesProvider } from "../integrations/aws-ses/aws-ses.provider.js";
 import { MailpitEmailProvider } from "../integrations/mailpit/mailpit.provider.js";
 import { requireHumanActionInTransaction } from "../leads/lead-automation-ownership.service.js";
+import { assertCanMutateLead } from "../leads/lead.permissions.js";
 import { publishRealtimeEvent } from "../realtime/realtime.service.js";
 import type { EmailProvider } from "./email.provider.js";
+import { classifyInboundEmail } from "./inbound-email-classification.js";
+import { parseInboundMime } from "./email-ses-receiving.mime.js";
 import {
   sesNotificationSchema,
   sesInboundNotificationSchema,
@@ -63,6 +67,54 @@ interface FeedbackHeaders {
 
 const E2E_INBOUND_WEBHOOK_SECRET_ENV = "E2E_INBOUND_EMAIL_WEBHOOK_SECRET";
 
+function attachmentDtos(value: Prisma.JsonValue | null): CommunicationAttachmentDto[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const record = item as Record<string, unknown>;
+    if (
+      typeof record.fileName !== "string" ||
+      typeof record.contentType !== "string" ||
+      typeof record.sizeBytes !== "number"
+    ) {
+      return [];
+    }
+    return [
+      {
+        fileName: record.fileName,
+        contentType: record.contentType,
+        sizeBytes: record.sizeBytes,
+        contentId: typeof record.contentId === "string" ? record.contentId : null,
+        disposition:
+          record.disposition === "inline" ? ("inline" as const) : ("attachment" as const),
+        providerAttachmentId:
+          typeof record.providerAttachmentId === "string" ? record.providerAttachmentId : null,
+        mediaType: ["document", "image", "audio", "video", "sticker", "file"].includes(
+          String(record.mediaType)
+        )
+          ? (record.mediaType as CommunicationAttachmentDto["mediaType"])
+          : "file",
+        voiceNote: record.voiceNote === true
+      }
+    ];
+  });
+}
+
+function outboundAttachmentMetadata(
+  attachments: SendEmailInput["attachments"]
+): Prisma.InputJsonArray {
+  return (attachments ?? []).map((attachment) => ({
+    fileName: attachment.fileName,
+    contentType: attachment.contentType,
+    sizeBytes: Buffer.from(attachment.contentBase64, "base64").byteLength,
+    contentId: attachment.contentId ?? null,
+    disposition: attachment.disposition,
+    providerAttachmentId: null,
+    mediaType: "file",
+    voiceNote: false
+  }));
+}
+
 type LeadWithContact = Prisma.LeadGetPayload<{ include: { contact: true } }>;
 
 function sanitizeError(error: unknown): string {
@@ -71,7 +123,19 @@ function sanitizeError(error: unknown): string {
 }
 
 function assertE2ELocalInboundEnabled(env: NodeJS.ProcessEnv): void {
-  if (env.APP_ENV !== "e2e-local" || env.NODE_ENV === "production") {
+  let localDatabase = false;
+  try {
+    localDatabase = ["localhost", "127.0.0.1", "[::1]"].includes(
+      new URL(env.DATABASE_URL ?? "").hostname
+    );
+  } catch {
+    // A missing or invalid database URL must not enable local testing tools.
+  }
+  if (
+    env.NODE_ENV === "production" ||
+    !localDatabase ||
+    !["", "development", "local", "test", "e2e-local"].includes(env.APP_ENV ?? "")
+  ) {
     throw new AppError(404, "NOT_FOUND", "E2E customer reply ingestion is not available");
   }
 }
@@ -90,12 +154,8 @@ function getE2EInboundSigningConfig(env: NodeJS.ProcessEnv): {
   const fromEmail =
     firstNonEmpty(env.AWS_SES_FROM_EMAIL, env.MAILPIT_FROM_EMAIL) ?? "sales@shilabs.local";
   const webhookSecret =
-    firstNonEmpty(env.AWS_SES_WEBHOOK_SECRET, env[E2E_INBOUND_WEBHOOK_SECRET_ENV]) ?? "";
-  if (!webhookSecret) {
-    throw new AppError(503, "PROVIDER_ERROR", "E2E inbound email signing is not configured", {
-      missingConfig: [E2E_INBOUND_WEBHOOK_SECRET_ENV]
-    });
-  }
+    firstNonEmpty(env.AWS_SES_WEBHOOK_SECRET, env[E2E_INBOUND_WEBHOOK_SECRET_ENV]) ??
+    crypto.randomBytes(32).toString("hex");
 
   return {
     fromEmail,
@@ -105,7 +165,11 @@ function getE2EInboundSigningConfig(env: NodeJS.ProcessEnv): {
       AWS_SES_REGION: firstNonEmpty(env.AWS_SES_REGION) ?? "local-e2e",
       AWS_SES_FROM_EMAIL: fromEmail,
       AWS_SES_USE_DEFAULT_CREDENTIAL_CHAIN: "true",
-      AWS_SES_WEBHOOK_SECRET: webhookSecret
+      AWS_SES_WEBHOOK_SECRET: webhookSecret,
+      AWS_SES_TIMEOUT_MS:
+        Number.isFinite(Number(env.AWS_SES_TIMEOUT_MS)) && Number(env.AWS_SES_TIMEOUT_MS) > 0
+          ? env.AWS_SES_TIMEOUT_MS
+          : "30000"
     }
   };
 }
@@ -119,7 +183,7 @@ function signInboundPayload(rawBody: string, secret: string): FeedbackHeaders {
   return { timestamp, signature };
 }
 
-function toOutboundEmailDto(email: OutboundEmail): OutboundEmailDto {
+export function toOutboundEmailDto(email: OutboundEmail): OutboundEmailDto {
   return {
     id: email.id,
     leadId: email.leadId,
@@ -128,7 +192,14 @@ function toOutboundEmailDto(email: OutboundEmail): OutboundEmailDto {
     toEmail: email.toEmail,
     fromEmail: email.fromEmail,
     replyToEmail: email.replyToEmail,
+    ccEmails: email.ccEmails,
     subject: email.subject,
+    attachments: attachmentDtos(email.attachmentMetadata),
+    threadId: email.threadId,
+    inReplyTo: email.inReplyTo,
+    providerReferences: email.providerReferences,
+    senderType: email.senderType,
+    deliveryStatus: email.deliveryStatus,
     provider: email.provider,
     providerMessageId: email.providerMessageId,
     idempotencyKey: email.idempotencyKey,
@@ -189,8 +260,15 @@ function toInboundEmailDto(email: InboundEmail): InboundEmailDto {
     messageId: email.messageId,
     fromEmail: email.fromEmail,
     toEmails: email.toEmails,
+    ccEmails: email.ccEmails,
     subject: email.subject,
     textBody: email.textBody,
+    attachments: attachmentDtos(email.attachmentMetadata),
+    threadId: email.threadId,
+    inReplyTo: email.inReplyTo,
+    providerReferences: email.providerReferences,
+    senderType: email.senderType,
+    deliveryStatus: email.deliveryStatus,
     status: email.status,
     failureCode: email.failureCode,
     failureMessage: email.failureMessage,
@@ -362,6 +440,7 @@ async function markEmailBlocked(input: {
       where: { id: input.emailId },
       data: {
         status: "BLOCKED",
+        deliveryStatus: "FAILED",
         failureCode: input.code,
         failureMessage: input.message
       }
@@ -396,6 +475,7 @@ async function recordSendFailure(input: {
       where: { id: input.emailId },
       data: {
         status: "FAILED",
+        deliveryStatus: "FAILED",
         failureCode: input.code,
         failureMessage: input.message
       }
@@ -546,9 +626,16 @@ export async function sendOutboundEmail(
       normalizedToEmail: eligibility.normalizedEmail,
       fromEmail: config.fromEmail || "not-configured@local.invalid",
       replyToEmail: config.replyToEmail,
+      ccEmails: input.ccEmails ?? [],
       subject: input.subject,
       textBody: input.textBody ?? null,
       htmlBody: input.htmlBody ?? null,
+      attachmentMetadata: outboundAttachmentMetadata(input.attachments),
+      threadId: input.threadId ?? null,
+      inReplyTo: input.inReplyTo ?? null,
+      providerReferences: input.references ?? [],
+      senderType: "USER",
+      deliveryStatus: "PENDING",
       provider: config.provider,
       idempotencyKey: input.idempotencyKey,
       status: "PENDING"
@@ -581,11 +668,22 @@ export async function sendOutboundEmail(
     const provider = options?.provider ?? buildConfiguredEmailProvider(config);
     const sent = await provider.sendEmail({
       to: created.toEmail,
+      cc: created.ccEmails,
       from: config.fromEmail,
       replyTo: config.replyToEmail,
       subject: created.subject,
       textBody: created.textBody,
       htmlBody: created.htmlBody,
+      attachments: (input.attachments ?? []).map((attachment) => ({
+        fileName: attachment.fileName,
+        contentType: attachment.contentType,
+        content: Buffer.from(attachment.contentBase64, "base64"),
+        contentId: attachment.contentId,
+        disposition: attachment.disposition ?? "attachment"
+      })),
+      threadId: created.threadId,
+      inReplyTo: created.inReplyTo,
+      references: created.providerReferences,
       configurationSet: config.provider === "AWS_SES" ? config.configurationSet : null,
       idempotencyKey: created.idempotencyKey
     });
@@ -596,6 +694,7 @@ export async function sendOutboundEmail(
         where: { id: created.id },
         data: {
           status: "SENT",
+          deliveryStatus: "SENT",
           providerMessageId: sent.providerMessageId,
           sentAt: now
         }
@@ -991,10 +1090,18 @@ export async function ingestSesFeedbackEvent(input: {
         where: { id: outboundEmail.id },
         data:
           type === EmailProviderEventType.DELIVERY
-            ? { status: "DELIVERED", deliveredAt: processedAt }
+            ? { status: "DELIVERED", deliveryStatus: "DELIVERED", deliveredAt: processedAt }
             : type === EmailProviderEventType.BOUNCE
-              ? { status: "BOUNCED", bouncedAt: processedAt }
-              : { status: "COMPLAINED", complainedAt: processedAt }
+              ? { status: "BOUNCED", deliveryStatus: "FAILED", bouncedAt: processedAt }
+              : { status: "COMPLAINED", deliveryStatus: "FAILED", complainedAt: processedAt }
+      });
+
+      await tx.message.updateMany({
+        where: { providerMessageId },
+        data:
+          type === EmailProviderEventType.DELIVERY
+            ? { deliveryStatus: "DELIVERED", deliveredAt: processedAt }
+            : { deliveryStatus: "FAILED", failedAt: processedAt }
       });
 
       await tx.auditEvent.create({
@@ -1049,37 +1156,6 @@ export async function ingestSesFeedbackEvent(input: {
   };
 }
 
-function unfoldRawHeaders(rawHeaders: string): Map<string, string> {
-  const headers = new Map<string, string>();
-  let currentName: string | null = null;
-  for (const line of rawHeaders.split(/\r?\n/)) {
-    if (/^[ \t]/.test(line) && currentName) {
-      headers.set(currentName, `${headers.get(currentName) ?? ""} ${line.trim()}`.trim());
-      continue;
-    }
-
-    const separator = line.indexOf(":");
-    if (separator <= 0) continue;
-    currentName = line.slice(0, separator).trim().toLowerCase();
-    headers.set(currentName, line.slice(separator + 1).trim());
-  }
-
-  return headers;
-}
-
-function parseRawEmailContent(content: string | undefined): {
-  headers: Map<string, string>;
-  body: string;
-} {
-  if (!content) return { headers: new Map<string, string>(), body: "" };
-  const parts = content.split(/\r?\n\r?\n/);
-  const rawHeaders = parts.shift() ?? "";
-  return {
-    headers: unfoldRawHeaders(rawHeaders),
-    body: parts.join("\n\n").trim()
-  };
-}
-
 function headerFromNotification(
   notification: SesInboundNotification,
   rawHeaders: Map<string, string>,
@@ -1112,12 +1188,9 @@ function normalizedInboundText(input: {
   notification: SesInboundNotification;
   rawBody: string;
 }): string {
-  const parsed = parseRawEmailContent(input.notification.content);
   const candidates = [
     input.notification.textBody?.trim(),
     input.notification.htmlBody ? stripHtml(input.notification.htmlBody) : undefined,
-    parsed.body,
-    input.rawBody
   ];
   const body =
     candidates.find((candidate) => candidate !== undefined && candidate.length > 0) ?? "";
@@ -1372,6 +1445,7 @@ export async function ingestSesInboundEmail(input: {
   });
 
   const { eventId, notification } = parseSesInboundNotification(input.body);
+  const originalNotification = structuredClone(notification);
   const duplicate = await prisma.inboundEmail.findUnique({
     where: { providerMessageId: notification.mail.messageId }
   });
@@ -1383,7 +1457,24 @@ export async function ingestSesInboundEmail(input: {
     };
   }
 
-  const parsedContent = parseRawEmailContent(notification.content);
+  const parsedContent = notification.content
+    ? await parseInboundMime(Buffer.from(notification.content, "utf8"))
+    : { headers: new Map<string, string>() };
+  if ("textBody" in parsedContent) {
+    notification.textBody = parsedContent.textBody;
+    notification.htmlBody = parsedContent.htmlBody;
+    notification.attachments = parsedContent.attachments;
+    const envelopeHeaders = notification.mail.commonHeaders;
+    const mimeHeaders = parsedContent.commonHeaders;
+    notification.mail.commonHeaders = {
+      ...envelopeHeaders,
+      ...mimeHeaders,
+      from: mimeHeaders.from?.length ? mimeHeaders.from : envelopeHeaders?.from,
+      to: mimeHeaders.to?.length ? mimeHeaders.to : envelopeHeaders?.to,
+      cc: mimeHeaders.cc?.length ? mimeHeaders.cc : envelopeHeaders?.cc,
+      subject: mimeHeaders.subject?.length ? mimeHeaders.subject : envelopeHeaders?.subject
+    };
+  }
   const fromEmail =
     extractEmailAddress(notification.mail.commonHeaders?.from?.[0]) ??
     extractEmailAddress(notification.mail.source) ??
@@ -1400,7 +1491,7 @@ export async function ingestSesInboundEmail(input: {
         subject: notification.mail.commonHeaders?.subject ?? null,
         textBody: normalizedInboundText({ notification, rawBody: input.rawBody }),
         htmlBody: notification.htmlBody ?? null,
-        rawProviderPayload: notification as unknown as Prisma.InputJsonObject,
+        rawProviderPayload: originalNotification as unknown as Prisma.InputJsonObject,
         status: "FAILED",
         failureCode: "FROM_EMAIL_MISSING",
         failureMessage: "Inbound email did not contain a usable sender address",
@@ -1424,10 +1515,36 @@ export async function ingestSesInboundEmail(input: {
   const receivedAt = receivedAtFromNotification(notification);
   const textBody = normalizedInboundText({ notification, rawBody: input.rawBody });
   const toEmails = notification.mail.commonHeaders?.to ?? notification.mail.destination;
+  const ccEmails = notification.mail.commonHeaders?.cc ?? [];
   const subject =
     notification.mail.commonHeaders?.subject ??
     headerFromNotification(notification, parsedContent.headers, "subject") ??
     null;
+  const inReplyTo =
+    headerFromNotification(notification, parsedContent.headers, "in-reply-to") ?? null;
+  const providerReferences = referenceTokens(
+    headerFromNotification(notification, parsedContent.headers, "references")
+  );
+  const threadId =
+    headerFromNotification(notification, parsedContent.headers, "x-shilabs-thread-id") ?? inReplyTo;
+  const inboundClassification = classifyInboundEmail({
+    header: (name) => headerFromNotification(notification, parsedContent.headers, name),
+    subject,
+    textBody
+  });
+  const nonMeaningful = inboundClassification.kind === "NONMEANINGFUL";
+  const inboundAttachments: Prisma.InputJsonArray = (notification.attachments ?? []).map(
+    (attachment) => ({
+      fileName: attachment.fileName,
+      contentType: attachment.contentType,
+      sizeBytes: attachment.sizeBytes,
+      contentId: attachment.contentId ?? null,
+      disposition: attachment.disposition ?? "attachment",
+      providerAttachmentId: attachment.providerAttachmentId ?? null,
+      mediaType: "file",
+      voiceNote: false
+    })
+  );
 
   if (!match.ok) {
     const failed = await prisma.inboundEmail.create({
@@ -1441,10 +1558,17 @@ export async function ingestSesInboundEmail(input: {
         fromEmail,
         normalizedFromEmail,
         toEmails,
+        ccEmails,
         subject,
         textBody,
         htmlBody: notification.htmlBody ?? null,
-        rawProviderPayload: notification as unknown as Prisma.InputJsonObject,
+        attachmentMetadata: inboundAttachments,
+        threadId,
+        inReplyTo,
+        providerReferences,
+        senderType: "PROSPECT",
+        deliveryStatus: "DELIVERED",
+        rawProviderPayload: originalNotification as unknown as Prisma.InputJsonObject,
         status: "FAILED",
         failureCode: match.code,
         failureMessage: match.message,
@@ -1484,12 +1608,16 @@ export async function ingestSesInboundEmail(input: {
           deliveryStatus: "DELIVERED",
           sentAt: receivedAt,
           deliveredAt: receivedAt,
+          attachmentMetadata: inboundAttachments,
+          providerThreadId: threadId,
+          providerReferences,
           metadata: {
             provider: "AWS_SES",
             providerEventId: eventId,
             subject,
             fromEmail,
-            toEmails
+            toEmails,
+            inboundClassification
           }
         }
       });
@@ -1507,12 +1635,19 @@ export async function ingestSesInboundEmail(input: {
           fromEmail,
           normalizedFromEmail,
           toEmails,
+          ccEmails,
           subject,
           textBody,
           htmlBody: notification.htmlBody ?? null,
-          rawProviderPayload: notification as unknown as Prisma.InputJsonObject,
+          attachmentMetadata: inboundAttachments,
+          threadId,
+          inReplyTo,
+          providerReferences,
+          senderType: "PROSPECT",
+          deliveryStatus: "DELIVERED",
+          rawProviderPayload: originalNotification as unknown as Prisma.InputJsonObject,
           status: "PROCESSED",
-          replyProcessingStatus: "PENDING",
+          replyProcessingStatus: nonMeaningful ? "SKIPPED" : "PENDING",
           receivedAt,
           processedAt: new Date()
         }
@@ -1565,14 +1700,16 @@ export async function ingestSesInboundEmail(input: {
             actorType: "SYSTEM",
             entityType: "Message",
             entityId: message.id,
-            action: "REPLY_PROCESSING_TRIGGERED",
+            action: nonMeaningful ? "REPLY_PROCESSING_SKIPPED" : "REPLY_PROCESSING_TRIGGERED",
             after: {
               inboundEmailId: inbound.id,
-              status: "PENDING"
+              status: nonMeaningful ? "SKIPPED" : "PENDING",
+              inboundClassification
             }
           }
         ]
       });
+      if (nonMeaningful) return inbound;
       await requireHumanActionInTransaction({
         client: tx,
         leadId: match.leadId,
@@ -1712,7 +1849,7 @@ export async function ingestSesInboundEmail(input: {
 }
 
 export async function ingestE2ECustomerReply(
-  _actor: AuthenticatedUser,
+  actor: AuthenticatedUser,
   input: E2ECustomerReplyInput,
   env: NodeJS.ProcessEnv = process.env
 ): Promise<SesInboundEmailDto> {
@@ -1725,6 +1862,7 @@ export async function ingestE2ECustomerReply(
   if (!lead) {
     throw new AppError(404, "NOT_FOUND", "Lead not found");
   }
+  assertCanMutateLead(actor, lead);
   if (isForbiddenLeadStatus(lead.status)) {
     throw new AppError(409, "CONFLICT", `Lead status ${lead.status} forbids reply processing`);
   }

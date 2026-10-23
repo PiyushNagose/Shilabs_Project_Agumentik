@@ -35,7 +35,13 @@ export const createLeadDocumentSchema = z
     }
   });
 
+export const uploadLeadDocumentSchema = z.object({
+  title: z.string().trim().min(1).max(180),
+  kind: z.enum(LEAD_DOCUMENT_KINDS)
+});
+
 export type UpdateLeadIntelligenceControlsInput = z.infer<
   typeof updateLeadIntelligenceControlsSchema
 >;
 export type CreateLeadDocumentInput = z.infer<typeof createLeadDocumentSchema>;
+export type UploadLeadDocumentInput = z.infer<typeof uploadLeadDocumentSchema>;

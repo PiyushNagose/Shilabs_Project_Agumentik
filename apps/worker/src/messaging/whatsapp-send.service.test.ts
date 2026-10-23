@@ -63,6 +63,7 @@ async function cleanup(): Promise<void> {
   await prisma.auditEvent.deleteMany({
     where: { entityType: { in: ["OutboundWhatsAppMessage"] } }
   });
+  await prisma.message.deleteMany({ where: { conversation: { leadId: { in: leadIds } } } });
   await prisma.conversation.deleteMany({ where: { leadId: { in: leadIds } } });
   await prisma.lead.deleteMany({ where: { id: { in: leadIds } } });
   await prisma.contact.deleteMany({ where: { company: { name: { startsWith: companyPrefix } } } });

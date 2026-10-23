@@ -1,4 +1,4 @@
-import { Prisma, UserRole } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import type {
   SalesActionDashboardDto,
   SalesActionDashboardItemDto,
@@ -6,6 +6,7 @@ import type {
 } from "@shilabs/shared-types";
 import { prisma } from "../../shared/prisma.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
+import { isWorkspaceManager } from "../authorization/workspace-permissions.js";
 import { toHumanTakeoverDto } from "../conversations/conversation.service.js";
 import { toLeadDto } from "../leads/lead.service.js";
 import {
@@ -15,17 +16,25 @@ import {
 import { proposalInclude } from "../proposals/proposal.repository.js";
 
 const DASHBOARD_LIMIT = 25;
+const EXPECTED_AUTOMATION_STOP_CODES = [
+  "TERMINAL_LEAD_STATE", "DO_NOT_CONTACT", "AUTOMATION_PAUSED", "HUMAN_TAKEOVER_ACTIVE",
+  "PRIVACY_ERASURE", "AI_OWNERSHIP_INACTIVE", "AI_CONTROL_OFF", "AI_CONTROL_PAUSED",
+  "HUMAN_INTERVENTION_REQUIRED", "INBOUND_REPLY_RECEIVED", "CONTACT_DO_NOT_CONTACT",
+  "LEAD_STATUS_FORBIDS_OUTREACH", "MEANINGFUL_CLIENT_REPLY", "LEAD_AI_PAUSED", "LEAD_AI_OFF", "LEAD_AI_DISABLED"
+];
 
 function canSeeAll(actor: AuthenticatedUser): boolean {
-  return actor.role === UserRole.ADMIN || actor.role === UserRole.SALES_MANAGER;
+  return isWorkspaceManager(actor);
 }
 
 function leadVisibilityWhere(actor: AuthenticatedUser): Prisma.LeadWhereInput {
+  const workspaceId = actor.activeWorkspaceId;
   if (canSeeAll(actor)) {
-    return {};
+    return { workspaceId };
   }
 
   return {
+    workspaceId,
     OR: [{ ownerId: actor.id }, { ownerId: null }]
   };
 }
@@ -33,11 +42,13 @@ function leadVisibilityWhere(actor: AuthenticatedUser): Prisma.LeadWhereInput {
 function notificationVisibilityWhere(
   actor: AuthenticatedUser
 ): Prisma.InternalNotificationWhereInput {
+  const workspaceId = actor.activeWorkspaceId;
   if (canSeeAll(actor)) {
-    return {};
+    return { workspaceId };
   }
 
   return {
+    workspaceId,
     OR: [{ assignedToUserId: actor.id }, { assignedToUserId: null }]
   };
 }
@@ -61,8 +72,19 @@ function sortItems(items: SalesActionDashboardItemDto[]): SalesActionDashboardIt
 }
 
 function failureDetail(code: string | null, message: string | null): string {
-  if (code && message) return `${code}: ${message}`;
-  return message ?? code ?? "Attention is required before automation can continue.";
+  if (/invalid_grant|unauthorized_client|oauth/i.test(message ?? "")) {
+    return "Reconnect the calendar account in Integrations, then try scheduling again.";
+  }
+  if (/event insert failed with status|calendar.*request failed/i.test(message ?? "")) {
+    return "The calendar could not confirm this meeting. Check its connection and selected time.";
+  }
+  if (code === "E2E_NUMBER_NOT_ALLOWED") {
+    return "This number is not approved for local WhatsApp testing. No message was sent.";
+  }
+  if (message) return message;
+  if (code)
+    return "The provider could not complete this action. Review its connection and try again.";
+  return "Attention is required before automation can continue.";
 }
 
 function domainEventPayloadString(
@@ -193,7 +215,9 @@ export async function getSalesActionDashboard(
     managersCanSeeOperations
       ? prisma.domainEventOutbox.findMany({
           where: {
+            workspaceId: actor.activeWorkspaceId,
             status: { in: ["FAILED", "ATTENTION_REQUIRED"] },
+            OR: [{ lastErrorCode: null }, { lastErrorCode: { notIn: EXPECTED_AUTOMATION_STOP_CODES, not: { startsWith: "MEANINGFUL_CLIENT_REPLY:" } } }],
             eventType: {
               notIn: [
                 "MEETING_REQUESTED",
@@ -230,12 +254,19 @@ export async function getSalesActionDashboard(
 
   const internalAlerts: SalesActionDashboardItemDto[] = notifications.map((notification) => {
     const dto = toInternalNotificationDto(notification);
+    const evidence = notification.escalationEvidence as Prisma.JsonObject | null;
+    const delivery = evidence?.delivery as Prisma.JsonObject | undefined;
+    const state = delivery?.state;
+    const notificationDeliveryState =
+      state === "Pending" || state === "Disabled" || state === "NeedsAttention" || state === "Accepted"
+        ? state : undefined;
     return {
       id: `notification:${dto.id}`,
+      notificationDeliveryState,
       type: dto.type === "MEETING_CONFIRMATION" ? "MEETING_CONFIRMATION" : "NEGOTIATION_HANDOFF",
       severity: dto.severity,
       title: dto.title,
-      detail: dto.body,
+      detail: dto.type === "MEETING_CONFIRMATION" ? failureDetail(null, dto.body) : dto.body,
       status: dto.status,
       leadId: dto.leadId,
       conversationId: dto.conversationId,
@@ -257,7 +288,7 @@ export async function getSalesActionDashboard(
         dto.status === "ATTENTION_REQUIRED"
           ? "Negotiation handoff needs attention"
           : "Negotiation handoff active",
-      detail: dto.failureMessage ?? dto.summary,
+      detail: dto.failureMessage ? failureDetail(null, dto.failureMessage) : dto.summary,
       status: dto.status,
       leadId: dto.leadId,
       conversationId: dto.conversationId,
@@ -299,7 +330,10 @@ export async function getSalesActionDashboard(
         : "Meeting slots need confirmation",
     detail:
       request.status === "ATTENTION_REQUIRED"
-        ? (request.providerLastError ?? request.zohoLastError ?? "Meeting workflow requires review")
+        ? failureDetail(
+            null,
+            request.providerLastError ?? request.zohoLastError ?? "Meeting workflow requires review"
+          )
         : `${String(
             request.slots.filter((slot) => slot.status === "PROPOSED").length
           )} proposed slot(s) waiting for confirmation`,
@@ -388,6 +422,11 @@ export async function getSalesActionDashboard(
       .filter((attemptId): attemptId is string => Boolean(attemptId))
   );
   const outboxFailures: SalesActionDashboardItemDto[] = failedDomainEvents
+    .filter(
+      (event) =>
+        !EXPECTED_AUTOMATION_STOP_CODES.includes(event.lastErrorCode ?? "") &&
+        !event.lastErrorCode?.startsWith("MEANINGFUL_CLIENT_REPLY:")
+    )
     .filter(
       (event) =>
         !(

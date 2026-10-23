@@ -33,11 +33,12 @@ export async function listRecentMessagesForLead(input: { leadId: string; take: n
     senderType: Prisma.MessageCreateInput["senderType"];
     body: string;
     createdAt: Date;
+    metadata: Prisma.JsonValue;
   }[]
 > {
   return prisma.message.findMany({
     where: { conversation: { leadId: input.leadId } },
-    select: { id: true, senderType: true, body: true, createdAt: true },
+    select: { id: true, senderType: true, body: true, createdAt: true, metadata: true },
     orderBy: { createdAt: "desc" },
     take: input.take
   });

@@ -12,19 +12,14 @@ import { publishRealtimeEvent } from "../realtime/realtime.service.js";
 import type { ComposerDefinitionInput, PreviewAgentComposerInput } from "./agent.schemas.js";
 import { assertCanManage, getAgent, workspaceIdFor } from "./agent.service.js";
 
-const reusableCapabilities = new Set([
-  "outreach",
-  "reply-understanding",
-  "qualification",
-  "proposal",
-  "meeting",
-  "voice",
-  "whatsapp",
-  "sales-copilot",
-  "create-task",
-  "update-lead",
-  "assign-owner"
-]);
+const toolCapabilities = new Set(["outreach", "create-task", "update-lead", "assign-owner"]);
+const integrationCapabilities = new Set(["email", "voice", "whatsapp"]);
+
+function isHumanReviewBranch(branch: string): boolean {
+  return ["human", "person", "review", "stop", "blocked", "reject"].some((word) =>
+    branch.includes(word)
+  );
+}
 
 function textConfig(node: ComposerDefinitionInput["nodes"][number], key: string): string {
   const value = node.config[key];
@@ -117,6 +112,20 @@ export function validateComposerDefinition(
           message: `${node.label} requires unique labels for every branch.`,
           nodeId: node.id
         });
+      if (node.type === "AI_DECISION") {
+        const configured = textConfig(node, "defaultBranch").toLowerCase();
+        if (
+          !branches.some(
+            (branch) => ["false", "default"].includes(branch) || isHumanReviewBranch(branch)
+          ) &&
+          (!configured || !branches.includes(configured))
+        )
+          issues.push({
+            code: "SAFE_DECISION_ROUTE_REQUIRED",
+            message: `${node.label} requires a human-review branch or an explicit persisted fallback.`,
+            nodeId: node.id
+          });
+      }
     }
     const requiredKey =
       node.type === "TRIGGER"
@@ -154,10 +163,14 @@ export function validateComposerDefinition(
     }
     if (node.type === "TOOL_CRM_ACTION" || node.type === "INTEGRATION_ACTION") {
       const capability = textConfig(node, "capability");
-      if (!reusableCapabilities.has(capability))
+      const supported =
+        node.type === "TOOL_CRM_ACTION"
+          ? toolCapabilities.has(capability)
+          : integrationCapabilities.has(capability);
+      if (!supported)
         issues.push({
           code: "UNSUPPORTED_CAPABILITY",
-          message: `${node.label} must use an approved existing capability.`,
+          message: `${node.label} must use an action supported by the active worker runtime.`,
           nodeId: node.id
         });
     }

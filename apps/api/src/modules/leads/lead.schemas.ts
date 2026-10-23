@@ -22,6 +22,10 @@ export const createLeadSchema = z.object({
   contactId: z.string().trim().min(1),
   ownerId: z.string().trim().min(1).nullable().optional(),
   source: z.string().trim().min(1).max(120),
+  leadType: nullableTrimmedString,
+  country: nullableTrimmedString,
+  priority: nullableTrimmedString,
+  campaign: nullableTrimmedString,
   requirement: nullableTrimmedString,
   serviceInterest: nullableTrimmedString,
   estimatedValue: decimalString.nullable().optional(),
@@ -33,6 +37,10 @@ export const createLeadSchema = z.object({
 export const updateLeadSchema = z
   .object({
     source: z.string().trim().min(1).max(120).optional(),
+    leadType: nullableTrimmedString,
+    country: nullableTrimmedString,
+    priority: nullableTrimmedString,
+    campaign: nullableTrimmedString,
     requirement: nullableTrimmedString,
     serviceInterest: nullableTrimmedString,
     estimatedValue: decimalString.nullable().optional(),

@@ -165,6 +165,43 @@ export function validateWorkflowDefinition(
         message: "Wait requires a valid duration or policy cadence step.",
         nodeId: node.id
       });
+    if (
+      node.type === "CONDITION" &&
+      ![
+        "source",
+        "status",
+        "stageId",
+        "serviceInterest",
+        "ownership",
+        "meaningfulReply",
+        "requiresHuman"
+      ].includes(text(node, "field"))
+    )
+      issues.push({
+        code: "UNSUPPORTED_CONDITION",
+        message: `${node.label} must use a field supported by the workflow runtime.`,
+        nodeId: node.id
+      });
+    if (
+      node.type === "CRM_ACTION" &&
+      !["FOLLOW_UP", "ESCALATE", "STOP", "ASK_HUMAN"].includes(text(node, "action"))
+    )
+      issues.push({
+        code: "UNSUPPORTED_ACTION",
+        message: `${node.label} must use an action supported by the workflow runtime.`,
+        nodeId: node.id
+      });
+    if (
+      node.type === "INTEGRATION_ACTION" &&
+      !["NOTIFICATION_ACKNOWLEDGED", "AGENT_CORRECTION_RECORDED", "REPLY_UNDERSTOOD"].includes(
+        text(node, "eventType")
+      )
+    )
+      issues.push({
+        code: "UNSUPPORTED_INTEGRATION_ACTION",
+        message: `${node.label} must use a connected action supported by the workflow runtime.`,
+        nodeId: node.id
+      });
   }
   const trigger = triggers[0];
   if (trigger) {

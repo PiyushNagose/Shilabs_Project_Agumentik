@@ -34,6 +34,28 @@ function decisionTone(value: string | null): "danger" | "warning" | "success" | 
   return "neutral";
 }
 
+function ownershipLabel(value: string): string {
+  const labels: Record<string, string> = {
+    HUMAN_ACTIVE: "Handled by person",
+    HUMAN_ACTION_COMPLETED: "Handing over to AI",
+    AI_ACTIVE: "AI following up",
+    HUMAN_REQUIRED: "Needs your response",
+    AI_STOPPED: "AI stopped"
+  };
+  return labels[value] ?? "Review ownership";
+}
+
+function decisionLabel(value: string | null): string {
+  const labels: Record<string, string> = {
+    ESCALATE: "Escalate",
+    ASK_HUMAN: "Ask human",
+    FOLLOW_UP: "Follow up",
+    WAIT: "Wait",
+    STOP: "Stop"
+  };
+  return value ? (labels[value] ?? "Review") : "Review";
+}
+
 export function AiCommandCenter({
   accessToken,
   onOpenLead
@@ -273,7 +295,12 @@ export function AiCommandCenter({
               <span />
             </div>
             {recommendations.map((item) => (
-              <div className="command-center-row" role="row" key={item.leadId}>
+              <div
+                className="command-center-row"
+                role="row"
+                key={item.leadId}
+                data-lead-id={item.leadId}
+              >
                 <span>
                   <strong>{item.contactName}</strong>
                   <small>{item.companyName}</small>
@@ -285,12 +312,10 @@ export function AiCommandCenter({
                 </span>
                 <span>
                   <small>Human/AI</small>
-                  {item.automationState.replaceAll("_", " ")}
+                  {ownershipLabel(item.automationState)}
                 </span>
                 <span className="command-center-recommendation-cell">
-                  <Badge tone={decisionTone(item.decision)}>
-                    {item.decision?.replaceAll("_", " ") ?? "REVIEW"}
-                  </Badge>
+                  <Badge tone={decisionTone(item.decision)}>{decisionLabel(item.decision)}</Badge>
                   <small>{item.recommendation}</small>
                 </span>
                 <Button size="sm" onClick={() => onOpenLead(item.leadId)}>

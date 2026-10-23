@@ -22,10 +22,11 @@ export async function listKnowledgeBaseEntries(input: {
 }
 
 export async function findKnowledgeBaseEntryById(
-  id: string
+  id: string,
+  workspaceId: string
 ): Promise<KnowledgeBaseEntryRecord | null> {
-  return prisma.knowledgeBaseEntry.findUnique({
-    where: { id },
+  return prisma.knowledgeBaseEntry.findFirst({
+    where: { id, workspaceId },
     include: knowledgeBaseInclude
   });
 }
@@ -58,6 +59,7 @@ export async function createKnowledgeBaseEntryWithVersion(input: {
       });
       await tx.auditEvent.create({
         data: {
+          workspaceId: entry.workspaceId,
           actorType: "USER",
           actorId: input.actorId,
           entityType: "KnowledgeBaseEntry",
@@ -91,6 +93,7 @@ export async function updateKnowledgeBaseEntryWithAudit(input: {
       });
       await tx.auditEvent.create({
         data: {
+          workspaceId: input.entry.workspaceId,
           actorType: "USER",
           actorId: input.actorId,
           entityType: "KnowledgeBaseEntry",
@@ -148,6 +151,7 @@ export async function createKnowledgeBaseCorrectionWithAudit(input: {
       });
       await tx.auditEvent.create({
         data: {
+          workspaceId: input.entry.workspaceId,
           actorType: "USER",
           actorId: input.actorId,
           entityType: "KnowledgeBaseEntry",

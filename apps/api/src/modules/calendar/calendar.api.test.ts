@@ -1,5 +1,5 @@
 import request from "supertest";
-import { UserRole, UserStatus } from "@prisma/client";
+import { UserRole, UserStatus, WorkspaceMemberStatus, WorkspaceRole } from "@prisma/client";
 import type {
   AuthResponse,
   CalendarAvailabilityResultDto,
@@ -31,6 +31,11 @@ async function login(email: string): Promise<string> {
 }
 
 async function seedUsers(): Promise<{ adminId: string; repId: string; otherRepId: string }> {
+  const workspace = await prisma.workspace.upsert({
+    where: { slug: "default" },
+    create: { name: "Default Workspace", slug: "default" },
+    update: {}
+  });
   const passwordHash = await hashPassword(password);
   const [admin, rep, otherRep] = await Promise.all([
     prisma.user.create({
@@ -64,6 +69,14 @@ async function seedUsers(): Promise<{ adminId: string; repId: string; otherRepId
       }
     })
   ]);
+  await prisma.workspaceMember.createMany({
+    data: [admin, rep, otherRep].map((user) => ({
+      workspaceId: workspace.id,
+      userId: user.id,
+      role: user.role === UserRole.ADMIN ? WorkspaceRole.ADMIN : WorkspaceRole.SALES_REP,
+      status: WorkspaceMemberStatus.ACTIVE
+    }))
+  });
   return { adminId: admin.id, repId: rep.id, otherRepId: otherRep.id };
 }
 

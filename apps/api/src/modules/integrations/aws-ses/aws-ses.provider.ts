@@ -12,6 +12,7 @@ import type {
   EmailSendInput,
   EmailSendResult
 } from "../../email/email.provider.js";
+import { buildRawEmail } from "../../email/email.provider.js";
 
 function providerError(message: string, retryable = false): AppError {
   return new AppError(
@@ -58,12 +59,18 @@ export class AwsSesProvider implements EmailProvider {
   }
 
   public async sendEmail(input: EmailSendInput): Promise<EmailSendResult> {
+    const useRawContent =
+      (input.attachments?.length ?? 0) > 0 ||
+      (input.cc?.length ?? 0) > 0 ||
+      input.inReplyTo !== undefined ||
+      (input.references?.length ?? 0) > 0;
     const response = await this.withTimeout(
       this.client.send(
         new SendEmailCommand({
           FromEmailAddress: input.from,
           Destination: {
-            ToAddresses: [input.to]
+            ToAddresses: [input.to],
+            CcAddresses: input.cc
           },
           ReplyToAddresses: input.replyTo ? [input.replyTo] : undefined,
           ConfigurationSetName: input.configurationSet ?? undefined,
@@ -73,28 +80,30 @@ export class AwsSesProvider implements EmailProvider {
               Value: input.idempotencyKey.slice(0, 256)
             }
           ],
-          Content: {
-            Simple: {
-              Subject: {
-                Data: input.subject,
-                Charset: "UTF-8"
-              },
-              Body: {
-                Text: input.textBody
-                  ? {
-                      Data: input.textBody,
-                      Charset: "UTF-8"
-                    }
-                  : undefined,
-                Html: input.htmlBody
-                  ? {
-                      Data: input.htmlBody,
-                      Charset: "UTF-8"
-                    }
-                  : undefined
+          Content: useRawContent
+            ? { Raw: { Data: buildRawEmail(input) } }
+            : {
+                Simple: {
+                  Subject: {
+                    Data: input.subject,
+                    Charset: "UTF-8"
+                  },
+                  Body: {
+                    Text: input.textBody
+                      ? {
+                          Data: input.textBody,
+                          Charset: "UTF-8"
+                        }
+                      : undefined,
+                    Html: input.htmlBody
+                      ? {
+                          Data: input.htmlBody,
+                          Charset: "UTF-8"
+                        }
+                      : undefined
+                  }
+                }
               }
-            }
-          }
         })
       ),
       "AWS SES send failed"

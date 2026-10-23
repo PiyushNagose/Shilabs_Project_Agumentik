@@ -4,11 +4,13 @@ import type { PublicUser } from "@shilabs/shared-types";
 import { Menu, Sparkles } from "lucide-react";
 import type { AppRouteId } from "../../app/routing.js";
 import { Sidebar } from "./Sidebar.js";
+import { useWorkspaceMotion } from "../ui/useWorkspaceMotion.js";
 
 const SIDEBAR_STORAGE_KEY = "shilabs.sidebar.collapsed";
 
 export function AppShell({
   activeRoute,
+  navigationKey,
   allowedRoutes,
   user,
   onNavigate,
@@ -16,12 +18,14 @@ export function AppShell({
   children
 }: {
   activeRoute: AppRouteId;
+  navigationKey?: string;
   allowedRoutes: readonly AppRouteId[];
   user: PublicUser;
   onNavigate: (routeId: AppRouteId) => void;
   onLogout: () => void;
   children: React.ReactNode;
 }): React.JSX.Element {
+  const contentRef = useWorkspaceMotion(navigationKey ?? activeRoute);
   const [collapsed, setCollapsed] = useState(
     () => window.localStorage.getItem(SIDEBAR_STORAGE_KEY) === "true"
   );
@@ -56,7 +60,9 @@ export function AppShell({
             <Sparkles size={17} /> AI Sales Engine
           </span>
         </header>
-        <div className="app-shell-content">{children}</div>
+        <div className="app-shell-content" ref={contentRef}>
+          {children}
+        </div>
       </div>
     </main>
   );

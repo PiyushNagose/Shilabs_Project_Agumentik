@@ -51,6 +51,7 @@ function toEntryDto(entry: KnowledgeBaseEntryRecord): KnowledgeBaseEntryDto {
   const activeVersion = getActiveVersion(entry);
   return {
     id: entry.id,
+    workspaceId: entry.workspaceId,
     key: entry.key,
     title: entry.title,
     category: entry.category,
@@ -121,24 +122,41 @@ function isUniqueConstraintError(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
 }
 
+function workspaceIdFor(actor: AuthenticatedUser): string {
+  if (!actor.activeWorkspaceId)
+    throw new AppError(403, "AUTHORIZATION_ERROR", "An active workspace is required");
+  return actor.activeWorkspaceId;
+}
+
 export async function listKnowledgeBase(
+  actor: AuthenticatedUser,
   query: ListKnowledgeBaseQuery
 ): Promise<KnowledgeBaseEntryDto[]> {
-  return (await listKnowledgeBaseEntries({ where: buildWhere(query, false) })).map(toEntryDto);
+  return (
+    await listKnowledgeBaseEntries({
+      where: { workspaceId: workspaceIdFor(actor), ...buildWhere(query, false) }
+    })
+  ).map(toEntryDto);
 }
 
 export async function listApprovedKnowledge(
+  workspaceId: string,
   query: ApprovedKnowledgeQuery
 ): Promise<ApprovedKnowledgeDto[]> {
-  const entries = await listKnowledgeBaseEntries({ where: buildWhere(query, true) });
+  const entries = await listKnowledgeBaseEntries({
+    where: { workspaceId, ...buildWhere(query, true) }
+  });
   return entries
     .map(toApprovedKnowledgeDto)
     .filter((item): item is ApprovedKnowledgeDto => Boolean(item))
     .slice(0, query.limit);
 }
 
-export async function getKnowledgeBaseEntry(entryId: string): Promise<KnowledgeBaseEntryDto> {
-  return toEntryDto(requireEntry(await findKnowledgeBaseEntryById(entryId)));
+export async function getKnowledgeBaseEntry(
+  actor: AuthenticatedUser,
+  entryId: string
+): Promise<KnowledgeBaseEntryDto> {
+  return toEntryDto(requireEntry(await findKnowledgeBaseEntryById(entryId, workspaceIdFor(actor))));
 }
 
 export async function createKnowledgeBaseEntry(
@@ -150,6 +168,7 @@ export async function createKnowledgeBaseEntry(
       actorId: actor.id,
       approve: input.approve,
       data: {
+        workspace: { connect: { id: workspaceIdFor(actor) } },
         key: input.key,
         title: input.title,
         category: input.category,
@@ -179,7 +198,7 @@ export async function updateKnowledgeBaseEntry(
   entryId: string,
   input: UpdateKnowledgeBaseEntryInput
 ): Promise<KnowledgeBaseEntryDto> {
-  const entry = requireEntry(await findKnowledgeBaseEntryById(entryId));
+  const entry = requireEntry(await findKnowledgeBaseEntryById(entryId, workspaceIdFor(actor)));
   const updated = await updateKnowledgeBaseEntryWithAudit({
     entry,
     actorId: actor.id,
@@ -199,7 +218,7 @@ export async function correctKnowledgeBaseEntry(
   entryId: string,
   input: CreateKnowledgeBaseCorrectionInput
 ): Promise<KnowledgeBaseEntryDto> {
-  const entry = requireEntry(await findKnowledgeBaseEntryById(entryId));
+  const entry = requireEntry(await findKnowledgeBaseEntryById(entryId, workspaceIdFor(actor)));
   const corrected = await createKnowledgeBaseCorrectionWithAudit({
     entry,
     actorId: actor.id,

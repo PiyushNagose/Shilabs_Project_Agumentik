@@ -1,6 +1,6 @@
 import request from "supertest";
 import { beforeEach, afterAll, describe, expect, it } from "vitest";
-import { UserRole, UserStatus } from "@prisma/client";
+import { UserRole, UserStatus, WorkspaceMemberStatus, WorkspaceRole } from "@prisma/client";
 import type {
   AuthResponse,
   EmailSuppressionDto,
@@ -51,7 +51,19 @@ describe("AWS SES email API", () => {
         firstName: "SES",
         lastName: "Admin",
         role: UserRole.ADMIN,
-        status: UserStatus.ACTIVE
+        status: UserStatus.ACTIVE,
+        workspaceMemberships: {
+          create: {
+            role: WorkspaceRole.ADMIN,
+            status: WorkspaceMemberStatus.ACTIVE,
+            workspace: {
+              connectOrCreate: {
+                where: { slug: "default" },
+                create: { name: "Default Workspace", slug: "default" }
+              }
+            }
+          }
+        }
       }
     });
   });

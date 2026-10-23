@@ -32,6 +32,12 @@ interface WebhookMessage {
   timestamp?: string;
   type?: string;
   text?: { body?: string };
+  image?: { id?: string; mime_type?: string; caption?: string };
+  audio?: { id?: string; mime_type?: string; voice?: boolean };
+  video?: { id?: string; mime_type?: string; caption?: string };
+  document?: { id?: string; mime_type?: string; filename?: string; caption?: string };
+  sticker?: { id?: string; mime_type?: string };
+  context?: { id?: string };
 }
 
 interface NormalizedInboundWhatsAppMessage {
@@ -40,6 +46,8 @@ interface NormalizedInboundWhatsAppMessage {
   timestamp?: string;
   type?: string;
   body: string;
+  replyToProviderMessageId?: string;
+  media: Prisma.InputJsonArray;
 }
 
 interface WebhookValue {
@@ -108,7 +116,30 @@ function statusFailure(status: WebhookStatus): { code: string | null; message: s
 
 function inboundBody(message: WebhookMessage): string {
   if (message.text?.body?.trim()) return message.text.body.trim();
-  return `[Unsupported WhatsApp ${message.type ?? "message"} message]`;
+  const caption = message.image?.caption ?? message.video?.caption ?? message.document?.caption;
+  if (caption?.trim()) return caption.trim();
+  return `[WhatsApp ${message.type ?? "message"} received]`;
+}
+
+function metaInboundMedia(message: WebhookMessage): Prisma.InputJsonArray {
+  const type = message.type;
+  if (!type || !["image", "audio", "video", "document", "sticker"].includes(type)) return [];
+  const item = message[type as keyof WebhookMessage];
+  if (!item || typeof item !== "object") return [];
+  const media = item as Record<string, unknown>;
+  return [
+    {
+      fileName: typeof media.filename === "string" ? media.filename : `${type}-${message.id}`,
+      contentType:
+        typeof media.mime_type === "string" ? media.mime_type : "application/octet-stream",
+      sizeBytes: 0,
+      contentId: null,
+      disposition: "attachment",
+      providerAttachmentId: typeof media.id === "string" ? media.id : null,
+      mediaType: type === "document" ? "document" : type,
+      voiceNote: type === "audio" && media.voice === true
+    }
+  ];
 }
 
 function publicProvider(provider: PersistedWhatsAppProvider): PublicWhatsAppProvider {
@@ -260,9 +291,18 @@ async function processStatus(
       where: { id: outbound.id },
       data: {
         status: mapped.status,
+        deliveryStatus: mapped.status,
+        providerStatus: status.status,
         [mapped.dateField]: happenedAt,
         failureCode: failure.code,
         failureMessage: failure.message
+      }
+    });
+    await tx.message.updateMany({
+      where: { providerMessageId: status.id },
+      data: {
+        deliveryStatus: mapped.status,
+        [mapped.dateField]: happenedAt
       }
     });
     await tx.activity.create({
@@ -375,7 +415,15 @@ async function processInboundMessage(input: {
           body,
           deliveryStatus: "DELIVERED",
           deliveredAt: receivedAt,
-          metadata: { provider: publicProvider(provider), type: message.type ?? "text" }
+          attachmentMetadata: message.media,
+          providerReferences: message.replyToProviderMessageId
+            ? [message.replyToProviderMessageId]
+            : [],
+          metadata: {
+            provider: publicProvider(provider),
+            type: message.type ?? "text",
+            replyToProviderMessageId: message.replyToProviderMessageId ?? null
+          }
         }
       });
       await tx.whatsAppProviderEvent.create({
@@ -494,7 +542,9 @@ export async function ingestMetaWhatsAppWebhook(input: {
           from: message.from,
           timestamp: message.timestamp,
           type: message.type,
-          body: inboundBody(message)
+          body: inboundBody(message),
+          replyToProviderMessageId: message.context?.id,
+          media: metaInboundMedia(message)
         },
         payload,
         replyProcessingOptions: input.replyProcessingOptions
@@ -548,14 +598,41 @@ export async function ingestTwilioWhatsAppWebhook(input: {
   }
   const body = twilioParam(input.body, "Body") ?? "";
   const timestamp = twilioParam(input.body, "Timestamp");
+  const mediaCount = Math.max(0, Number(twilioParam(input.body, "NumMedia") ?? "0") || 0);
+  const media: Prisma.InputJsonArray = Array.from({ length: mediaCount }, (_, index) => {
+    const contentType =
+      twilioParam(input.body, `MediaContentType${String(index)}`) ?? "application/octet-stream";
+    const mediaUrl = twilioParam(input.body, `MediaUrl${String(index)}`);
+    const mediaType = contentType.startsWith("image/")
+      ? "image"
+      : contentType.startsWith("audio/")
+        ? "audio"
+        : contentType.startsWith("video/")
+          ? "video"
+          : "document";
+    return {
+      fileName: `${mediaType}-${messageSid}-${String(index + 1)}`,
+      contentType,
+      sizeBytes: 0,
+      contentId: null,
+      disposition: "attachment",
+      providerAttachmentId: mediaUrl ?? null,
+      mediaType,
+      voiceNote: mediaType === "audio" && /ogg|opus/iu.test(contentType)
+    };
+  });
   await processInboundMessage({
     provider: "TWILIO",
     message: {
       id: messageSid,
       from,
       timestamp,
-      type: "text",
-      body: body.trim() || "[Unsupported WhatsApp message]"
+      type: mediaCount > 0 ? "media" : "text",
+      body:
+        body.trim() ||
+        (mediaCount > 0 ? "[WhatsApp media received]" : "[WhatsApp message received]"),
+      replyToProviderMessageId: twilioParam(input.body, "OriginalRepliedMessageSid"),
+      media
     },
     payload: input.body as Prisma.InputJsonObject,
     replyProcessingOptions: input.replyProcessingOptions

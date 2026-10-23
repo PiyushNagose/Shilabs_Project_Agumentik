@@ -1,4 +1,4 @@
-import { Prisma, UserRole, UserStatus } from "@prisma/client";
+import { Prisma, UserStatus, WorkspaceMemberStatus, WorkspaceRole } from "@prisma/client";
 import { AppError } from "../../shared/errors.js";
 import { prisma } from "../../shared/prisma.js";
 import type { AIProvider } from "../ai/ai.provider.js";
@@ -52,15 +52,42 @@ async function alreadyOrchestrated(runId: string): Promise<boolean> {
 }
 
 async function resolveSystemActor(run: ReplyRun): Promise<AuthenticatedUser> {
-  if (run.lead.owner?.status === UserStatus.ACTIVE) {
-    return run.lead.owner;
+  const workspaceId = run.lead.workspaceId;
+  if (!workspaceId) {
+    throw new AppError(409, "CONFLICT", "Lead has no persisted workspace");
   }
-  const admin = await prisma.user.findFirst({
-    where: { role: UserRole.ADMIN, status: UserStatus.ACTIVE },
-    orderBy: { createdAt: "asc" }
+
+  if (run.lead.owner?.status === UserStatus.ACTIVE) {
+    const ownerMembership = await prisma.workspaceMember.findUnique({
+      where: { workspaceId_userId: { workspaceId, userId: run.lead.owner.id } }
+    });
+    if (ownerMembership?.status === WorkspaceMemberStatus.ACTIVE) {
+      return {
+        ...run.lead.owner,
+        activeWorkspaceId: workspaceId,
+        activeWorkspaceRole: ownerMembership.role
+      };
+    }
+  }
+
+  const membership = await prisma.workspaceMember.findFirst({
+    where: {
+      workspaceId,
+      status: WorkspaceMemberStatus.ACTIVE,
+      role: { in: [WorkspaceRole.OWNER, WorkspaceRole.ADMIN] },
+      user: { status: UserStatus.ACTIVE }
+    },
+    include: { user: true },
+    orderBy: { joinedAt: "asc" }
   });
-  if (!admin) throw new AppError(409, "CONFLICT", "No active system actor is available");
-  return admin;
+  if (!membership) {
+    throw new AppError(409, "CONFLICT", "No active workspace actor is available");
+  }
+  return {
+    ...membership.user,
+    activeWorkspaceId: workspaceId,
+    activeWorkspaceRole: membership.role
+  };
 }
 
 function responseSubject(run: ReplyRun): string {
@@ -250,6 +277,7 @@ async function recordCompleted(input: {
 }
 
 async function buildAIInput(run: ReplyRun) {
+  if (!run.lead.workspaceId) throw new AppError(409, "CONFLICT", "Lead has no persisted workspace");
   const [messages, qualification, proposals, meetings, voiceRuns, approvedKnowledge] =
     await Promise.all([
       prisma.message.findMany({
@@ -286,7 +314,7 @@ async function buildAIInput(run: ReplyRun) {
         orderBy: { createdAt: "desc" },
         take: 5
       }),
-      listApprovedKnowledge({ limit: 30 })
+      listApprovedKnowledge(run.lead.workspaceId, { limit: 30 })
     ]);
 
   return {
@@ -566,7 +594,7 @@ export async function orchestrateSalesConversationForReply(
     if (run.intent === "NEGOTIATION") {
       await updateLeadNextAction({
         run,
-        nextAction: "Human follow-up required",
+        nextAction: "Review pricing request and respond",
         selectedAction: "HUMAN_HANDOFF",
         reason: "Negotiation/commercial intent is never handled by AI"
       });
@@ -605,7 +633,8 @@ export async function orchestrateSalesConversationForReply(
       if (run.conversation.mode !== "AUTO") {
         await updateLeadNextAction({
           run,
-          nextAction: run.conversation.mode === "CLOSED" ? null : "Human follow-up required",
+          nextAction:
+            run.conversation.mode === "CLOSED" ? null : "Review customer reply and respond",
           selectedAction: "CONVERSATION_MODE_GATE",
           reason: `Conversation mode ${run.conversation.mode} blocks automated AI response`
         });

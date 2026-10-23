@@ -90,6 +90,23 @@ describe("api health endpoints", () => {
 });
 
 describe("api CORS", () => {
+  it("allows browser credentials only on trusted Google OAuth-start requests", async () => {
+    const app = createApp();
+    const origin = process.env.WEB_ORIGIN ?? "http://localhost:5173";
+    for (const [route, credentials] of [
+      ["/api/calendar/oauth/google/start", "true"], ["/api/auth/login", undefined]
+    ] as const) {
+      const response = await request(app).options(route).set("Origin", origin)
+        .set("Access-Control-Request-Method", "POST");
+      expect(response.headers["access-control-allow-origin"]).toBe(origin);
+      expect(response.headers["access-control-allow-credentials"]).toBe(credentials);
+    }
+    const rejected = await request(app).options("/api/calendar/oauth/google/start")
+      .set("Origin", "https://untrusted.invalid").set("Access-Control-Request-Method", "POST");
+    expect(rejected.headers["access-control-allow-origin"]).toBeUndefined();
+    expect(rejected.headers["access-control-allow-credentials"]).toBeUndefined();
+  });
+
   it("allows the configured web origin", () => {
     expect(isCorsOriginAllowed("http://localhost:5173", apiConfig)).toBe(true);
   });

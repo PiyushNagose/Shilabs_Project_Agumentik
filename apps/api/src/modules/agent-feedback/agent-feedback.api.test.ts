@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import request from "supertest";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { UserRole, UserStatus } from "@prisma/client";
+import { UserRole, UserStatus, WorkspaceMemberStatus, WorkspaceRole } from "@prisma/client";
 import type { AgentCorrectionDto, AuthResponse } from "@shilabs/shared-types";
 import { createApp } from "../../app.js";
 import { prisma } from "../../shared/prisma.js";
@@ -44,6 +44,11 @@ async function login(): Promise<string> {
 }
 
 async function seedProposalWithCorrection(): Promise<{ proposalId: string }> {
+  const workspace = await prisma.workspace.upsert({
+    where: { slug: "default" },
+    create: { name: "Default Workspace", slug: "default" },
+    update: {}
+  });
   const passwordHash = await hashPassword(password);
   const user = await prisma.user.create({
     data: {
@@ -52,12 +57,20 @@ async function seedProposalWithCorrection(): Promise<{ proposalId: string }> {
       firstName: "R25",
       lastName: "API",
       role: UserRole.ADMIN,
-      status: UserStatus.ACTIVE
+      status: UserStatus.ACTIVE,
+      workspaceMemberships: {
+        create: {
+          workspaceId: workspace.id,
+          role: WorkspaceRole.ADMIN,
+          status: WorkspaceMemberStatus.ACTIVE
+        }
+      }
     }
   });
   const stage = await prisma.pipelineStage.upsert({
     where: { key: "R25_AGENT_FEEDBACK_API" },
     create: {
+      workspaceId: workspace.id,
       key: "R25_AGENT_FEEDBACK_API",
       label: "R25 Agent Feedback API",
       order: 9251,
@@ -66,13 +79,19 @@ async function seedProposalWithCorrection(): Promise<{ proposalId: string }> {
     update: {}
   });
   const company = await prisma.company.create({
-    data: { name: `${companyPrefix} ${crypto.randomUUID()}` }
+    data: { workspaceId: workspace.id, name: `${companyPrefix} ${crypto.randomUUID()}` }
   });
   const contact = await prisma.contact.create({
-    data: { companyId: company.id, firstName: "R25", lastName: "Prospect" }
+    data: {
+      workspaceId: workspace.id,
+      companyId: company.id,
+      firstName: "R25",
+      lastName: "Prospect"
+    }
   });
   const lead = await prisma.lead.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       contactId: contact.id,
       source: "R25_API_TEST",
@@ -81,6 +100,7 @@ async function seedProposalWithCorrection(): Promise<{ proposalId: string }> {
   });
   const proposal = await prisma.proposal.create({
     data: {
+      workspaceId: workspace.id,
       leadId: lead.id,
       title: "R25 API Proposal",
       createdByUserId: user.id

@@ -1,5 +1,5 @@
 import request from "supertest";
-import { UserRole, UserStatus } from "@prisma/client";
+import { UserRole, UserStatus, WorkspaceMemberStatus, WorkspaceRole } from "@prisma/client";
 import type { AuthResponse, IntegrationHealthDto } from "@shilabs/shared-types";
 import { createApp } from "../../../app.js";
 import { prisma } from "../../../shared/prisma.js";
@@ -40,7 +40,19 @@ describe("Zoho Bigin health API", () => {
         firstName: "Zoho",
         lastName: "Admin",
         role: UserRole.ADMIN,
-        status: UserStatus.ACTIVE
+        status: UserStatus.ACTIVE,
+        workspaceMemberships: {
+          create: {
+            role: WorkspaceRole.ADMIN,
+            status: WorkspaceMemberStatus.ACTIVE,
+            workspace: {
+              connectOrCreate: {
+                where: { slug: "default" },
+                create: { name: "Default Workspace", slug: "default" }
+              }
+            }
+          }
+        }
       }
     });
   });

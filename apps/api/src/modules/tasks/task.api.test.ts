@@ -239,6 +239,94 @@ describe("Phase 2 task and activity API", () => {
     });
   });
 
+  it("resumes only the workflow paused by a completed human-handoff task", async () => {
+    const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: slugs[0] } });
+    const user = await prisma.user.findUniqueOrThrow({ where: { email: emails[0] } });
+    const lead = await createLead(workspace.id, user.id);
+    const token = await login(user.email);
+    const suffix = randomUUID();
+    await prisma.lead.update({
+      where: { id: lead.id },
+      data: {
+        automationOwnershipState: "HUMAN_REQUIRED",
+        automationOwnershipReason: "WORKFLOW_HUMAN_APPROVAL"
+      }
+    });
+    const workflow = await prisma.workflow.create({
+      data: {
+        workspaceId: workspace.id,
+        key: `${marker}-${suffix}`,
+        name: "Human approval resume",
+        description: "Task completion resumes this workflow"
+      }
+    });
+    const version = await prisma.workflowVersion.create({
+      data: {
+        workflowId: workflow.id,
+        version: 1,
+        definition: {
+          schemaVersion: 1,
+          kind: "WORKFLOW",
+          nodes: [],
+          edges: []
+        },
+        publishedAt: new Date()
+      }
+    });
+    const execution = await prisma.workflowExecution.create({
+      data: {
+        workspaceId: workspace.id,
+        workflowId: workflow.id,
+        versionId: version.id,
+        leadId: lead.id,
+        source: "TEST",
+        status: "HUMAN_REQUIRED",
+        currentNodeId: "approval",
+        idempotencyKey: `${marker}:${suffix}`,
+        correlationId: suffix
+      }
+    });
+    const task = await prisma.task.create({
+      data: {
+        workspaceId: workspace.id,
+        leadId: lead.id,
+        contactId: lead.contactId,
+        companyId: lead.companyId,
+        title: "Approve the response",
+        assignedToUserId: user.id,
+        createdByType: "WORKFLOW",
+        sourceType: "WORKFLOW_EXECUTION",
+        sourceId: execution.id,
+        metadata: { nodeId: "approval", resumeOnCompletion: true },
+        correlationId: suffix
+      }
+    });
+
+    await request(app)
+      .post(`/api/tasks/${task.id}/complete`)
+      .set("Authorization", `Bearer ${token}`)
+      .set("x-workspace-id", workspace.id)
+      .expect(200);
+
+    await expect(prisma.lead.findUniqueOrThrow({ where: { id: lead.id } })).resolves.toMatchObject({
+      automationOwnershipState: "AI_ACTIVE",
+      automationOwnershipReason: "HUMAN_HANDOFF_TASK_COMPLETED"
+    });
+    await expect(
+      prisma.workflowExecution.findUniqueOrThrow({ where: { id: execution.id } })
+    ).resolves.toMatchObject({ status: "WAITING", currentNodeId: "approval" });
+    await expect(
+      prisma.domainEventOutbox.findUniqueOrThrow({
+        where: { idempotencyKey: `human-task:${task.id}:resume` }
+      })
+    ).resolves.toMatchObject({
+      workspaceId: workspace.id,
+      eventType: "WORKFLOW_EXECUTION_RESUME",
+      aggregateId: execution.id,
+      status: "PENDING"
+    });
+  });
+
   it("does not disclose or mutate tasks across workspaces", async () => {
     const [workspaceA, workspaceB] = await Promise.all([
       prisma.workspace.findUniqueOrThrow({ where: { slug: slugs[0] } }),

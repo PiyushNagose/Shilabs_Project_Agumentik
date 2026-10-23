@@ -1,6 +1,6 @@
 import request from "supertest";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { UserRole, UserStatus } from "@prisma/client";
+import { UserRole, UserStatus, WorkspaceRole } from "@prisma/client";
 import type { AuthResponse, SalesActionDashboardDto } from "@shilabs/shared-types";
 import { createApp } from "../../app.js";
 import { prisma } from "../../shared/prisma.js";
@@ -120,22 +120,43 @@ async function seedUsers(): Promise<{ adminId: string; repId: string; otherRepId
       }
     })
   ]);
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
+  await prisma.workspaceMember.createMany({
+    data: [
+      { workspaceId: workspace.id, userId: admin.id, role: WorkspaceRole.ADMIN, status: "ACTIVE" },
+      {
+        workspaceId: workspace.id,
+        userId: rep.id,
+        role: WorkspaceRole.SALES_REP,
+        status: "ACTIVE"
+      },
+      {
+        workspaceId: workspace.id,
+        userId: otherRep.id,
+        role: WorkspaceRole.SALES_REP,
+        status: "ACTIVE"
+      }
+    ]
+  });
   return { adminId: admin.id, repId: rep.id, otherRepId: otherRep.id };
 }
 
 async function seedLead(input: {
   ownerId: string | null;
   suffix: string;
-}): Promise<{ leadId: string; contactId: string; conversationId: string }> {
+}): Promise<{ leadId: string; contactId: string; conversationId: string; workspaceId: string }> {
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
   const stage = await prisma.pipelineStage.findUniqueOrThrow({ where: { key: "NEW" } });
   const company = await prisma.company.create({
     data: {
+      workspaceId: workspace.id,
       name: `${companyPrefix} ${input.suffix}`,
       website: `https://r19-${input.suffix}.example`
     }
   });
   const contact = await prisma.contact.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       firstName: "R19",
       lastName: input.suffix,
@@ -144,6 +165,7 @@ async function seedLead(input: {
   });
   const lead = await prisma.lead.create({
     data: {
+      workspaceId: workspace.id,
       companyId: company.id,
       contactId: contact.id,
       ownerId: input.ownerId,
@@ -154,17 +176,23 @@ async function seedLead(input: {
     }
   });
   const conversation = await prisma.conversation.create({
-    data: { leadId: lead.id, channel: "EMAIL", mode: "HUMAN" }
+    data: { workspaceId: workspace.id, leadId: lead.id, channel: "EMAIL", mode: "HUMAN" }
   });
   await prisma.message.create({
     data: {
+      workspaceId: workspace.id,
       conversationId: conversation.id,
       direction: "INBOUND",
       senderType: "PROSPECT",
       body: "Please review our negotiation terms."
     }
   });
-  return { leadId: lead.id, contactId: contact.id, conversationId: conversation.id };
+  return {
+    leadId: lead.id,
+    contactId: contact.id,
+    conversationId: conversation.id,
+    workspaceId: workspace.id
+  };
 }
 
 describe("R19 action dashboard API", () => {
@@ -179,6 +207,35 @@ describe("R19 action dashboard API", () => {
 
   it("requires authentication", async () => {
     await request(app).get("/api/action-dashboard").expect(401);
+  });
+
+  it("explains calendar reconnects and does not recommend retrying safety-blocked automation", async () => {
+    const users = await seedUsers();
+    const lead = await seedLead({ ownerId: users.repId, suffix: "safe-actions" });
+    await prisma.internalNotification.create({
+      data: {
+        workspaceId: lead.workspaceId,
+        type: "MEETING_CONFIRMATION", status: "UNREAD", severity: "WARNING",
+        title: "Meeting scheduling needs attention", body: "Google OAuth error: invalid_grant",
+        leadId: lead.leadId, assignedToUserId: users.repId,
+        sourceEntityType: "MeetingRequest", sourceEntityId: "calendar-fixture",
+        idempotencyKey: "r19-dashboard:calendar-reconnect"
+      }
+    });
+    await prisma.domainEventOutbox.createMany({
+      data: ["DO_NOT_CONTACT", "TERMINAL_LEAD_STATE", "AUTOMATION_PAUSED", "HUMAN_TAKEOVER_ACTIVE", "PRIVACY_ERASURE", "AI_OWNERSHIP_INACTIVE", "AI_CONTROL_OFF", "AI_CONTROL_PAUSED", "HUMAN_INTERVENTION_REQUIRED", "INBOUND_REPLY_RECEIVED", "CONTACT_DO_NOT_CONTACT", "LEAD_STATUS_FORBIDS_OUTREACH", "MEANINGFUL_CLIENT_REPLY", "LEAD_AI_PAUSED", "LEAD_AI_OFF", "MEANINGFUL_CLIENT_REPLY:EMAIL", "MEANINGFUL_CLIENT_REPLY:WHATSAPP"].map((code) => ({
+        workspaceId: lead.workspaceId, eventType: "FOLLOWUP_EMAIL_SEND_REQUESTED",
+        aggregateType: "Lead", aggregateId: lead.leadId, payload: { leadId: lead.leadId },
+        correlationId: lead.leadId, idempotencyKey: `r19-dashboard:safety:${code}`,
+        status: "ATTENTION_REQUIRED" as const, lastErrorCode: code
+      }))
+    });
+    const token = await login(adminEmail);
+    const response = await request(app).get("/api/action-dashboard").set("Authorization", `Bearer ${token}`).expect(200);
+    const dashboard = response.body as SalesActionDashboardDto;
+    expect(dashboard.negotiationAndTakeoverAlerts.find((item) => item.sourceEntityId === "calendar-fixture")?.detail)
+      .toBe("Reconnect the calendar account in Integrations, then try scheduling again.");
+    expect(dashboard.failuresRequiringAttention.filter((item) => item.sourceEntityType === "DomainEventOutbox:FOLLOWUP_EMAIL_SEND_REQUESTED")).toEqual([]);
   });
 
   it("surfaces real persisted action items without dashboard-owned state", async () => {
@@ -198,6 +255,7 @@ describe("R19 action dashboard API", () => {
     });
     await prisma.internalNotification.create({
       data: {
+        workspaceId: lead.workspaceId,
         type: "NEGOTIATION_HANDOFF",
         status: "UNREAD",
         severity: "WARNING",

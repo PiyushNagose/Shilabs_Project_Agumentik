@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, text } from "express";
 import { UserRole } from "@prisma/client";
 import { getApiConfig } from "@shilabs/shared-config";
 import { asyncHandler } from "../../middleware/async-handler.js";
@@ -11,6 +11,7 @@ import {
   ingestE2ECustomerReplyController,
   ingestSesFeedbackEventController,
   ingestSesInboundEmailController,
+  receiveSesSnsController,
   listEmailSuppressionsController,
   runEmailDeliverabilityScanController,
   validateOutboundEmailPreSendController,
@@ -74,3 +75,9 @@ emailRoutes.post(
 );
 emailRoutes.post("/events", webhookRateLimiter, asyncHandler(ingestSesFeedbackEventController));
 emailRoutes.post("/inbound", webhookRateLimiter, asyncHandler(ingestSesInboundEmailController));
+emailRoutes.post(
+  "/inbound/sns",
+  webhookRateLimiter,
+  text({ type: "text/plain", limit: "256kb" }),
+  asyncHandler(receiveSesSnsController)
+);

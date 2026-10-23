@@ -48,6 +48,27 @@ export async function appendActivityToZohoTimeline(input: {
     };
   }
 
+  const leadMapping = await prisma.externalRecordMapping.findUnique({
+    where: {
+      workspaceId_provider_entityType_localEntityId: {
+        workspaceId,
+        provider: "ZOHO_BIGIN",
+        entityType: "LEAD",
+        localEntityId: activity.leadId
+      }
+    }
+  });
+  if (!leadMapping) {
+    return {
+      provider: "ZOHO_BIGIN",
+      status: "SKIPPED",
+      activityId: activity.id,
+      mappingId: null,
+      externalRecordId: null,
+      lastError: null
+    };
+  }
+
   const config = getZohoBiginConfig(input.env);
   if (config.status === "NOT_CONFIGURED") {
     await upsertIntegrationAccount({
@@ -73,20 +94,6 @@ export async function appendActivityToZohoTimeline(input: {
       externalRecordId: null,
       lastError: `Missing configuration: ${config.missing.join(", ")}`
     };
-  }
-
-  const leadMapping = await prisma.externalRecordMapping.findUnique({
-    where: {
-      workspaceId_provider_entityType_localEntityId: {
-        workspaceId,
-        provider: "ZOHO_BIGIN",
-        entityType: "LEAD",
-        localEntityId: activity.leadId
-      }
-    }
-  });
-  if (!leadMapping) {
-    throw new AppError(409, "CONFLICT", "Lead is not mapped to Zoho Bigin");
   }
 
   const account = await upsertIntegrationAccount({

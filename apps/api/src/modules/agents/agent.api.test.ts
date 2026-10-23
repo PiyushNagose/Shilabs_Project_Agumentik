@@ -76,6 +76,8 @@ describe("Phase 6 agents", () => {
       select: { id: true }
     });
     const leadIds = leads.map(({ id }) => id);
+    await prisma.followUpAttempt.deleteMany({ where: { leadId: { in: leadIds } } });
+    await prisma.followUpSequence.deleteMany({ where: { leadId: { in: leadIds } } });
     await prisma.leadScoreRun.deleteMany({ where: { leadId: { in: leadIds } } });
     await prisma.auditEvent.deleteMany({ where: { workspaceId: { in: workspaceIds } } });
     await prisma.lead.deleteMany({ where: { id: { in: leadIds } } });
@@ -417,5 +419,97 @@ describe("Phase 6 agents", () => {
       summary: "Strong qualification evidence"
     });
     expect(detail.executions[0]?.evaluation).toEqual({ outcome: "PASSED" });
+
+    const due = new Date(Date.now() + 86_400_000);
+    await prisma.lead.update({
+      where: { id: lead.id },
+      data: { automationOwnershipState: "AI_ACTIVE" }
+    });
+    const sequence = await prisma.followUpSequence.create({
+      data: {
+        workspaceId: admin.workspace.id,
+        leadId: lead.id,
+        contactId: contact.id,
+        cadenceDays: [1],
+        idempotencyKey: `${marker}:timing`
+      }
+    });
+    const attempt = await prisma.followUpAttempt.create({
+      data: {
+        sequenceId: sequence.id,
+        leadId: lead.id,
+        stepIndex: 0,
+        kind: "FIRST_EMAIL",
+        scheduledAt: due,
+        subject: "Discovery reminder",
+        textBody: "Please confirm your discovery time.",
+        idempotencyKey: `${marker}:timing-attempt`
+      }
+    });
+    const outreach = dashboard.agents.find((item) => item.type === "OUTREACH");
+    if (!outreach) throw new Error("Expected outreach agent");
+    const loadOutreach = async () =>
+      (await api("get", `/api/agents/${outreach.id}`, admin.token, admin.workspace.id).expect(200))
+        .body as AgentDetailDto;
+    const scheduled = await loadOutreach();
+    expect(scheduled.executions[0]).toMatchObject({
+      status: "QUEUED",
+      nextRunAt: due.toISOString(),
+      completedAt: null,
+      actualStartedAt: null,
+      durationMs: null
+    });
+    expect(scheduled.lastExecutedAt).toBeNull();
+    const rescheduled = new Date(due.getTime() + 86_400_000);
+    await prisma.followUpAttempt.update({
+      where: { id: attempt.id },
+      data: { scheduledAt: rescheduled }
+    });
+    expect((await loadOutreach()).executions[0]?.nextRunAt).toBe(rescheduled.toISOString());
+    await prisma.followUpSequence.update({
+      where: { id: sequence.id },
+      data: { status: "STOPPED", stoppedAt: new Date() }
+    });
+    expect((await loadOutreach()).executions[0]).toMatchObject({
+      status: "CANCELED",
+      nextRunAt: null
+    });
+    await prisma.followUpSequence.update({
+      where: { id: sequence.id },
+      data: { status: "ACTIVE", stoppedAt: null }
+    });
+    await prisma.lead.update({
+      where: { id: lead.id },
+      data: { automationOwnershipState: "HUMAN_REQUIRED" }
+    });
+    expect((await loadOutreach()).executions[0]).toMatchObject({
+      status: "HUMAN_REQUIRED",
+      nextRunAt: null,
+      completedAt: null
+    });
+    await prisma.lead.update({
+      where: { id: lead.id },
+      data: { automationOwnershipState: "AI_ACTIVE" }
+    });
+    await prisma.followUpAttempt.update({
+      where: { id: attempt.id },
+      data: { status: "BLOCKED", failedAt: new Date() }
+    });
+    expect((await loadOutreach()).executions[0]).toMatchObject({
+      status: "HUMAN_REQUIRED",
+      nextRunAt: null,
+      completedAt: null
+    });
+    const sentAt = new Date();
+    await prisma.followUpAttempt.update({
+      where: { id: attempt.id },
+      data: { status: "SENT", sentAt }
+    });
+    expect((await loadOutreach()).executions[0]).toMatchObject({
+      status: "SUCCEEDED",
+      nextRunAt: null,
+      completedAt: sentAt.toISOString(),
+      durationMs: null
+    });
   });
 });

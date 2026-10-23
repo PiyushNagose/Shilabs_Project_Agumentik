@@ -1,4 +1,5 @@
 import type React from "react";
+import { formatDateTime } from "../../utils/date-time.js";
 import { useMemo, useState } from "react";
 import type {
   IntegrationCatalogItemDto,
@@ -25,6 +26,7 @@ import {
 import { Badge, Button, Card, Modal, Select } from "../../components/ui/index.js";
 import { StateBlock } from "../../components/StateBlock.js";
 import { usePersistedResource } from "../../hooks/usePersistedResource.js";
+import { getCalendarOAuthStatus, navigateToCalendarAuthorization, startCalendarOAuth } from "../../services/api/integrations.js";
 import {
   connectIntegration,
   disableIntegration,
@@ -65,11 +67,7 @@ function label(status: IntegrationConnectionStatusName): string {
     .join(" ");
 }
 function when(value: string | null): string {
-  return value
-    ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(
-        new Date(value)
-      )
-    : "Not yet";
+  return formatDateTime(value, "Not yet");
 }
 
 export function IntegrationsWorkspace({ accessToken }: { accessToken: string }): React.JSX.Element {
@@ -77,6 +75,8 @@ export function IntegrationsWorkspace({ accessToken }: { accessToken: string }):
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("ALL");
   const [addOpen, setAddOpen] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const oauthStatus = new URLSearchParams(window.location.search).get("calendarOAuth");
   const resource = usePersistedResource({
     scope: "integrations",
     load: () => listIntegrations(accessToken),
@@ -86,11 +86,23 @@ export function IntegrationsWorkspace({ accessToken }: { accessToken: string }):
   const data = resource.data;
   const run = async (key: string, action: () => Promise<unknown>): Promise<void> => {
     setBusy(key);
+    setActionError(null);
     try {
       await action();
       await resource.reload();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Connection could not be updated.");
     } finally {
       setBusy(null);
+    }
+  };
+  const connectGoogle = async (fallback: () => Promise<unknown>): Promise<void> => {
+    const { enabled } = await getCalendarOAuthStatus(accessToken);
+    if (enabled) {
+      const { launchToken } = await startCalendarOAuth(accessToken);
+      navigateToCalendarAuthorization(launchToken);
+    } else {
+      await fallback();
     }
   };
   const connections = useMemo(
@@ -122,6 +134,9 @@ export function IntegrationsWorkspace({ accessToken }: { accessToken: string }):
     );
   return (
     <section className="integrations-workspace">
+      {actionError ? <p role="alert" className="integration-error">{actionError}</p> : null}
+      {oauthStatus === "connected" ? <p role="status">Google Calendar connected.</p> : null}
+      {oauthStatus === "failed" || oauthStatus === "cancelled" ? <p role="alert">Google Calendar reconnect {oauthStatus === "cancelled" ? "was cancelled" : "failed"}. Try reconnecting again.</p> : null}
       <header className="integrations-toolbar">
         <div>
           <span className="section-eyebrow">SYSTEM / INTEGRATIONS</span>
@@ -188,7 +203,9 @@ export function IntegrationsWorkspace({ accessToken }: { accessToken: string }):
               connection={connection}
               busy={busy === connection.id}
               onReconnect={() =>
-                void run(connection.id, () => reconnectIntegration(accessToken, connection.id))
+                void run(connection.id, () => connection.key === "google-calendar"
+                  ? connectGoogle(() => reconnectIntegration(accessToken, connection.id))
+                  : reconnectIntegration(accessToken, connection.id))
               }
               onDisable={() =>
                 void run(connection.id, () => disableIntegration(accessToken, connection.id))
@@ -215,7 +232,8 @@ export function IntegrationsWorkspace({ accessToken }: { accessToken: string }):
                 busy={busy === item.key}
                 onConnect={() =>
                   void run(item.key, async () => {
-                    await connectIntegration(accessToken, item.key);
+                    if (item.key === "google-calendar") await connectGoogle(() => connectIntegration(accessToken, item.key));
+                    else await connectIntegration(accessToken, item.key);
                     setAddOpen(false);
                   })
                 }

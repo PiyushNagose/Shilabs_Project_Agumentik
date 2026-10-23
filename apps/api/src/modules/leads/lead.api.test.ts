@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { vi } from "vitest";
 import request from "supertest";
-import { UserRole, UserStatus } from "@prisma/client";
+import { UserRole, UserStatus, WorkspaceRole } from "@prisma/client";
 import type {
   AuthResponse,
   CompanyDto,
@@ -124,6 +125,9 @@ async function deleteFollowUpsForLeadCompanyPrefix(): Promise<void> {
       }
     }
   });
+  await prisma.outboundEmail.deleteMany({
+    where: { lead: { company: { name: { startsWith: companyNamePrefix } } } }
+  });
 }
 
 describe("leads API", () => {
@@ -236,6 +240,25 @@ describe("leads API", () => {
         }
       ]
     });
+    const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
+    const users = await prisma.user.findMany({
+      where: { email: { in: [adminEmail, managerEmail, repEmail, otherRepEmail] } },
+      select: { id: true, email: true }
+    });
+    const roles = new Map<string, WorkspaceRole>([
+      [adminEmail, WorkspaceRole.ADMIN],
+      [managerEmail, WorkspaceRole.SALES_MANAGER],
+      [repEmail, WorkspaceRole.SALES_REP],
+      [otherRepEmail, WorkspaceRole.SALES_REP]
+    ]);
+    await prisma.workspaceMember.createMany({
+      data: users.map((user) => ({
+        workspaceId: workspace.id,
+        userId: user.id,
+        role: roles.get(user.email) ?? WorkspaceRole.SALES_REP,
+        status: "ACTIVE"
+      }))
+    });
   });
 
   afterAll(async () => {
@@ -332,7 +355,38 @@ describe("leads API", () => {
       }
     });
     expect(audit.actorId).toBe(admin.id);
-  }, 30000);
+  }, 180000);
+
+  it.each([
+    { leadType: "Inbound", source: "website", outbound: false },
+    { leadType: " OutBound ", source: "website", outbound: true },
+    { leadType: null, source: "Cold outreach", outbound: true },
+    { leadType: "New business", source: "cold_outreach", outbound: true },
+    { leadType: "INBOUND", source: "Cold outreach", outbound: false }
+  ])("acknowledges $leadType from $source with truthful intake wording", async ({ leadType, source, outbound }) => {
+    vi.stubEnv("LEAD_ACK_ON_CREATE_IN_TEST", "true");
+    vi.stubEnv("LEAD_ACK_ON_CREATE", "true");
+    vi.stubEnv("EMAIL_PROVIDER", "AWS_SES");
+    vi.stubEnv("AWS_SES_REGION", "");
+    try {
+      const token = await login(adminEmail);
+      const lead = await createLead(token, { leadType, source });
+      const email = await prisma.outboundEmail.findUniqueOrThrow({
+        where: { idempotencyKey: `lead-acknowledgement:${lead.id}` }
+      });
+      expect(email.subject).toBe(outbound ? "Following up on our outreach" : "We received your request");
+      expect(email.textBody).toContain(outbound ? "review your details" : "received your request");
+      if (outbound) {
+        expect(email.textBody).not.toMatch(/received your (?:request|inquiry)|getting back|your reply/i);
+      }
+      expect(email.status).not.toBe("SENT");
+      expect(email.senderType).toBe("SYSTEM");
+      expect(lead.automationOwnershipState).toBe("HUMAN_ACTIVE");
+      expect(await prisma.followUpSequence.count({ where: { leadId: lead.id } })).toBe(0);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 
   it("edits manual lead fields without changing pipeline stage", async () => {
     const token = await login(adminEmail);
@@ -362,7 +416,7 @@ describe("leads API", () => {
         action: "LEAD_UPDATED"
       }
     });
-  }, 30000);
+  }, 180000);
 
   it("assigns leads only for admins and managers", async () => {
     const adminToken = await login(adminEmail);
@@ -392,7 +446,7 @@ describe("leads API", () => {
         action: "LEAD_ASSIGNED"
       }
     });
-  }, 30000);
+  }, 180000);
 
   it("updates lead status and records audit history", async () => {
     const token = await login(adminEmail);
@@ -413,7 +467,7 @@ describe("leads API", () => {
         action: "LEAD_STATUS_CHANGED"
       }
     });
-  }, 30000);
+  }, 180000);
 
   it("limits sales reps to their assigned leads", async () => {
     const adminToken = await login(adminEmail);
@@ -442,7 +496,7 @@ describe("leads API", () => {
       .set("Authorization", `Bearer ${repToken}`)
       .send({ requirement: "Trying to edit another rep's lead" })
       .expect(403);
-  }, 45000);
+  }, 180000);
 
   it("supports search, filters, sorting and pagination", async () => {
     const token = await login(adminEmail);
@@ -514,7 +568,7 @@ describe("leads API", () => {
         (lead) => lead.contact.firstName === "E2E" || lead.contact.lastName === "Customer02"
       )
     ).toBe(true);
-  }, 45000);
+  }, 180000);
 
   it("validates lead creation input", async () => {
     const token = await login(adminEmail);

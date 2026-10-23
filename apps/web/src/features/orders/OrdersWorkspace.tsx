@@ -82,6 +82,28 @@ function money(value: string, currency: string): string {
 function date(value: string): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(value));
 }
+function preferredCompanyDeal(deals: DealDto[], companyId: string): DealDto | null {
+  return (
+    deals.filter((deal) => deal.lead.companyId === companyId).sort(compareOrderDeals)[0] ?? null
+  );
+}
+function compareOrderDeals(left: DealDto, right: DealDto): number {
+  return (
+    Number(right.status === "WON") - Number(left.status === "WON") ||
+    Date.parse(right.updatedAt) - Date.parse(left.updatedAt) ||
+    left.id.localeCompare(right.id)
+  );
+}
+async function listAllDeals(accessToken: string): Promise<DealDto[]> {
+  const first = await listDeals(accessToken, { page: 1, pageSize: 100 });
+  if (first.totalPages <= 1) return first.items;
+  const remaining = await Promise.all(
+    Array.from({ length: first.totalPages - 1 }, (_, index) =>
+      listDeals(accessToken, { page: index + 2, pageSize: 100 })
+    )
+  );
+  return [first.items, ...remaining.map((page) => page.items)].flat();
+}
 function paymentTone(status: PaymentStatusName): "success" | "danger" | "warning" | "neutral" {
   if (status === "PAID") return "success";
   if (status === "FAILED" || status === "CANCELED" || status === "REFUNDED") return "danger";
@@ -108,7 +130,7 @@ function OrderForm({
   order: OrderDto | null;
   onSaved: () => Promise<void>;
 }): React.JSX.Element {
-  const [companyId, setCompanyId] = useState(order?.companyId ?? data.companies[0]?.id ?? "");
+  const [companyId, setCompanyId] = useState(order?.companyId ?? "");
   const [contactId, setContactId] = useState(order?.contactId ?? "");
   const [dealId, setDealId] = useState(order?.dealId ?? "");
   const [ownerId, setOwnerId] = useState(order?.ownerId ?? "");
@@ -124,8 +146,49 @@ function OrderForm({
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const companyContacts = data.contacts.filter((contact) => contact.companyId === companyId);
-  const companyDeals = data.deals.filter((deal) => deal.lead.companyId === companyId);
+  const companyContacts = data.contacts
+    .filter((contact) => contact.companyId === companyId)
+    .sort((left, right) =>
+      `${left.firstName} ${left.lastName}`.localeCompare(`${right.firstName} ${right.lastName}`)
+    );
+  const companyDeals = data.deals
+    .filter((deal) => deal.lead.companyId === companyId)
+    .sort(compareOrderDeals);
+  const duplicateCompanyNames = new Map<string, number>();
+  for (const company of data.companies)
+    duplicateCompanyNames.set(company.name, (duplicateCompanyNames.get(company.name) ?? 0) + 1);
+  const companyOptions = [...data.companies]
+    .sort((left, right) => {
+      const leftDeal = preferredCompanyDeal(data.deals, left.id);
+      const rightDeal = preferredCompanyDeal(data.deals, right.id);
+      const score = (deal: DealDto | null): number => (deal?.status === "WON" ? 2 : deal ? 1 : 0);
+      return (
+        score(rightDeal) - score(leftDeal) ||
+        (leftDeal && rightDeal
+          ? Date.parse(rightDeal.updatedAt) - Date.parse(leftDeal.updatedAt)
+          : 0) ||
+        left.name.localeCompare(right.name)
+      );
+    })
+    .map((company) => {
+      const deal = preferredCompanyDeal(data.deals, company.id);
+      const duplicate = (duplicateCompanyNames.get(company.name) ?? 0) > 1;
+      const detail = deal
+        ? `${deal.stage.label} deal${duplicate && company.website ? ` - ${company.website}` : ""}`
+        : duplicate
+          ? (company.website ?? "No deal")
+          : null;
+      return { value: company.id, label: company.name, description: detail ?? undefined };
+    });
+  const selectCompany = (nextCompanyId: string): void => {
+    const contacts = data.contacts.filter((contact) => contact.companyId === nextCompanyId);
+    const preferredDeal = preferredCompanyDeal(data.deals, nextCompanyId);
+    setCompanyId(nextCompanyId);
+    setDealId(preferredDeal?.id ?? "");
+    setContactId(preferredDeal?.lead.contactId ?? contacts[0]?.id ?? "");
+    setOwnerId(preferredDeal?.ownerId ?? "");
+    if (preferredDeal) setCurrency(preferredDeal.currency);
+  };
   const setItem = (index: number, patch: Partial<OrderItemBody>): void =>
     setItems((current) =>
       current.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item))
@@ -170,12 +233,8 @@ function OrderForm({
           Company
           <Select
             ariaLabel="Order company"
-            onChange={(value) => {
-              setCompanyId(value);
-              setContactId("");
-              setDealId("");
-            }}
-            options={data.companies.map((company) => ({ value: company.id, label: company.name }))}
+            onChange={selectCompany}
+            options={[{ value: "", label: "Select a company" }, ...companyOptions]}
             value={companyId}
           />
         </label>
@@ -183,14 +242,22 @@ function OrderForm({
           Contact
           <Select
             ariaLabel="Order contact"
+            disabled={!companyId || companyContacts.length === 0}
             onChange={setContactId}
-            options={[
-              { value: "", label: "No contact" },
-              ...companyContacts.map((contact) => ({
-                value: contact.id,
-                label: `${contact.firstName} ${contact.lastName}`
-              }))
-            ]}
+            options={
+              !companyId
+                ? [{ value: "", label: "Select a company first" }]
+                : companyContacts.length === 0
+                  ? [{ value: "", label: "No contacts available" }]
+                  : [
+                      ...companyContacts.map((contact) => ({
+                        value: contact.id,
+                        label: `${contact.firstName} ${contact.lastName}`,
+                        description: contact.email ?? undefined
+                      })),
+                      { value: "", label: "No contact linked" }
+                    ]
+            }
             value={contactId}
           />
         </label>
@@ -198,6 +265,7 @@ function OrderForm({
           Deal
           <Select
             ariaLabel="Related deal"
+            disabled={!companyId || companyDeals.length === 0}
             onChange={(value) => {
               setDealId(value);
               const deal = data.deals.find((item) => item.id === value);
@@ -205,15 +273,23 @@ function OrderForm({
                 setCompanyId(deal.lead.companyId);
                 setContactId(deal.lead.contactId);
                 setOwnerId(deal.ownerId ?? "");
+                setCurrency(deal.currency);
               }
             }}
-            options={[
-              { value: "", label: "No deal" },
-              ...companyDeals.map((deal) => ({
-                value: deal.id,
-                label: `${deal.lead.company.name} - ${deal.stage.label}`
-              }))
-            ]}
+            options={
+              !companyId
+                ? [{ value: "", label: "Select a company first" }]
+                : companyDeals.length === 0
+                  ? [{ value: "", label: "No deals available" }]
+                  : [
+                      ...companyDeals.map((deal) => ({
+                        value: deal.id,
+                        label: `${deal.lead.contact.firstName} ${deal.lead.contact.lastName}`,
+                        description: `${deal.stage.label} - ${money(deal.value ?? "0", deal.currency)}`
+                      })),
+                      { value: "", label: "Standalone order (no deal)" }
+                    ]
+            }
             value={dealId}
           />
         </label>
@@ -472,7 +548,7 @@ export function OrdersWorkspace({
         getOrderSummary(accessToken),
         listCompanies(accessToken),
         listContacts(accessToken),
-        listDeals(accessToken, { pageSize: 100 }),
+        listAllDeals(accessToken),
         listUsers(accessToken)
       ]);
       return {
@@ -480,7 +556,7 @@ export function OrdersWorkspace({
         summary,
         companies,
         contacts,
-        deals: deals.items,
+        deals,
         users,
         total: orders.total,
         totalPages: orders.totalPages

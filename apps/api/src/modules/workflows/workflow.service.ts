@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
   Prisma,
-  UserRole,
   type WorkflowExecution,
   type WorkflowStepExecution,
   type WorkflowVersion
@@ -20,6 +19,7 @@ import type {
 import { AppError } from "../../shared/errors.js";
 import { prisma } from "../../shared/prisma.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
+import { isWorkspaceManager } from "../authorization/workspace-permissions.js";
 import { publishDomainEvent } from "../domain-events/domain-events.service.js";
 import { publishRealtimeEvent } from "../realtime/realtime.service.js";
 import type {
@@ -49,7 +49,7 @@ function workspaceIdFor(actor: AuthenticatedUser): string {
   return actor.activeWorkspaceId;
 }
 export function assertCanManageWorkflows(actor: AuthenticatedUser): void {
-  if (actor.role !== UserRole.ADMIN && actor.role !== UserRole.SALES_MANAGER)
+  if (!isWorkspaceManager(actor))
     throw new AppError(403, "AUTHORIZATION_ERROR", "Workflow management requires manager access");
 }
 function keyFor(name: string): string {
@@ -87,6 +87,7 @@ function executionDto(
     source: value.source,
     status: value.status,
     currentNodeId: value.currentNodeId,
+    nextRunAt: ["QUEUED", "WAITING"].includes(value.status) ? value.nextRunAt.toISOString() : null,
     correlationId: value.correlationId,
     failureCode: value.failureCode,
     failureMessage: value.failureMessage,
@@ -130,7 +131,12 @@ function workflowDto(
     runningCount: own.filter((item) =>
       ["QUEUED", "RUNNING", "WAITING", "HUMAN_REQUIRED"].includes(item.status)
     ).length,
-    lastExecutedAt: own[0]?.createdAt.toISOString() ?? null
+    lastExecutedAt:
+      own
+        .map((item) => item.startedAt?.toISOString())
+        .filter((value): value is string => Boolean(value))
+        .sort()
+        .at(-1) ?? null
   };
 }
 async function scoped(actor: AuthenticatedUser, id: string): Promise<WorkflowRecord> {

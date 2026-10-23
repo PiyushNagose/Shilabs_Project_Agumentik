@@ -2,7 +2,7 @@ import type { ProposalSendResultDto, ZohoTimelineAppendDto } from "@shilabs/shar
 import { AppError } from "../../shared/errors.js";
 import { prisma } from "../../shared/prisma.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
-import { sendOutboundEmail } from "../email/email.service.js";
+import { sendOutboundEmail, toOutboundEmailDto } from "../email/email.service.js";
 import type { EmailProvider } from "../email/email.provider.js";
 import { appendActivityToZohoTimeline } from "../integrations/zoho-bigin/zoho-bigin-timeline.service.js";
 import {
@@ -18,7 +18,7 @@ interface SendApprovedProposalOptions {
   zohoTransport?: typeof fetch;
 }
 
-function assertSendable(proposal: Awaited<ReturnType<typeof getProposal>>): void {
+function assertSendable(proposal: ProposalSendResultDto["proposal"]): void {
   if (proposal.status !== "APPROVED") {
     throw new AppError(409, "CONFLICT", "Only approved proposals can be sent");
   }
@@ -52,7 +52,7 @@ async function syncProposalSentActivityToZoho(input: {
   await prisma.proposal.update({
     where: { id: input.proposalId },
     data: {
-      zohoTimelineSyncStatus: result.status === "SKIPPED" ? "SYNCED" : result.status,
+      zohoTimelineSyncStatus: result.status === "SKIPPED" ? "NOT_REQUIRED" : result.status,
       zohoTimelineLastError: result.lastError
     }
   });
@@ -78,34 +78,13 @@ export async function sendApprovedProposal(
   input: SendApprovedProposalInput,
   options?: SendApprovedProposalOptions
 ): Promise<ProposalSendResultDto> {
-  const proposal = await getProposal(proposalId);
+  const proposal = await getProposal(actor, proposalId);
 
   if (proposal.sentOutboundEmailId) {
     const email = await prisma.outboundEmail.findUniqueOrThrow({
       where: { id: proposal.sentOutboundEmailId }
     });
-    const outboundEmail = {
-      id: email.id,
-      leadId: email.leadId,
-      contactId: email.contactId,
-      actorUserId: email.actorUserId,
-      toEmail: email.toEmail,
-      fromEmail: email.fromEmail,
-      replyToEmail: email.replyToEmail,
-      subject: email.subject,
-      provider: email.provider,
-      providerMessageId: email.providerMessageId,
-      idempotencyKey: email.idempotencyKey,
-      status: email.status,
-      failureCode: email.failureCode,
-      failureMessage: email.failureMessage,
-      sentAt: email.sentAt?.toISOString() ?? null,
-      deliveredAt: email.deliveredAt?.toISOString() ?? null,
-      bouncedAt: email.bouncedAt?.toISOString() ?? null,
-      complainedAt: email.complainedAt?.toISOString() ?? null,
-      createdAt: email.createdAt.toISOString(),
-      updatedAt: email.updatedAt.toISOString()
-    };
+    const outboundEmail = toOutboundEmailDto(email);
     if (email.status === "SENT" && proposal.zohoTimelineSyncStatus !== "SYNCED") {
       const zohoTimeline = await syncProposalSentActivityToZoho({
         proposalId: proposal.id,
@@ -113,7 +92,7 @@ export async function sendApprovedProposal(
         env: options?.env,
         transport: options?.zohoTransport
       });
-      const refreshed = await getProposal(proposal.id);
+      const refreshed = await getProposal(actor, proposal.id);
       return { proposal: refreshed, outboundEmail, zohoTimeline };
     }
     return {

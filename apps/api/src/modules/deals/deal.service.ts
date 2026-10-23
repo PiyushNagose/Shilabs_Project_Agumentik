@@ -173,8 +173,13 @@ export async function createDeal(
       lead: { connect: { id: lead.id } },
       stage: { connect: { id: stage.id } },
       owner: ownerId ? { connect: { id: ownerId } } : undefined,
-      value: input.value ? new Prisma.Decimal(input.value) : null,
-      currency: input.currency,
+      value:
+        input.value !== undefined
+          ? input.value === null
+            ? null
+            : new Prisma.Decimal(input.value)
+          : lead.estimatedValue,
+      currency: input.currency ?? lead.currency,
       probability: input.probability ?? stage.probability,
       status: input.status ?? statusForStage(stage),
       proposalStatus: input.proposalStatus ?? null,

@@ -4,12 +4,14 @@ import { requireAuth } from "../../middleware/auth.middleware.js";
 import { validateBody, validateQuery } from "../../middleware/validate.middleware.js";
 import {
   appendMessageController,
+  downloadConversationAttachmentController,
   createConversationController,
   getConversationController,
   getHumanTakeoverBriefingController,
   listConversationsController,
   listMessagesController,
   sendHumanReplyController,
+  sendHumanWhatsAppReplyController,
   startHumanTakeoverController,
   updateConversationModeController
 } from "./conversation.controller.js";
@@ -36,6 +38,10 @@ conversationRoutes.post(
   asyncHandler(createConversationController)
 );
 conversationRoutes.get("/:id/messages", asyncHandler(listMessagesController));
+conversationRoutes.get(
+  "/:id/messages/:messageId/attachments/:index/download",
+  asyncHandler(downloadConversationAttachmentController)
+);
 conversationRoutes.post(
   "/:id/messages",
   validateBody(createMessageSchema),
@@ -50,6 +56,11 @@ conversationRoutes.post(
   "/:id/human-reply",
   validateBody(sendHumanReplySchema),
   asyncHandler(sendHumanReplyController)
+);
+conversationRoutes.post(
+  "/:id/human-whatsapp-reply",
+  validateBody(sendHumanReplySchema),
+  asyncHandler(sendHumanWhatsAppReplyController)
 );
 conversationRoutes.get("/:id/takeover/briefing", asyncHandler(getHumanTakeoverBriefingController));
 conversationRoutes.patch(

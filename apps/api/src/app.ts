@@ -5,6 +5,7 @@ import type { ApiConfig } from "@shilabs/shared-config";
 import type { HealthResponse } from "@shilabs/shared-types";
 import { agentFeedbackRoutes } from "./modules/agent-feedback/agent-feedback.routes.js";
 import { agentRoutes } from "./modules/agents/agent.routes.js";
+import { analyticsRoutes } from "./modules/analytics/analytics.routes.js";
 import { actionDashboardRoutes } from "./modules/action-dashboard/action-dashboard.routes.js";
 import { authRoutes } from "./modules/auth/auth.routes.js";
 import { briefingRoutes } from "./modules/briefings/briefing.routes.js";
@@ -36,6 +37,7 @@ import { realtimeRoutes } from "./modules/realtime/realtime.routes.js";
 import { workspaceRoutes } from "./modules/workspaces/workspace.routes.js";
 import { taskRoutes } from "./modules/tasks/task.routes.js";
 import { workflowRoutes } from "./modules/workflows/workflow.routes.js";
+import { internalPrivacyRoutes, privacyRoutes } from "./modules/privacy/privacy.routes.js";
 import { errorHandler, notFoundHandler } from "./middleware/error.middleware.js";
 import { createGlobalRateLimiter, securityHeaders } from "./middleware/security.middleware.js";
 import { requestContext } from "./middleware/request-context.middleware.js";
@@ -75,12 +77,12 @@ export function createApp(
   app.use(securityHeaders);
   app.use(createGlobalRateLimiter(config));
   app.use(
-    cors({
+    cors<Request>((request, callback) => callback(null, {
       origin: (origin, callback) => {
         callback(null, isCorsOriginAllowed(origin, config));
       },
-      credentials: false
-    })
+      credentials: request.path === "/api/calendar/oauth/google/start"
+    }))
   );
   app.use(
     express.json({
@@ -119,9 +121,12 @@ export function createApp(
   });
 
   app.use("/api/auth", authRoutes);
+  app.use("/api/privacy/internal", internalPrivacyRoutes);
+  app.use("/api/privacy", privacyRoutes);
   app.use("/api/workspaces", workspaceRoutes);
   app.use("/api/agent-feedback", agentFeedbackRoutes);
   app.use("/api/agents", agentRoutes);
+  app.use("/api/analytics", analyticsRoutes);
   app.use("/api/action-dashboard", actionDashboardRoutes);
   app.use("/api/briefings", briefingRoutes);
   app.use("/api/calendar", calendarRoutes);

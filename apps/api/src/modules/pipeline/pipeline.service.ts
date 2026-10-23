@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { UserRole, type Prisma } from "@prisma/client";
+import type { Prisma } from "@prisma/client";
 import type { PipelineDto, PipelineStageDto } from "@shilabs/shared-types";
 import { AppError } from "../../shared/errors.js";
 import { prisma } from "../../shared/prisma.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
+import { isWorkspaceManager } from "../authorization/workspace-permissions.js";
 import { publishRealtimeEvent } from "../realtime/realtime.service.js";
 import type {
   CreatePipelineInput,
@@ -28,7 +29,7 @@ function requireWorkspace(actor: AuthenticatedUser): string {
 }
 
 function assertCanManage(actor: AuthenticatedUser): void {
-  if (actor.role !== UserRole.ADMIN && actor.role !== UserRole.SALES_MANAGER) {
+  if (!isWorkspaceManager(actor)) {
     throw new AppError(403, "AUTHORIZATION_ERROR", "Pipeline management requires manager access");
   }
 }
@@ -99,68 +100,77 @@ export async function ensureWorkspacePipeline(workspaceId: string): Promise<Pipe
       orderBy: [{ order: "asc" }, { id: "asc" }]
     });
     if (unattached.length === 0) return existing;
-    return prisma.$transaction(async (tx) => {
-      const usedSemanticKeys = new Set(
-        existing.stages.flatMap((stage) => (stage.semanticKey ? [stage.semanticKey] : []))
-      );
-      for (const [offset, stage] of unattached.entries()) {
-        const candidate = stage.semanticKey ?? stage.key;
-        const semanticKey = usedSemanticKeys.has(candidate) ? null : candidate;
-        if (semanticKey) usedSemanticKeys.add(semanticKey);
-        await tx.pipelineStage.update({
-          where: { id: stage.id },
-          data: { pipelineId: existing.id, position: existing.stages.length + offset, semanticKey }
+    return prisma.$transaction(
+      async (tx) => {
+        const usedSemanticKeys = new Set(
+          existing.stages.flatMap((stage) => (stage.semanticKey ? [stage.semanticKey] : []))
+        );
+        for (const [offset, stage] of unattached.entries()) {
+          const candidate = stage.semanticKey ?? stage.key;
+          const semanticKey = usedSemanticKeys.has(candidate) ? null : candidate;
+          if (semanticKey) usedSemanticKeys.add(semanticKey);
+          await tx.pipelineStage.update({
+            where: { id: stage.id },
+            data: { pipelineId: existing.id, position: existing.stages.length + offset, semanticKey }
+          });
+        }
+        return tx.pipeline.findUniqueOrThrow({
+          where: { id: existing.id },
+          include: pipelineInclude
         });
-      }
-      return tx.pipeline.findUniqueOrThrow({
-        where: { id: existing.id },
+      },
+      { maxWait: 10_000, timeout: 30_000 }
+    );
+  }
+  return prisma.$transaction(
+    async (tx) => {
+      const pipeline = await tx.pipeline.create({
+        data: { workspaceId, name: "Sales Pipeline", type: "SALES", isDefault: true },
         include: pipelineInclude
       });
-    });
-  }
-  return prisma.$transaction(async (tx) => {
-    const pipeline = await tx.pipeline.create({
-      data: { workspaceId, name: "Sales Pipeline", type: "SALES", isDefault: true },
-      include: pipelineInclude
-    });
-    const unattached = await tx.pipelineStage.findMany({
-      where: { workspaceId, pipelineId: null },
-      orderBy: { order: "asc" }
-    });
-    for (const [position, stage] of unattached.entries()) {
-      await tx.pipelineStage.update({
-        where: { id: stage.id },
-        data: { pipelineId: pipeline.id, position }
-      });
-    }
-    if (unattached.length === 0) {
-      const templates = await tx.pipelineStage.findMany({
-        where: { workspaceId: { not: workspaceId }, semanticKey: { not: null } },
-        distinct: ["semanticKey"],
+      const unattached = await tx.pipelineStage.findMany({
+        where: { workspaceId, pipelineId: null },
         orderBy: { order: "asc" }
       });
-      const maximum = await tx.pipelineStage.aggregate({ _max: { order: true } });
-      for (const [position, template] of templates.entries()) {
-        await tx.pipelineStage.create({
-          data: {
-            workspaceId,
-            pipelineId: pipeline.id,
-            key: `P5_${randomUUID().replaceAll("-", "").toUpperCase()}`,
-            semanticKey: template.semanticKey,
-            label: template.label,
-            order: (maximum._max.order ?? 0) + position + 1,
-            position,
-            probability: template.probability,
-            color: template.color,
-            isClosed: template.isClosed,
-            isWon: template.isWon,
-            isLost: template.isLost
-          }
+      for (const [position, stage] of unattached.entries()) {
+        await tx.pipelineStage.update({
+          where: { id: stage.id },
+          data: { pipelineId: pipeline.id, position }
         });
       }
-    }
-    return tx.pipeline.findUniqueOrThrow({ where: { id: pipeline.id }, include: pipelineInclude });
-  });
+      if (unattached.length === 0) {
+        const templates = await tx.pipelineStage.findMany({
+          where: { workspaceId: { not: workspaceId }, semanticKey: { not: null } },
+          distinct: ["semanticKey"],
+          orderBy: { order: "asc" }
+        });
+        const maximum = await tx.pipelineStage.aggregate({ _max: { order: true } });
+        for (const [position, template] of templates.entries()) {
+          await tx.pipelineStage.create({
+            data: {
+              workspaceId,
+              pipelineId: pipeline.id,
+              key: `P5_${randomUUID().replaceAll("-", "").toUpperCase()}`,
+              semanticKey: template.semanticKey,
+              label: template.label,
+              order: (maximum._max.order ?? 0) + position + 1,
+              position,
+              probability: template.probability,
+              color: template.color,
+              isClosed: template.isClosed,
+              isWon: template.isWon,
+              isLost: template.isLost
+            }
+          });
+        }
+      }
+      return tx.pipeline.findUniqueOrThrow({
+        where: { id: pipeline.id },
+        include: pipelineInclude
+      });
+    },
+    { maxWait: 10_000, timeout: 30_000 }
+  );
 }
 
 export async function listPipelines(actor: AuthenticatedUser): Promise<PipelineDto[]> {

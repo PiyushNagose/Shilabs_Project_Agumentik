@@ -1,9 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  LeadAutomationOwnershipState,
   LeadAiControlStatus,
+  LeadPreferredChannel,
   LeadIntelligenceDecisionType,
-  UserRole,
-  type Prisma
+  LeadStatus,
+  LeadTemperature,
+  Prisma
 } from "@prisma/client";
 import type {
   AiCommandCenterDto,
@@ -15,6 +18,7 @@ import type {
 import { AppError } from "../../shared/errors.js";
 import { prisma } from "../../shared/prisma.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
+import { isWorkspaceManager } from "../authorization/workspace-permissions.js";
 import {
   completeHumanAction,
   isTerminalLeadStatus,
@@ -23,10 +27,14 @@ import {
 } from "../leads/lead-automation-ownership.service.js";
 import { assertCanAccessLead, leadVisibilityWhere } from "../leads/lead.permissions.js";
 import { publishRealtimeEvent } from "../realtime/realtime.service.js";
+import { rescheduleLeadFollowUpsInTransaction } from "../followups/followup-reschedule.service.js";
+import { followUpReadyAt } from "../followups/followup-timing.js";
+import { isNonMeaningfulInboundMetadata } from "../email/inbound-email-classification.js";
 import type {
   CreateLeadDocumentInput,
   UpdateLeadIntelligenceControlsInput
 } from "./lead-intelligence.schemas.js";
+import { extractLeadDocumentLink } from "./lead-document-upload.js";
 
 const HIGH_RISK_PATTERN =
   /\b(complaint|legal|lawyer|refund|cancel|angry|confidential|contract|discount|negotiat|pricing|price|custom terms?)\b/i;
@@ -212,7 +220,23 @@ function intelligenceDto(record: IntelligenceRecord): LeadIntelligenceDto {
 }
 
 function messages(lead: LeadContext) {
-  return lead.conversations.flatMap((conversation) => conversation.messages);
+  return lead.conversations
+    .flatMap((conversation) => conversation.messages)
+    .filter((message) => !isNonMeaningfulInboundMetadata(message.metadata));
+}
+
+function matchingSentence(value: string, pattern: RegExp): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return (
+    normalized.split(/(?<=[.!?])\s+/u).find((sentence) => pattern.test(sentence)) ?? normalized
+  );
+}
+
+function ownershipSummary(state: LeadContext["automationOwnershipState"]): string {
+  if (state === "AI_ACTIVE") return "AI follow-up is active";
+  if (state === "HUMAN_REQUIRED") return "human response is required";
+  if (state === "AI_STOPPED") return "AI follow-up is stopped";
+  return "a team member is responsible";
 }
 
 function deriveMemory(lead: LeadContext): {
@@ -230,7 +254,9 @@ function deriveMemory(lead: LeadContext): {
   const inbound = allMessages.filter((item) => item.direction === "INBOUND");
   const outbound = allMessages.filter((item) => item.direction === "OUTBOUND");
   const objections = inbound.filter((item) => OBJECTION_PATTERN.test(item.body)).slice(0, 5);
-  const commitments = outbound.filter((item) => COMMITMENT_PATTERN.test(item.body)).slice(0, 5);
+  const commitments = outbound
+    .filter((item) => item.senderType === "USER" && COMMITMENT_PATTERN.test(item.body))
+    .slice(0, 5);
   const documentSources = lead.intelligenceDocuments.flatMap((document) =>
     document.chunks
       .slice(0, 3)
@@ -293,13 +319,16 @@ function deriveMemory(lead: LeadContext): {
         (lead.automationOwnershipState === "HUMAN_REQUIRED" ? 10 : 0)
     )
   );
-  const summary = `${lead.company.name}: ${primaryNeed ?? "need not yet established"}. Stage ${lead.stage.label}; ${lead.automationOwnershipState.replaceAll("_", " ").toLowerCase()}.`;
+  const normalizedNeed = primaryNeed?.trim().replace(/[.]+$/u, "") ?? "Need not yet established";
+  const summary = `${lead.company.name}: ${normalizedNeed}. Stage: ${lead.stage.label}. ${ownershipSummary(lead.automationOwnershipState)}.`;
   const latestCommunicationAt = allMessages[0]?.createdAt ?? lead.lastActivityAt;
   return {
     summary,
     primaryNeed,
-    objections: objections.map((item) => clip(item.body, 220)),
-    commitments: commitments.map((item) => clip(item.body, 220)),
+    objections: objections.map((item) => clip(matchingSentence(item.body, OBJECTION_PATTERN), 220)),
+    commitments: commitments.map((item) =>
+      clip(matchingSentence(item.body, COMMITMENT_PATTERN), 220)
+    ),
     nextObjective,
     communicationStyle,
     healthScore,
@@ -375,6 +404,7 @@ export async function refreshLeadIntelligence(
         communicationStyle: memory.communicationStyle,
         healthScore: memory.healthScore,
         customCadenceDays: [],
+        preferredChannel: Object.values(LeadPreferredChannel).find((channel) => channel === lead.contact.preferredChannel) ?? "EMAIL",
         contextSnapshot: memory.snapshot,
         evidence: memory.sources as unknown as Prisma.InputJsonValue,
         lastRefreshedAt: now
@@ -446,13 +476,13 @@ export async function updateLeadIntelligenceControls(
   const lead = await loadLead(actor, leadId);
   const current = await getLeadIntelligence(actor, leadId);
   if (
-    input.followUpMode === "CUSTOM" &&
+    (input.followUpMode ?? current.followUpMode) === "CUSTOM" &&
     !(input.customCadenceDays?.length ?? current.customCadenceDays.length)
   ) {
     throw new AppError(400, "VALIDATION_ERROR", "Custom follow-up mode requires cadence days");
   }
   await prisma.$transaction(async (tx) => {
-    await tx.leadIntelligence.update({
+    const updated = await tx.leadIntelligence.update({
       where: { leadId },
       data: {
         aiControlStatus: input.aiControlStatus,
@@ -462,6 +492,22 @@ export async function updateLeadIntelligenceControls(
         customCadenceDays: input.customCadenceDays
       }
     });
+    const cadenceChanged =
+      updated.followUpMode !== current.followUpMode ||
+      JSON.stringify(updated.customCadenceDays) !== JSON.stringify(current.customCadenceDays);
+    if (
+      cadenceChanged &&
+      !["OFF", "PAUSED"].includes(updated.aiControlStatus) &&
+      !updated.humanInterventionRequired
+    ) {
+      await rescheduleLeadFollowUpsInTransaction(tx, {
+        workspaceId: lead.workspaceId,
+        leadId,
+        followUpMode: updated.followUpMode,
+        customCadenceDays: updated.customCadenceDays,
+        actorId: actor.id
+      });
+    }
     await tx.activity.create({
       data: {
         workspaceId: lead.workspaceId,
@@ -538,29 +584,108 @@ export async function updateLeadIntelligenceControls(
   return intelligenceDto(await loadRecord(leadId));
 }
 
-function cadenceDays(mode: string, custom: number[]): number {
-  if (mode === "AGGRESSIVE") return 1;
-  if (mode === "LOW_FREQUENCY") return 7;
-  if (mode === "HIGH_VALUE") return 2;
-  if (mode === "CUSTOM") return custom[0] ?? 3;
-  return 3;
-}
-
 export async function decideLeadFollowUp(
   actor: AuthenticatedUser,
   leadId: string
 ): Promise<LeadIntelligenceDecisionDto> {
   const lead = await loadLead(actor, leadId);
   const intelligence = await getLeadIntelligence(actor, leadId);
+  return evaluateLeadFollowUp(lead, intelligence);
+}
+
+export async function decideFollowUpAttempt(
+  workspaceId: string,
+  leadId: string,
+  attemptId: string
+): Promise<LeadIntelligenceDecisionDto> {
+  const lead = await prisma.lead.findFirst({
+    where: { id: leadId, workspaceId },
+    include: contextInclude
+  });
+  if (!lead) throw new AppError(404, "NOT_FOUND", "Lead not found");
+  const controls = await prisma.leadIntelligence.findUnique({ where: { leadId } });
+  const memory = deriveMemory(lead);
+  return evaluateLeadFollowUp(
+    { ...lead, workspaceId },
+    {
+      aiControlStatus: controls?.aiControlStatus ?? "ON",
+      followUpMode: controls?.followUpMode ?? "STANDARD",
+      humanInterventionRequired: controls?.humanInterventionRequired ?? false,
+      nextObjective: memory.nextObjective,
+      evidence: memory.sources
+    },
+    attemptId
+  );
+}
+
+async function evaluateLeadFollowUp(
+  lead: LeadContext & { workspaceId: string },
+  intelligence: Pick<LeadIntelligenceDto, "aiControlStatus" | "followUpMode" | "humanInterventionRequired" | "nextObjective" | "evidence">,
+  attemptId?: string
+): Promise<LeadIntelligenceDecisionDto> {
+  const leadId = lead.id;
+  const nextAttempt = await prisma.followUpAttempt.findFirst({
+    where: {
+      ...(attemptId ? { id: attemptId } : {}),
+      leadId,
+      status: "SCHEDULED",
+      sequence: { workspaceId: lead.workspaceId, status: "ACTIVE" }
+    },
+    include: { sequence: true },
+    orderBy: [{ scheduledAt: "asc" }, { stepIndex: "asc" }]
+  });
+  const readyAt = nextAttempt
+    ? followUpReadyAt({
+        sequenceCreatedAt: nextAttempt.sequence.createdAt,
+        scheduledAt: nextAttempt.scheduledAt,
+        stepIndex: nextAttempt.stepIndex,
+        cadenceDays: nextAttempt.sequence.cadenceDays,
+        cadenceMode: nextAttempt.sequence.cadenceMode,
+        nextActionAt: lead.nextActionAt
+      })
+    : null;
   const allMessages = messages(lead).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   const latestInbound = allMessages.find((item) => item.direction === "INBOUND") ?? null;
+  const latestHumanOutbound = allMessages.find(
+    (item) => item.direction === "OUTBOUND" && item.senderType === "USER"
+  );
   const latestCommunicationAt = allMessages[0]?.createdAt ?? lead.lastActivityAt;
   const ageDays = latestCommunicationAt
     ? (Date.now() - latestCommunicationAt.getTime()) / DAY_MS
     : 999;
-  const highRisk = latestInbound ? HIGH_RISK_PATTERN.test(latestInbound.body) : false;
+  const highRisk = Boolean(
+    latestInbound &&
+    HIGH_RISK_PATTERN.test(latestInbound.body) &&
+    (!latestHumanOutbound || latestInbound.createdAt > latestHumanOutbound.createdAt)
+  );
+  const commitment = latestHumanOutbound && COMMITMENT_PATTERN.test(latestHumanOutbound.body)
+    ? latestHumanOutbound
+    : null;
+  const objection = latestInbound && OBJECTION_PATTERN.test(latestInbound.body) ? latestInbound : null;
+  const replySource = commitment ?? objection ?? latestInbound;
+  const need = lead.qualification?.need ?? lead.requirement ?? lead.serviceInterest;
+  const replyReason = commitment
+    ? `Honor the salesperson's commitment: ${clip(matchingSentence(commitment.body, COMMITMENT_PATTERN), 220)}`
+    : objection
+      ? `Address the client's concern: ${clip(matchingSentence(objection.body, OBJECTION_PATTERN), 220)}`
+      : latestInbound
+        ? `Continue the client's request: ${clip(latestInbound.body, 220)}`
+        : need
+          ? `Clarify the next step for the recorded need: ${clip(need, 220)}`
+          : "Ask one concise question to establish the client's next step.";
+  const sentFollowUpCount = lead.followUpAttempts.filter((item) => item.status === "SENT").length;
+  const unansweredFollowUpCount = lead.followUpAttempts.filter(
+    (item) => item.status === "SENT" && item.sentAt && (!latestInbound || item.sentAt > latestInbound.createdAt)
+  ).length;
+  const adaptation = unansweredFollowUpCount >= 2
+    ? "Use a brief, low-pressure message with one question about whether to continue; do not repeat earlier follow-ups."
+    : latestInbound && latestInbound.body.trim().split(/\s+/u).length <= 24
+      ? "Match the client's concise style and ask at most one concrete question."
+      : "Address only the strongest grounded reply reason and ask at most one concrete question.";
   let decision: LeadIntelligenceDecisionType = "WAIT";
-  let reason = "The configured follow-up interval has not elapsed.";
+  let reason = readyAt
+    ? `The next follow-up is scheduled for ${readyAt.toISOString()}.`
+    : "No active follow-up is scheduled.";
   let guardrailCode: string | null = null;
 
   if (lead.contact.doNotContact || isTerminalLeadStatus(lead.status)) {
@@ -596,13 +721,14 @@ export async function decideLeadFollowUp(
   } else if (lead.nextActionAt && lead.nextActionAt.getTime() > Date.now()) {
     decision = "WAIT";
     reason = "A promised or scheduled next-action date is still in the future.";
-  } else if (ageDays >= cadenceDays(intelligence.followUpMode, intelligence.customCadenceDays)) {
+  } else if (readyAt && readyAt.getTime() <= Date.now()) {
     decision = "FOLLOW_UP";
-    reason =
-      "AI ownership is active and the configured evidence-based follow-up interval has elapsed.";
+    reason = `The persisted follow-up is due. ${replyReason}`;
   }
 
   const selectedEvidence = [
+    ...(replySource ? [evidence(`message:${replySource.id}`, "MESSAGE", "Strongest grounded reply reason", replySource.body, replySource.createdAt)] : []),
+    ...(need ? [evidence(`lead:${leadId}`, "LEAD", "Recorded client need", need)] : []),
     ...(latestInbound
       ? [
           evidence(
@@ -626,9 +752,20 @@ export async function decideLeadFollowUp(
         reason,
         nextObjective: intelligence.nextObjective,
         factors: {
+          followUpAttemptId: nextAttempt?.id ?? null,
+          replyReason,
+          adaptation,
+          sentFollowUpCount,
+          unansweredFollowUpCount,
+          engagementEvidence: {
+            opens: "unavailable",
+            clicks: "unavailable",
+            linkInteractions: "unavailable"
+          },
           ownershipState: lead.automationOwnershipState,
           aiControlStatus: intelligence.aiControlStatus,
           followUpMode: intelligence.followUpMode,
+          scheduledFollowUpAt: readyAt?.toISOString() ?? null,
           followUpCount: lead.followUpAttempts.length,
           leadScore: lead.score,
           dealValue: lead.deal?.value?.toString() ?? null,
@@ -651,7 +788,7 @@ export async function decideLeadFollowUp(
         type: "FOLLOW_UP_DECISION_RECORDED",
         title: `AI recommendation: ${decision.replaceAll("_", " ")}`,
         description: reason,
-        metadata: { decision, guardrailCode, advisoryOnly: true },
+        metadata: { decision, guardrailCode, advisoryOnly: !attemptId, followUpAttemptId: nextAttempt?.id ?? null },
         correlationId,
         visibility: "BUSINESS"
       }
@@ -665,7 +802,7 @@ export async function decideLeadFollowUp(
         entityType: "LeadIntelligenceDecision",
         entityId: result.id,
         action: "FOLLOW_UP_DECISION_RECORDED",
-        after: { decision, reason, guardrailCode, advisoryOnly: true },
+        after: { decision, reason, guardrailCode, advisoryOnly: !attemptId, followUpAttemptId: nextAttempt?.id ?? null },
         correlationId
       }
     });
@@ -706,18 +843,9 @@ export async function decideLeadFollowUp(
   };
 }
 
-function splitDocument(content: string): string[] {
-  const paragraphs = content
-    .split(/\n{2,}/)
-    .map((item) => clip(item, 1200))
-    .filter(Boolean);
-  if (paragraphs.length > 0) return paragraphs.slice(0, 250);
-  return (
-    content
-      .match(/[\s\S]{1,1200}/g)
-      ?.map((item) => item.trim())
-      .filter(Boolean) ?? []
-  );
+export function splitDocument(content: string): string[] {
+  if (!content.trim()) return [];
+  return content.match(/[\s\S]{1,1200}/g) ?? [];
 }
 
 export async function createLeadDocument(
@@ -726,7 +854,10 @@ export async function createLeadDocument(
   input: CreateLeadDocumentInput
 ): Promise<LeadDocumentDto> {
   const lead = await loadLead(actor, leadId);
-  const content = input.content?.trim() ?? "";
+  const linked = input.sourceType === "LINK" && !input.content?.trim() && input.sourceUrl
+    ? await extractLeadDocumentLink(input.sourceUrl)
+    : null;
+  const content = linked?.content ?? input.content?.trim() ?? "";
   const chunks = splitDocument(content);
   const now = new Date();
   const created = await prisma.$transaction(async (tx) => {
@@ -738,7 +869,7 @@ export async function createLeadDocument(
         kind: input.kind,
         sourceType: input.sourceType,
         sourceUrl: input.sourceUrl,
-        mimeType: input.mimeType,
+        mimeType: linked?.mimeType ?? input.mimeType,
         status: chunks.length ? "INDEXED" : "NEEDS_CONTENT",
         extractedText: content || null,
         checksum: content ? createHash("sha256").update(content).digest("hex") : null,
@@ -835,90 +966,321 @@ interface CommandCenterAggregate {
   aiPaused: bigint;
   aiStopped: bigint;
   pipelineValue: string;
-}
-
-interface MessageAggregate {
+  meetingsToday: bigint;
+  proposalsPending: bigint;
+  overdueHumanActions: bigint;
+  completedHumanTasks: bigint;
   clientResponses: bigint;
   aiReplies: bigint;
   averageResponseMinutes: number | null;
   averageFirstResponseMinutes: number | null;
-}
-
-interface ActivityAggregate {
   leadsHandled: bigint;
   proposalsSent: bigint;
   meetingsBookedHuman: bigint;
   meetingsBookedAi: bigint;
+  humanInterventions: bigint;
   handovers: bigint;
-}
-
-interface FollowUpAggregate {
   followUpsSent: bigint;
   reengagements: bigint;
   leadsRevived: bigint;
   convertedLeads: bigint;
   followedLeads: bigint;
+  opportunities: bigint;
+  wonDeals: bigint;
+  comparableWonDeals: bigint;
+  currency: string;
+  revenue: string;
+}
+
+interface RecommendationRow {
+  leadId: string;
+  contactFirstName: string;
+  contactLastName: string | null;
+  companyName: string;
+  ownerFirstName: string | null;
+  ownerLastName: string | null;
+  status: LeadStatus;
+  stage: string;
+  score: number;
+  temperature: LeadTemperature;
+  estimatedValue: Prisma.Decimal | null;
+  leadCurrency: string;
+  dealValue: Prisma.Decimal | null;
+  dealCurrency: string | null;
+  automationState: LeadAutomationOwnershipState;
+  aiControlStatus: LeadAiControlStatus | null;
+  healthScore: number | null;
+  nextObjective: string | null;
+  nextAction: string | null;
+  lastActivityAt: Date | null;
+  latestDecision: LeadIntelligenceDecisionType | null;
+  latestReason: string | null;
 }
 
 function aggregateNumber(value: bigint | number | null | undefined): number {
   return Number(value ?? 0);
 }
 
+function configuredDatabaseSchema(): Prisma.Sql {
+  const schema =
+    new URL(process.env.DATABASE_URL ?? "postgresql://localhost/database").searchParams.get(
+      "schema"
+    ) ?? "public";
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(schema)) {
+    throw new AppError(500, "INTERNAL_ERROR", "Database schema is invalid");
+  }
+  return Prisma.raw(`"${schema}"`);
+}
+
 export async function getAiCommandCenter(actor: AuthenticatedUser): Promise<AiCommandCenterDto> {
-  if (actor.role !== UserRole.ADMIN && actor.role !== UserRole.SALES_MANAGER) {
+  if (!isWorkspaceManager(actor)) {
     throw new AppError(403, "AUTHORIZATION_ERROR", "Command Center requires manager access");
   }
   const workspaceId = workspaceIdOrThrow(actor);
   const now = new Date();
-  const startOfDay = new Date(now);
-  startOfDay.setHours(0, 0, 0, 0);
-  const endOfDay = new Date(startOfDay.getTime() + DAY_MS);
+  const databaseSchema = configuredDatabaseSchema();
 
-  const [
-    activeRows,
-    recommendationRows,
-    meetingsToday,
-    proposalsPending,
-    overdueHumanActions,
-    messageRows,
-    activityRows,
-    completedHumanTasks,
-    followUpRows,
-    dealGroups,
-    preferredCurrencyDeal
-  ] = await Promise.all([
+  const [snapshotRows, recommendationRows] = await Promise.all([
     prisma.$queryRaw<CommandCenterAggregate[]>`
+      WITH meaningful_messages AS (
+        SELECT m.* FROM ${databaseSchema}."Message" m
+        JOIN ${databaseSchema}."Conversation" c ON c."id" = m."conversationId"
+        WHERE c."workspaceId" = ${workspaceId}
+          AND NOT (m."direction" = 'INBOUND' AND (
+            COALESCE(m."metadata" @> '{"inboundClassification":{"version":1,"kind":"NONMEANINGFUL"}}'::jsonb, false)
+            OR EXISTS (
+              SELECT 1 FROM ${databaseSchema}."InboundEmail" inbound
+              WHERE inbound."messageId" = m."id" AND inbound."replyProcessingStatus" = 'SKIPPED'
+            )
+          ))
+      ), message_totals AS (
+        SELECT
+          COUNT(*) FILTER (
+            WHERE m."direction" = 'INBOUND' AND m."senderType" = 'PROSPECT'
+          )::bigint AS "clientResponses",
+          COUNT(*) FILTER (
+            WHERE m."direction" = 'OUTBOUND' AND m."senderType" = 'AI'
+          )::bigint AS "aiReplies"
+        FROM meaningful_messages m
+        JOIN ${databaseSchema}."Conversation" c ON c."id" = m."conversationId"
+        WHERE c."workspaceId" = ${workspaceId}
+      ),
+      first_response AS (
+        SELECT AVG(EXTRACT(EPOCH FROM (first_human."createdAt" - l."createdAt")) / 60.0)::float8
+          AS "averageFirstResponseMinutes"
+        FROM ${databaseSchema}."Conversation" c
+        JOIN ${databaseSchema}."Lead" l ON l."id" = c."leadId"
+        JOIN LATERAL (
+          SELECT MIN(m."createdAt") AS "createdAt"
+          FROM ${databaseSchema}."Message" m
+          WHERE m."conversationId" = c."id"
+            AND m."direction" = 'OUTBOUND'
+            AND m."senderType" = 'USER'
+            AND m."createdAt" >= l."createdAt"
+        ) first_human ON first_human."createdAt" IS NOT NULL
+        WHERE c."workspaceId" = ${workspaceId}
+      ),
+      response_time AS (
+        SELECT AVG(EXTRACT(EPOCH FROM (human_reply."createdAt" - inbound."createdAt")) / 60.0)::float8
+          AS "averageResponseMinutes"
+        FROM meaningful_messages inbound
+        JOIN ${databaseSchema}."Conversation" c ON c."id" = inbound."conversationId"
+        JOIN LATERAL (
+          SELECT MIN(outbound."createdAt") AS "createdAt"
+          FROM ${databaseSchema}."Message" outbound
+          WHERE outbound."conversationId" = inbound."conversationId"
+            AND outbound."createdAt" > inbound."createdAt"
+            AND outbound."direction" = 'OUTBOUND'
+            AND outbound."senderType" = 'USER'
+        ) human_reply ON human_reply."createdAt" IS NOT NULL
+        WHERE c."workspaceId" = ${workspaceId}
+          AND inbound."direction" = 'INBOUND'
+          AND inbound."senderType" = 'PROSPECT'
+      ),
+      activity_totals AS (
+        SELECT
+          COUNT(DISTINCT "leadId") FILTER (WHERE "actorType" = 'USER')::bigint AS "leadsHandled",
+          COUNT(*) FILTER (WHERE "type" = 'PROPOSAL_SENT' AND "actorType" = 'USER')::bigint
+            AS "proposalsSent",
+          COUNT(*) FILTER (WHERE "type" = 'MEETING_CONFIRMED' AND "actorType" = 'USER')::bigint
+            AS "meetingsBookedHuman",
+          COUNT(*) FILTER (WHERE "type" = 'MEETING_CONFIRMED' AND "actorType" <> 'USER')::bigint
+            AS "meetingsBookedAi",
+          COUNT(*) FILTER (
+            WHERE "type" IN ('HUMAN_TAKEOVER', 'NEGOTIATION_HANDOFF')
+          )::bigint AS "handovers",
+          COUNT(DISTINCT "leadId") FILTER (
+            WHERE "type" IN ('HUMAN_TAKEOVER', 'NEGOTIATION_HANDOFF')
+          )::bigint AS "humanInterventions"
+        FROM ${databaseSchema}."Activity"
+        WHERE "workspaceId" = ${workspaceId} AND "visibility" = 'BUSINESS'
+      ),
+      follow_up_outcomes AS (
+        SELECT f."leadId", f."kind",
+          EXISTS (
+            SELECT 1
+            FROM ${databaseSchema}."Conversation" c
+            JOIN meaningful_messages m ON m."conversationId" = c."id"
+            WHERE c."leadId" = f."leadId" AND c."workspaceId" = ${workspaceId}
+              AND m."direction" = 'INBOUND' AND m."senderType" = 'PROSPECT'
+              AND COALESCE(m."sentAt", m."createdAt") > f."sentAt"
+          ) AS "hasClientReply"
+        FROM ${databaseSchema}."FollowUpAttempt" f
+        JOIN ${databaseSchema}."Lead" followed_lead ON followed_lead."id" = f."leadId"
+        WHERE followed_lead."workspaceId" = ${workspaceId} AND f."status" = 'SENT'
+      ),
+      follow_up_totals AS (
+        SELECT
+          COUNT(*)::bigint AS "followUpsSent",
+          COUNT(DISTINCT f."leadId") FILTER (
+            WHERE f."kind" = 'FOLLOW_UP' AND f."hasClientReply"
+          )::bigint
+            AS "reengagements",
+          COUNT(DISTINCT f."leadId") FILTER (
+            WHERE f."hasClientReply"
+          )::bigint AS "leadsRevived",
+          COUNT(DISTINCT f."leadId") FILTER (
+            WHERE EXISTS (
+              SELECT 1 FROM ${databaseSchema}."Deal" won
+              WHERE won."leadId" = f."leadId" AND won."status" = 'WON'
+            )
+          )::bigint AS "convertedLeads",
+          COUNT(DISTINCT f."leadId")::bigint AS "followedLeads"
+        FROM follow_up_outcomes f
+      ),
+      active_lead_totals AS (
+        SELECT
+          COUNT(*)::bigint AS "activeLeads",
+          COUNT(*) FILTER (WHERE l."automationOwnershipState" = 'HUMAN_REQUIRED')::bigint
+            AS "humanRequired",
+          COUNT(*) FILTER (WHERE l."automationOwnershipState" = 'AI_ACTIVE')::bigint
+            AS "aiActive",
+          COUNT(*) FILTER (WHERE l."temperature" = 'HOT')::bigint AS "hotLeads",
+          COUNT(*) FILTER (
+            WHERE l."automationOwnershipState" IN ('HUMAN_ACTIVE', 'HUMAN_ACTION_COMPLETED')
+          )::bigint AS "humanActive",
+          COUNT(*) FILTER (WHERE i."aiControlStatus" = 'PAUSED')::bigint AS "aiPaused",
+          COUNT(*) FILTER (
+            WHERE l."automationOwnershipState" = 'AI_STOPPED' OR i."aiControlStatus" = 'OFF'
+          )::bigint AS "aiStopped",
+          COALESCE(SUM(COALESCE(d."value", l."estimatedValue", 0)), 0)::text AS "pipelineValue"
+        FROM ${databaseSchema}."Lead" l
+        JOIN ${databaseSchema}."Contact" contact ON contact."id" = l."contactId"
+        LEFT JOIN ${databaseSchema}."Deal" d ON d."leadId" = l."id"
+        LEFT JOIN ${databaseSchema}."LeadIntelligence" i ON i."leadId" = l."id"
+        WHERE l."workspaceId" = ${workspaceId}
+          AND l."status" NOT IN ('WON', 'LOST', 'DISQUALIFIED')
+          AND contact."doNotContact" = false
+      ),
+      preferred_currency AS (
+        SELECT d."currency"
+        FROM ${databaseSchema}."Deal" d
+        WHERE d."workspaceId" = ${workspaceId}
+        ORDER BY d."status" DESC, d."createdAt" ASC
+        LIMIT 1
+      )
       SELECT
-        COUNT(*)::bigint AS "activeLeads",
-        COUNT(*) FILTER (WHERE l."automationOwnershipState" = 'HUMAN_REQUIRED')::bigint AS "humanRequired",
-        COUNT(*) FILTER (WHERE l."automationOwnershipState" = 'AI_ACTIVE')::bigint AS "aiActive",
-        COUNT(*) FILTER (WHERE l."temperature" = 'HOT')::bigint AS "hotLeads",
-        COUNT(*) FILTER (
-          WHERE l."automationOwnershipState" IN ('HUMAN_ACTIVE', 'HUMAN_ACTION_COMPLETED')
-        )::bigint AS "humanActive",
-        COUNT(*) FILTER (WHERE i."aiControlStatus" = 'PAUSED')::bigint AS "aiPaused",
-        COUNT(*) FILTER (
-          WHERE l."automationOwnershipState" = 'AI_STOPPED' OR i."aiControlStatus" = 'OFF'
-        )::bigint AS "aiStopped",
-        COALESCE(SUM(COALESCE(d."value", l."estimatedValue", 0)), 0)::text AS "pipelineValue"
-      FROM "Lead" l
-      LEFT JOIN "Deal" d ON d."leadId" = l."id"
-      LEFT JOIN "LeadIntelligence" i ON i."leadId" = l."id"
-      WHERE l."workspaceId" = ${workspaceId}
-        AND l."status" NOT IN ('WON', 'LOST', 'DISQUALIFIED')
+        active_lead_totals."activeLeads",
+        active_lead_totals."humanRequired",
+        active_lead_totals."aiActive",
+        active_lead_totals."hotLeads",
+        active_lead_totals."humanActive",
+        active_lead_totals."aiPaused",
+        active_lead_totals."aiStopped",
+        active_lead_totals."pipelineValue",
+        (SELECT COUNT(*)::bigint FROM ${databaseSchema}."MeetingRequest" meeting
+          JOIN ${databaseSchema}."MeetingSlot" slot
+            ON slot."id" = meeting."selectedSlotId" AND slot."meetingRequestId" = meeting."id"
+          JOIN pg_timezone_names zone ON zone.name = meeting."timeZone"
+          WHERE meeting."workspaceId" = ${workspaceId} AND meeting."status" = 'CONFIRMED'
+            AND (slot."startsAt" AT TIME ZONE 'UTC' AT TIME ZONE zone.name)::date =
+              (${now}::timestamptz AT TIME ZONE zone.name)::date)
+          AS "meetingsToday",
+        (SELECT COUNT(*)::bigint FROM ${databaseSchema}."Proposal" proposal
+          WHERE proposal."workspaceId" = ${workspaceId}
+            AND proposal."status" IN ('WAITING_APPROVAL', 'APPROVED')) AS "proposalsPending",
+        (SELECT COUNT(*)::bigint FROM ${databaseSchema}."Task" task
+          WHERE task."workspaceId" = ${workspaceId} AND task."status" IN ('OPEN', 'IN_PROGRESS')
+            AND task."dueAt" < ${now} AND task."createdByType" = 'USER') AS "overdueHumanActions",
+        (SELECT COUNT(*)::bigint FROM ${databaseSchema}."Task" task
+          WHERE task."workspaceId" = ${workspaceId} AND task."status" = 'COMPLETED'
+            AND task."completedByType" = 'USER') AS "completedHumanTasks",
+        message_totals."clientResponses",
+        message_totals."aiReplies",
+        response_time."averageResponseMinutes",
+        first_response."averageFirstResponseMinutes",
+        activity_totals."leadsHandled",
+        activity_totals."proposalsSent",
+        activity_totals."meetingsBookedHuman",
+        activity_totals."meetingsBookedAi",
+        activity_totals."humanInterventions",
+        activity_totals."handovers",
+        follow_up_totals."followUpsSent",
+        follow_up_totals."reengagements",
+        follow_up_totals."leadsRevived",
+        follow_up_totals."convertedLeads",
+        follow_up_totals."followedLeads",
+        (SELECT COUNT(*)::bigint FROM ${databaseSchema}."Deal" deal
+          WHERE deal."workspaceId" = ${workspaceId}) AS "opportunities",
+        (SELECT COUNT(*)::bigint FROM ${databaseSchema}."Deal" deal
+          WHERE deal."workspaceId" = ${workspaceId} AND deal."status" = 'WON') AS "wonDeals",
+        COALESCE((SELECT "currency" FROM preferred_currency), 'INR') AS "currency",
+        (SELECT COUNT(*)::bigint FROM ${databaseSchema}."Deal" deal
+          WHERE deal."workspaceId" = ${workspaceId} AND deal."status" = 'WON'
+            AND deal."currency" = COALESCE((SELECT "currency" FROM preferred_currency), 'INR'))
+          AS "comparableWonDeals",
+        COALESCE((SELECT SUM(deal."value") FROM ${databaseSchema}."Deal" deal
+          WHERE deal."workspaceId" = ${workspaceId} AND deal."status" = 'WON'
+            AND deal."currency" = COALESCE((SELECT "currency" FROM preferred_currency), 'INR')), 0)::text
+          AS "revenue"
+      FROM active_lead_totals
+      CROSS JOIN message_totals
+      CROSS JOIN first_response
+      CROSS JOIN response_time
+      CROSS JOIN activity_totals
+      CROSS JOIN follow_up_totals
     `,
-    prisma.$queryRaw<{ id: string }[]>`
-      SELECT l."id"
-      FROM "Lead" l
+    prisma.$queryRaw<RecommendationRow[]>`
+      SELECT
+        l."id" AS "leadId",
+        contact."firstName" AS "contactFirstName",
+        contact."lastName" AS "contactLastName",
+        company."name" AS "companyName",
+        owner."firstName" AS "ownerFirstName",
+        owner."lastName" AS "ownerLastName",
+        l."status",
+        stage."label" AS "stage",
+        l."score",
+        l."temperature",
+        l."estimatedValue",
+        l."currency" AS "leadCurrency",
+        deal."value" AS "dealValue",
+        deal."currency" AS "dealCurrency",
+        l."automationOwnershipState" AS "automationState",
+        intelligence."aiControlStatus",
+        intelligence."healthScore",
+        intelligence."nextObjective",
+        l."nextAction",
+        l."lastActivityAt",
+        latest."decision" AS "latestDecision",
+        latest."reason" AS "latestReason"
+      FROM ${databaseSchema}."Lead" l
+      JOIN ${databaseSchema}."Contact" contact ON contact."id" = l."contactId"
+      JOIN ${databaseSchema}."Company" company ON company."id" = l."companyId"
+      JOIN ${databaseSchema}."PipelineStage" stage ON stage."id" = l."stageId"
+      LEFT JOIN ${databaseSchema}."User" owner ON owner."id" = l."ownerId"
+      LEFT JOIN ${databaseSchema}."Deal" deal ON deal."leadId" = l."id"
+      LEFT JOIN ${databaseSchema}."LeadIntelligence" intelligence ON intelligence."leadId" = l."id"
       LEFT JOIN LATERAL (
-        SELECT d."decision"
-        FROM "LeadIntelligenceDecision" d
+        SELECT d."decision", d."reason"
+        FROM ${databaseSchema}."LeadIntelligenceDecision" d
         WHERE d."leadId" = l."id"
         ORDER BY d."createdAt" DESC
         LIMIT 1
       ) latest ON true
       WHERE l."workspaceId" = ${workspaceId}
         AND l."status" NOT IN ('WON', 'LOST', 'DISQUALIFIED')
+        AND contact."doNotContact" = false
       ORDER BY
         CASE latest."decision"
           WHEN 'ESCALATE' THEN 0
@@ -930,197 +1292,63 @@ export async function getAiCommandCenter(actor: AuthenticatedUser): Promise<AiCo
         l."lastActivityAt" DESC NULLS LAST,
         l."createdAt" DESC
       LIMIT 50
-    `,
-    prisma.meetingRequest.count({
-      where: { workspaceId, status: "CONFIRMED", confirmedAt: { gte: startOfDay, lt: endOfDay } }
-    }),
-    prisma.proposal.count({
-      where: { workspaceId, status: { in: ["WAITING_APPROVAL", "APPROVED"] } }
-    }),
-    prisma.task.count({
-      where: {
-        workspaceId,
-        status: { in: ["OPEN", "IN_PROGRESS"] },
-        dueAt: { lt: now },
-        createdByType: "USER"
-      }
-    }),
-    prisma.$queryRaw<MessageAggregate[]>`
-      WITH message_totals AS (
-        SELECT
-          COUNT(*) FILTER (
-            WHERE m."direction" = 'INBOUND' AND m."senderType" = 'PROSPECT'
-          )::bigint AS "clientResponses",
-          COUNT(*) FILTER (
-            WHERE m."direction" = 'OUTBOUND' AND m."senderType" = 'AI'
-          )::bigint AS "aiReplies"
-        FROM "Message" m
-        JOIN "Conversation" c ON c."id" = m."conversationId"
-        WHERE c."workspaceId" = ${workspaceId}
-      ),
-      first_response AS (
-        SELECT AVG(EXTRACT(EPOCH FROM (first_human."createdAt" - l."createdAt")) / 60.0)::float8
-          AS "averageFirstResponseMinutes"
-        FROM "Conversation" c
-        JOIN "Lead" l ON l."id" = c."leadId"
-        JOIN LATERAL (
-          SELECT MIN(m."createdAt") AS "createdAt"
-          FROM "Message" m
-          WHERE m."conversationId" = c."id"
-            AND m."direction" = 'OUTBOUND'
-            AND m."senderType" = 'USER'
-            AND m."createdAt" >= l."createdAt"
-        ) first_human ON first_human."createdAt" IS NOT NULL
-        WHERE c."workspaceId" = ${workspaceId}
-      ),
-      response_time AS (
-        SELECT AVG(EXTRACT(EPOCH FROM (human_reply."createdAt" - inbound."createdAt")) / 60.0)::float8
-          AS "averageResponseMinutes"
-        FROM "Message" inbound
-        JOIN "Conversation" c ON c."id" = inbound."conversationId"
-        JOIN LATERAL (
-          SELECT MIN(outbound."createdAt") AS "createdAt"
-          FROM "Message" outbound
-          WHERE outbound."conversationId" = inbound."conversationId"
-            AND outbound."createdAt" > inbound."createdAt"
-            AND outbound."direction" = 'OUTBOUND'
-            AND outbound."senderType" = 'USER'
-        ) human_reply ON human_reply."createdAt" IS NOT NULL
-        WHERE c."workspaceId" = ${workspaceId}
-          AND inbound."direction" = 'INBOUND'
-          AND inbound."senderType" = 'PROSPECT'
-      )
-      SELECT
-        message_totals."clientResponses",
-        message_totals."aiReplies",
-        response_time."averageResponseMinutes",
-        first_response."averageFirstResponseMinutes"
-      FROM message_totals, response_time, first_response
-    `,
-    prisma.$queryRaw<ActivityAggregate[]>`
-      SELECT
-        COUNT(DISTINCT "leadId") FILTER (WHERE "actorType" = 'USER')::bigint AS "leadsHandled",
-        COUNT(*) FILTER (WHERE "type" = 'PROPOSAL_SENT' AND "actorType" = 'USER')::bigint
-          AS "proposalsSent",
-        COUNT(*) FILTER (WHERE "type" = 'MEETING_CONFIRMED' AND "actorType" = 'USER')::bigint
-          AS "meetingsBookedHuman",
-        COUNT(*) FILTER (WHERE "type" = 'MEETING_CONFIRMED' AND "actorType" <> 'USER')::bigint
-          AS "meetingsBookedAi",
-        COUNT(*) FILTER (
-          WHERE "type" IN ('HUMAN_TAKEOVER', 'NEGOTIATION_HANDOFF')
-        )::bigint AS "handovers"
-      FROM "Activity"
-      WHERE "workspaceId" = ${workspaceId} AND "visibility" = 'BUSINESS'
-    `,
-    prisma.task.count({ where: { workspaceId, status: "COMPLETED", completedByType: "USER" } }),
-    prisma.$queryRaw<FollowUpAggregate[]>`
-      SELECT
-        COUNT(*)::bigint AS "followUpsSent",
-        COUNT(DISTINCT f."leadId") FILTER (WHERE f."kind" = 'FOLLOW_UP')::bigint
-          AS "reengagements",
-        COUNT(DISTINCT f."leadId") FILTER (
-          WHERE EXISTS (
-            SELECT 1
-            FROM "Conversation" c
-            JOIN "Message" m ON m."conversationId" = c."id"
-            WHERE c."leadId" = f."leadId"
-              AND m."direction" = 'INBOUND'
-              AND m."senderType" = 'PROSPECT'
-              AND m."createdAt" > f."sentAt"
-          )
-        )::bigint AS "leadsRevived",
-        COUNT(DISTINCT f."leadId") FILTER (
-          WHERE EXISTS (
-            SELECT 1 FROM "Deal" d WHERE d."leadId" = f."leadId" AND d."status" = 'WON'
-          )
-        )::bigint AS "convertedLeads",
-        COUNT(DISTINCT f."leadId")::bigint AS "followedLeads"
-      FROM "FollowUpAttempt" f
-      JOIN "Lead" l ON l."id" = f."leadId"
-      WHERE l."workspaceId" = ${workspaceId} AND f."status" = 'SENT'
-    `,
-    prisma.deal.groupBy({
-      by: ["status", "currency"],
-      where: { workspaceId },
-      _count: { _all: true },
-      _sum: { value: true }
-    }),
-    prisma.deal.findFirst({
-      where: { workspaceId },
-      orderBy: [{ status: "desc" }, { createdAt: "asc" }],
-      select: { currency: true }
-    })
+    `
   ]);
-
-  const recommendationIds = recommendationRows.map(({ id }) => id);
-  const recommendationLeads = recommendationIds.length
-    ? await prisma.lead.findMany({
-        where: { workspaceId, id: { in: recommendationIds } },
-        include: {
-          contact: true,
-          company: true,
-          owner: true,
-          stage: true,
-          deal: true,
-          intelligence: true,
-          intelligenceDecisions: { orderBy: { createdAt: "desc" }, take: 1 }
-        }
-      })
-    : [];
-  const leadById = new Map(recommendationLeads.map((lead) => [lead.id, lead]));
-  const recommendations = recommendationIds.flatMap((leadId) => {
-    const lead = leadById.get(leadId);
-    if (!lead) return [];
-    const latest = lead.intelligenceDecisions[0] ?? null;
-    const aiStatus = lead.intelligence?.aiControlStatus ?? LeadAiControlStatus.ON;
-    return [
-      {
-        leadId: lead.id,
-        contactName: [lead.contact.firstName, lead.contact.lastName].filter(Boolean).join(" "),
-        companyName: lead.company.name,
-        ownerName: lead.owner
-          ? [lead.owner.firstName, lead.owner.lastName].filter(Boolean).join(" ")
-          : null,
-        status: lead.status,
-        stage: lead.stage.label,
-        score: lead.score,
-        temperature: lead.temperature,
-        dealValue: lead.deal?.value?.toString() ?? lead.estimatedValue?.toString() ?? null,
-        currency: lead.deal?.currency ?? lead.currency,
-        automationState: lead.automationOwnershipState,
-        aiControlStatus: aiStatus,
-        healthScore: lead.intelligence?.healthScore ?? lead.score,
-        decision: latest?.decision ?? null,
-        recommendation:
-          latest?.reason ??
-          (lead.automationOwnershipState === "HUMAN_REQUIRED"
-            ? "Human action is required before automation can continue."
-            : (lead.nextAction ?? "Refresh lead intelligence.")),
-        nextObjective: lead.intelligence?.nextObjective ?? lead.nextAction,
-        lastActivityAt: lead.lastActivityAt?.toISOString() ?? null
-      }
-    ];
+  const recommendations = recommendationRows.map((lead) => {
+    const aiStatus = lead.aiControlStatus ?? LeadAiControlStatus.ON;
+    const stopped = lead.automationState === "AI_STOPPED" || aiStatus === "OFF";
+    const paused = aiStatus === "PAUSED";
+    const humanRequired = lead.automationState === "HUMAN_REQUIRED";
+    const recommendation = paused
+      ? "AI follow-up is paused. Resume it only when you are ready."
+      : stopped
+        ? "AI follow-up is stopped. Review the lead before taking further action."
+        : humanRequired
+          ? "Your response is needed before AI follow-up can resume."
+          : (lead.latestReason ?? lead.nextAction ?? "Refresh lead intelligence.");
+    return {
+      leadId: lead.leadId,
+      contactName: [lead.contactFirstName, lead.contactLastName].filter(Boolean).join(" "),
+      companyName: lead.companyName,
+      ownerName: lead.ownerFirstName
+        ? [lead.ownerFirstName, lead.ownerLastName].filter(Boolean).join(" ")
+        : null,
+      status: lead.status,
+      stage: lead.stage,
+      score: lead.score,
+      temperature: lead.temperature,
+      dealValue: lead.dealValue?.toString() ?? lead.estimatedValue?.toString() ?? null,
+      currency: lead.dealCurrency ?? lead.leadCurrency,
+      automationState: lead.automationState,
+      aiControlStatus: aiStatus,
+      healthScore: lead.healthScore ?? lead.score,
+      decision: paused
+        ? ("WAIT" as const)
+        : stopped
+          ? ("STOP" as const)
+          : humanRequired
+            ? ("ASK_HUMAN" as const)
+            : lead.latestDecision,
+      recommendation,
+      nextObjective:
+        stopped || paused || humanRequired
+          ? recommendation
+          : (lead.nextObjective ?? lead.nextAction),
+      lastActivityAt: lead.lastActivityAt?.toISOString() ?? null
+    };
   });
 
-  const active = activeRows[0];
-  const messages = messageRows[0];
-  const activities = activityRows[0];
-  const followUps = followUpRows[0];
-  const opportunities = dealGroups.reduce((sum, group) => sum + group._count._all, 0);
-  const wonDeals = dealGroups
-    .filter((group) => group.status === "WON")
-    .reduce((sum, group) => sum + group._count._all, 0);
-  const currency = preferredCurrencyDeal?.currency ?? "INR";
-  const comparableWonDeals = dealGroups.find(
-    (group) => group.status === "WON" && group.currency === currency
-  );
-  const comparableWonCount = comparableWonDeals?._count._all ?? 0;
-  const revenue = Number(comparableWonDeals?._sum.value ?? 0);
+  const snapshot = snapshotRows[0];
+  const opportunities = aggregateNumber(snapshot?.opportunities);
+  const wonDeals = aggregateNumber(snapshot?.wonDeals);
+  const comparableWonDeals = aggregateNumber(snapshot?.comparableWonDeals);
+  const currency = snapshot?.currency ?? "INR";
+  const revenue = Number(snapshot?.revenue ?? 0);
   const roundAverage = (value: number | null | undefined): number | null =>
     value == null ? null : Math.round(value * 10) / 10;
-  const activeLeads = aggregateNumber(active?.activeLeads);
-  const humanRequired = aggregateNumber(active?.humanRequired);
-  const aiActive = aggregateNumber(active?.aiActive);
+  const activeLeads = aggregateNumber(snapshot?.activeLeads);
+  const humanRequired = aggregateNumber(snapshot?.humanRequired);
+  const aiActive = aggregateNumber(snapshot?.aiActive);
 
   return {
     generatedAt: now.toISOString(),
@@ -1128,51 +1356,50 @@ export async function getAiCommandCenter(actor: AuthenticatedUser): Promise<AiCo
       activeLeads,
       humanRequired,
       aiActive,
-      hotLeads: aggregateNumber(active?.hotLeads),
-      overdueHumanActions,
-      proposalsPending,
-      meetingsToday,
-      pipelineValue: Number(active?.pipelineValue ?? 0).toFixed(2)
+      hotLeads: aggregateNumber(snapshot?.hotLeads),
+      overdueHumanActions: aggregateNumber(snapshot?.overdueHumanActions),
+      proposalsPending: aggregateNumber(snapshot?.proposalsPending),
+      meetingsToday: aggregateNumber(snapshot?.meetingsToday),
+      pipelineValue: Number(snapshot?.pipelineValue ?? 0).toFixed(2)
     },
     humanSignals: {
       required: humanRequired,
-      overdue: overdueHumanActions,
-      active: aggregateNumber(active?.humanActive)
+      overdue: aggregateNumber(snapshot?.overdueHumanActions),
+      active: aggregateNumber(snapshot?.humanActive)
     },
     aiSignals: {
       active: aiActive,
-      paused: aggregateNumber(active?.aiPaused),
-      stopped: aggregateNumber(active?.aiStopped)
+      paused: aggregateNumber(snapshot?.aiPaused),
+      stopped: aggregateNumber(snapshot?.aiStopped)
     },
     humanKpis: {
-      averageResponseMinutes: roundAverage(messages?.averageResponseMinutes),
-      averageFirstResponseMinutes: roundAverage(messages?.averageFirstResponseMinutes),
-      leadsHandled: aggregateNumber(activities?.leadsHandled),
-      clientResponses: aggregateNumber(messages?.clientResponses),
-      proposalsSent: aggregateNumber(activities?.proposalsSent),
-      meetingsBooked: aggregateNumber(activities?.meetingsBookedHuman),
-      followUpsCompleted: completedHumanTasks,
+      averageResponseMinutes: roundAverage(snapshot?.averageResponseMinutes),
+      averageFirstResponseMinutes: roundAverage(snapshot?.averageFirstResponseMinutes),
+      leadsHandled: aggregateNumber(snapshot?.leadsHandled),
+      clientResponses: aggregateNumber(snapshot?.clientResponses),
+      proposalsSent: aggregateNumber(snapshot?.proposalsSent),
+      meetingsBooked: aggregateNumber(snapshot?.meetingsBookedHuman),
+      followUpsCompleted: aggregateNumber(snapshot?.completedHumanTasks),
       opportunities,
       conversionRate: opportunities ? Math.round((wonDeals / opportunities) * 1000) / 10 : 0,
       revenue: revenue.toFixed(2),
-      averageDealValue: comparableWonCount ? (revenue / comparableWonCount).toFixed(2) : "0.00",
+      averageDealValue: comparableWonDeals ? (revenue / comparableWonDeals).toFixed(2) : "0.00",
       currency
     },
     aiKpis: {
-      followUpsSent: aggregateNumber(followUps?.followUpsSent),
-      repliesGenerated: aggregateNumber(messages?.aiReplies),
-      meetingsGenerated: aggregateNumber(activities?.meetingsBookedAi),
-      reengagements: aggregateNumber(followUps?.reengagements),
-      followUpConversionRate: aggregateNumber(followUps?.followedLeads)
+      followUpsSent: aggregateNumber(snapshot?.followUpsSent),
+      repliesGenerated: aggregateNumber(snapshot?.aiReplies),
+      meetingsGenerated: aggregateNumber(snapshot?.meetingsBookedAi),
+      reengagements: aggregateNumber(snapshot?.reengagements),
+      followUpConversionRate: aggregateNumber(snapshot?.followedLeads)
         ? Math.round(
-            (aggregateNumber(followUps?.convertedLeads) /
-              aggregateNumber(followUps?.followedLeads)) *
+            (aggregateNumber(snapshot?.convertedLeads) / aggregateNumber(snapshot?.followedLeads)) *
               1000
           ) / 10
         : 0,
-      leadsRevived: aggregateNumber(followUps?.leadsRevived),
-      humanInterventions: humanRequired,
-      handovers: aggregateNumber(activities?.handovers)
+      leadsRevived: aggregateNumber(snapshot?.leadsRevived),
+      humanInterventions: aggregateNumber(snapshot?.humanInterventions),
+      handovers: aggregateNumber(snapshot?.handovers)
     },
     recommendations
   };

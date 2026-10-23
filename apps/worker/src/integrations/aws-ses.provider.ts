@@ -3,10 +3,14 @@ import type { WorkerAwsSesConfig } from "./aws-ses.config.js";
 
 export interface WorkerEmailSendInput {
   to: string;
+  cc?: string[];
   from: string;
   replyTo?: string | null;
   subject: string;
   textBody: string;
+  threadId?: string | null;
+  inReplyTo?: string | null;
+  references?: string[];
   configurationSet?: string | null;
   idempotencyKey: string;
 }
@@ -49,7 +53,7 @@ export class WorkerAwsSesProvider implements WorkerEmailProvider {
         this.client.send(
           new SendEmailCommand({
             FromEmailAddress: input.from,
-            Destination: { ToAddresses: [input.to] },
+            Destination: { ToAddresses: [input.to], CcAddresses: input.cc },
             ReplyToAddresses: input.replyTo ? [input.replyTo] : undefined,
             ConfigurationSetName: input.configurationSet ?? undefined,
             EmailTags: [
@@ -61,6 +65,15 @@ export class WorkerAwsSesProvider implements WorkerEmailProvider {
             Content: {
               Simple: {
                 Subject: { Data: input.subject, Charset: "UTF-8" },
+                Headers: [
+                  ...(input.threadId
+                    ? [{ Name: "X-Shilabs-Thread-Id", Value: input.threadId }]
+                    : []),
+                  ...(input.inReplyTo ? [{ Name: "In-Reply-To", Value: input.inReplyTo }] : []),
+                  ...(input.references?.length
+                    ? [{ Name: "References", Value: input.references.join(" ") }]
+                    : [])
+                ],
                 Body: { Text: { Data: input.textBody, Charset: "UTF-8" } }
               }
             }

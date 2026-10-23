@@ -1,19 +1,23 @@
 import { Prisma } from "@prisma/client";
+import { getMessagingConfig } from "@shilabs/shared-config";
 import type {
   ActivityDto,
   ConversationDto,
   HumanTakeoverBriefingDto,
   HumanTakeoverDto,
   HumanConversationReplyDto,
+  HumanWhatsAppReplyDto,
   MessageDto
 } from "@shilabs/shared-types";
 import { AppError } from "../../shared/errors.js";
 import { prisma } from "../../shared/prisma.js";
 import { toPublicUser } from "../auth/auth.service.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
+import { isWorkspaceManager } from "../authorization/workspace-permissions.js";
 import { toDealDto } from "../deals/deal.service.js";
 import { sendOutboundEmail } from "../email/email.service.js";
 import type { EmailProvider } from "../email/email.provider.js";
+import type { AIProvider } from "../ai/ai.provider.js";
 import { appendActivityToZohoTimeline } from "../integrations/zoho-bigin/zoho-bigin-timeline.service.js";
 import { findDealByLeadId } from "../deals/deal.repository.js";
 import { findLeadById } from "../leads/lead.repository.js";
@@ -26,6 +30,7 @@ import { toLeadDto } from "../leads/lead.service.js";
 import {
   activateHuman,
   completeHumanAction,
+  completeHumanActionInTransaction,
   requireHumanAction,
   stopAi
 } from "../leads/lead-automation-ownership.service.js";
@@ -34,6 +39,7 @@ import { listProposals } from "../proposals/proposal.service.js";
 import { getQualification } from "../qualification/qualification.service.js";
 import { publishRealtimeEvent } from "../realtime/realtime.service.js";
 import { completeTask } from "../tasks/task.service.js";
+import { sendWhatsAppText, type MessagingTransport } from "../messaging/messaging.provider.js";
 import { conversationEvents, messageEvents } from "./conversation.events.js";
 import type {
   CreateConversationInput,
@@ -53,6 +59,38 @@ import {
   type ConversationRecord,
   type MessageRecord
 } from "./conversation.repository.js";
+import type { CommunicationAttachmentDto } from "@shilabs/shared-types";
+
+function messageAttachments(value: Prisma.JsonValue | null): CommunicationAttachmentDto[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const record = item as Record<string, unknown>;
+    if (
+      typeof record.fileName !== "string" ||
+      typeof record.contentType !== "string" ||
+      typeof record.sizeBytes !== "number"
+    )
+      return [];
+    const mediaType = String(record.mediaType);
+    return [
+      {
+        fileName: record.fileName,
+        contentType: record.contentType,
+        sizeBytes: record.sizeBytes,
+        contentId: typeof record.contentId === "string" ? record.contentId : null,
+        disposition:
+          record.disposition === "inline" ? ("inline" as const) : ("attachment" as const),
+        providerAttachmentId:
+          typeof record.providerAttachmentId === "string" ? record.providerAttachmentId : null,
+        mediaType: ["document", "image", "audio", "video", "sticker", "file"].includes(mediaType)
+          ? (mediaType as CommunicationAttachmentDto["mediaType"])
+          : "file",
+        voiceNote: record.voiceNote === true
+      }
+    ];
+  });
+}
 
 export function toConversationDto(conversation: ConversationRecord): ConversationDto {
   return {
@@ -83,6 +121,9 @@ export function toMessageDto(message: MessageRecord): MessageDto {
     readAt: message.readAt?.toISOString() ?? null,
     failedAt: message.failedAt?.toISOString() ?? null,
     metadata: message.metadata,
+    attachments: messageAttachments(message.attachmentMetadata),
+    providerThreadId: message.providerThreadId,
+    providerReferences: message.providerReferences,
     createdAt: message.createdAt.toISOString(),
     senderUser: message.senderUser ? toPublicUser(message.senderUser) : null
   };
@@ -172,7 +213,7 @@ function defaultHumanReplySubject(conversation: ConversationRecord): string {
 }
 
 function assertHumanReplyActor(actor: AuthenticatedUser, conversation: ConversationRecord): void {
-  if (actor.role === "ADMIN" || actor.role === "SALES_MANAGER") return;
+  if (isWorkspaceManager(actor)) return;
   if (conversation.lead.ownerId === actor.id) return;
   throw new AppError(
     403,
@@ -184,6 +225,7 @@ function assertHumanReplyActor(actor: AuthenticatedUser, conversation: Conversat
 interface SendHumanReplyOptions {
   env?: NodeJS.ProcessEnv;
   emailProvider?: EmailProvider;
+  aiProvider?: AIProvider;
   zohoTransport?: typeof fetch;
 }
 
@@ -198,6 +240,7 @@ export async function createConversation(
   assertCanMutateLead(actor, lead);
 
   const conversation = await createConversationRecord({
+    workspaceId: lead.workspaceId,
     lead: { connect: { id: lead.id } },
     channel: input.channel,
     mode: input.mode
@@ -273,6 +316,7 @@ export async function appendMessage(
       actorUserId: activityActorUserId
     },
     message: {
+      workspaceId: conversation.lead.workspaceId,
       conversation: { connect: { id: conversation.id } },
       providerMessageId: input.providerMessageId ?? null,
       direction: input.direction,
@@ -314,6 +358,7 @@ export async function sendHumanReply(
   if (conversation.channel !== "EMAIL") {
     throw new AppError(409, "CONFLICT", "Human replies can only be sent on email conversations");
   }
+  assertCanMutateLead(actor, conversation.lead);
   assertHumanReplyActor(actor, conversation);
 
   const subject = input.subject ?? defaultHumanReplySubject(conversation);
@@ -361,6 +406,7 @@ export async function sendHumanReply(
   if (!message) {
     message = await prisma.message.create({
       data: {
+        workspaceId: conversation.lead.workspaceId,
         conversationId: conversation.id,
         providerMessageId: outboundEmail.providerMessageId,
         direction: "OUTBOUND",
@@ -449,6 +495,20 @@ export async function sendHumanReply(
     await completeTask(actor, pendingHumanEmailTask.id);
   }
 
+  await prisma.followUpSequence.updateMany({
+    where: {
+      workspaceId: conversation.lead.workspaceId,
+      leadId: conversation.leadId,
+      status: "ATTENTION_REQUIRED",
+      createdAt: { lte: new Date(outboundEmail.sentAt ?? message.createdAt) },
+      OR: [
+        { lastErrorCode: "AI_FOLLOW_UP_REQUIRES_REVIEW" },
+        { lastErrorMessage: "A salesperson must review this follow-up." }
+      ]
+    },
+    data: { status: "STOPPED", stopReason: "HUMAN_REVIEW_COMPLETED", stoppedAt: new Date() }
+  });
+
   const ownership = await completeHumanAction({
     leadId: conversation.leadId,
     reason: "HUMAN_REPLY_SENT",
@@ -461,12 +521,201 @@ export async function sendHumanReply(
   if (ownership.activated) {
     await autoStartLeadAiAutomation(actor, conversation.leadId, {
       env: options?.env,
+      provider: options?.aiProvider,
       cycleKey: `human-reply:${outboundEmail.id}`
     });
   }
 
   await publishConversationUpdate(conversation.leadId, conversation.id, "human-reply-sent");
   return { outboundEmail, message: toMessageDto(message), zohoTimeline };
+}
+
+export async function sendHumanWhatsAppReply(
+  actor: AuthenticatedUser,
+  conversationId: string,
+  input: SendHumanReplyInput,
+  options?: { env?: NodeJS.ProcessEnv; transport?: MessagingTransport; aiProvider?: AIProvider }
+): Promise<HumanWhatsAppReplyDto> {
+  const conversation = requireConversation(await findConversationById(conversationId));
+  assertCanMutateLead(actor, conversation.lead);
+  assertHumanReplyActor(actor, conversation);
+  if (conversation.channel !== "WHATSAPP" || conversation.status !== "OPEN") {
+    throw new AppError(409, "CONFLICT", "Select an open WhatsApp conversation");
+  }
+  const idempotencyKey = `human-whatsapp:${conversationId}:${input.idempotencyKey}`;
+  let outbound = await prisma.outboundWhatsAppMessage.findUnique({ where: { idempotencyKey } });
+  if (outbound && (outbound.textBody !== input.body || outbound.workspaceId !== conversation.lead.workspaceId)) {
+    throw new AppError(409, "CONFLICT", "This reply request was already used for another message");
+  }
+  if (conversation.mode !== "HUMAN" && !outbound) {
+    throw new AppError(409, "CONFLICT", "Take over the WhatsApp conversation before replying");
+  }
+  if (!outbound && (conversation.lead.contact.doNotContact || ["WON", "LOST", "DISQUALIFIED"].includes(conversation.lead.status))) {
+    throw new AppError(409, "CONFLICT", "This contact cannot receive a WhatsApp reply");
+  }
+  const latestInbound = outbound ? null : await prisma.message.findFirst({
+    where: { conversationId, direction: "INBOUND", senderType: "PROSPECT" },
+    orderBy: { createdAt: "desc" }
+  });
+  if (!outbound && (!latestInbound || Date.now() - latestInbound.createdAt.getTime() >= 24 * 60 * 60 * 1000)) {
+    throw new AppError(409, "CONFLICT", "The WhatsApp reply window has closed. Use an approved template to contact this customer.");
+  }
+  const to = conversation.lead.contact.whatsappId ?? conversation.lead.contact.normalizedPhone;
+  if (!to || !/^\+?[1-9]\d{7,14}$/u.test(to)) {
+    throw new AppError(409, "CONFLICT", "Add a valid WhatsApp number to this contact first");
+  }
+  const workspaceId = conversation.lead.workspaceId;
+  if (!workspaceId) throw new AppError(409, "CONFLICT", "Lead workspace is missing");
+  const config = getMessagingConfig(options?.env);
+  const provider = config.provider === "twilio_whatsapp" ? "TWILIO" : "META_WHATSAPP";
+  if (config.provider !== "none") {
+    const connection = await prisma.integrationAccount.findUnique({
+      where: { workspaceId_provider_key: { workspaceId, provider, key: provider === "TWILIO" ? "whatsapp" : "default" } },
+      select: { status: true }
+    });
+    if (connection?.status === "DISABLED") {
+      throw new AppError(409, "CONFLICT", "WhatsApp is disabled for this workspace");
+    }
+  }
+  if (config.nodeEnv !== "production" && config.e2eAllowedToNumbers.length > 0 &&
+    !config.e2eAllowedToNumbers.some((number) => number.replace(/\D/gu, "") === to.replace(/\D/gu, ""))) {
+    throw new AppError(409, "CONFLICT", "This number is not allowed for local WhatsApp testing");
+  }
+  let created = false;
+  if (!outbound) {
+    try {
+      outbound = await prisma.outboundWhatsAppMessage.create({
+        data: {
+          workspaceId,
+          leadId: conversation.leadId,
+          contactId: conversation.lead.contactId,
+          conversationId,
+          provider,
+          toWhatsAppId: to,
+          normalizedToPhone: conversation.lead.contact.normalizedPhone,
+          textBody: input.body,
+          messageType: "text",
+          senderType: "USER",
+          idempotencyKey,
+          status: "PROVIDER_PENDING"
+        }
+      });
+      created = true;
+    } catch (error) {
+      if (!(error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002")) throw error;
+      outbound = await prisma.outboundWhatsAppMessage.findUniqueOrThrow({ where: { idempotencyKey } });
+    }
+  }
+  if (outbound.textBody !== input.body || outbound.workspaceId !== workspaceId) {
+    throw new AppError(409, "CONFLICT", "This reply request was already used for another message");
+  }
+  if (created) {
+    const result = await sendWhatsAppText(config, {
+      to,
+      body: input.body,
+      idempotencyKey,
+      replyToProviderMessageId: latestInbound?.providerMessageId
+    }, options?.transport);
+    if (result.status !== "ACCEPTED" || !result.providerMessageId) {
+      if (result.status === "UNCERTAIN") {
+        await prisma.outboundWhatsAppMessage.update({
+          where: { id: outbound.id },
+          data: {
+            providerStatus: "unconfirmed",
+            failureCode: "WHATSAPP_DELIVERY_UNCONFIRMED",
+            failureMessage: result.lastError
+          }
+        });
+        return { message: null, status: "PENDING", failureMessage: result.lastError };
+      }
+      await prisma.outboundWhatsAppMessage.update({
+        where: { id: outbound.id },
+        data: {
+          status: result.status === "NOT_CONFIGURED" ? "NOT_CONFIGURED" : "FAILED",
+          deliveryStatus: "FAILED",
+          failureCode: result.status === "NOT_CONFIGURED" ? "WHATSAPP_NOT_CONFIGURED" : "WHATSAPP_PROVIDER_ERROR",
+          failureMessage: result.lastError,
+          failedAt: new Date()
+        }
+      });
+      return { message: null, status: result.status === "NOT_CONFIGURED" ? "NOT_CONFIGURED" : "FAILED", failureMessage: result.lastError };
+    }
+    outbound = await prisma.outboundWhatsAppMessage.update({
+      where: { id: outbound.id },
+      data: { providerMessageId: result.providerMessageId, providerStatus: result.providerStatus }
+    });
+  }
+  if (!outbound.providerMessageId) {
+    return {
+      message: null,
+      status: outbound.status === "FAILED" ? "FAILED" : outbound.status === "NOT_CONFIGURED" ? "NOT_CONFIGURED" : "PENDING",
+      failureMessage: outbound.failureMessage
+    };
+  }
+  const providerMessageId = outbound.providerMessageId;
+  const saved = await prisma.$transaction(async (tx) => {
+    const claimed = await tx.outboundWhatsAppMessage.updateMany({
+      where: { id: outbound.id, status: "PROVIDER_PENDING", providerMessageId },
+      data: { status: "SENT", deliveryStatus: "SENT", sentAt: new Date(), failureCode: null, failureMessage: null }
+    });
+    if (claimed.count === 0) return { activated: false };
+    const message = await tx.message.upsert({
+      where: { providerMessageId },
+      create: {
+        workspaceId,
+        conversationId,
+        providerMessageId,
+        direction: "OUTBOUND",
+        senderType: "USER",
+        senderUserId: actor.id,
+        body: input.body,
+        deliveryStatus: "SENT",
+        sentAt: new Date(),
+        metadata: { outboundWhatsAppMessageId: outbound.id, source: "HUMAN_REPLY" }
+      },
+      update: {}
+    });
+    await tx.conversation.update({ where: { id: conversationId }, data: { lastMessageAt: message.createdAt } });
+    await tx.activity.create({
+      data: {
+        workspaceId,
+        leadId: conversation.leadId,
+        actorType: "USER",
+        actorUserId: actor.id,
+        sourceType: "CONVERSATION",
+        sourceId: conversationId,
+        type: "WHATSAPP_SENT",
+        title: "WhatsApp reply sent",
+        description: "A salesperson replied to the customer on WhatsApp.",
+        visibility: "BUSINESS",
+        correlationId: outbound.id
+      }
+    });
+    const ownership = await completeHumanActionInTransaction({
+      client: tx,
+      leadId: conversation.leadId,
+      reason: "HUMAN_REPLY_SENT",
+      actorType: "USER",
+      actorId: actor.id,
+      sourceType: "CONVERSATION",
+      sourceId: conversationId,
+      correlationId: outbound.id
+    });
+    return ownership;
+  }, { maxWait: 10_000, timeout: 30_000 });
+  if (saved.activated) {
+    await autoStartLeadAiAutomation(actor, conversation.leadId, {
+      env: options?.env,
+      provider: options?.aiProvider,
+      cycleKey: `human-whatsapp:${outbound.id}`
+    });
+  }
+  const message = await prisma.message.findUnique({
+    where: { providerMessageId },
+    include: { senderUser: true }
+  });
+  await publishConversationUpdate(conversation.leadId, conversationId, "human-whatsapp-reply-sent");
+  return { message: message ? toMessageDto(message) : null, status: "SENT", failureMessage: null };
 }
 
 export async function updateConversationMode(

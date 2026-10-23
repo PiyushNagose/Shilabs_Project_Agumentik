@@ -10,6 +10,9 @@ import {
   type DomainEventProcessJobData
 } from "./domain-event.constants.js";
 import { redisConnectionFromUrl } from "./redis.js";
+import { runRetentionCleanup } from "../privacy/retention.runner.js";
+
+const RETENTION_CLEANUP_JOB = "privacy.cleanup-due";
 
 type DomainEventJobData = DomainEventDispatchJobData | DomainEventProcessJobData;
 
@@ -29,8 +32,10 @@ export function createDomainEventQueue(
 
 async function processJob(
   job: Job<DomainEventJobData>,
-  queue: Queue<DomainEventJobData>
+  queue: Queue<DomainEventJobData>,
+  env: NodeJS.ProcessEnv
 ): Promise<unknown> {
+  if (job.name === RETENTION_CLEANUP_JOB) return runRetentionCleanup(env);
   if (job.name === DOMAIN_EVENT_DISPATCH_JOB) {
     return dispatchDueDomainEvents({ queue });
   }
@@ -53,7 +58,7 @@ export async function startDomainEventWorker(
   const queue = new Queue<DomainEventJobData>(config.domainEventQueueName, { connection });
   const worker = new BullWorker<DomainEventJobData>(
     config.domainEventQueueName,
-    (job) => processJob(job, queue),
+    (job) => processJob(job, queue, env),
     {
       connection,
       concurrency: config.domainEventWorkerConcurrency
@@ -98,6 +103,21 @@ export async function startDomainEventWorker(
       data: { requestedAt: new Date().toISOString() },
       opts: {
         removeOnComplete: { age: 3600, count: 100 },
+        removeOnFail: false
+      }
+    }
+  );
+
+  await queue.upsertJobScheduler(
+    "privacy.cleanup-scheduler",
+    { every: 3600000 },
+    {
+      name: RETENTION_CLEANUP_JOB,
+      data: { requestedAt: new Date().toISOString() },
+      opts: {
+        attempts: 5,
+        backoff: { type: "exponential", delay: 15000 },
+        removeOnComplete: { age: 86400, count: 24 },
         removeOnFail: false
       }
     }

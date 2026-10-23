@@ -1,4 +1,4 @@
-import { AgentType, BriefingKind, Prisma, UserRole } from "@prisma/client";
+import { AgentType, BriefingKind, Prisma } from "@prisma/client";
 import type { BriefingEvidenceReferenceDto, BriefingRunDto } from "@shilabs/shared-types";
 import { getAIConfig } from "../../config/ai.js";
 import { AppError } from "../../shared/errors.js";
@@ -9,6 +9,7 @@ import type { AIProvider, BriefingResult } from "../ai/ai.provider.js";
 import { briefingResultSchema } from "../ai/ai.schemas.js";
 import { sourceContainsGroundedQuote } from "../ai/grounding.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
+import { isWorkspaceManager } from "../authorization/workspace-permissions.js";
 import { publishDomainEvent } from "../domain-events/domain-events.service.js";
 import { listApprovedKnowledge } from "../knowledge-base/knowledge-base.service.js";
 import type { GenerateBriefingInput, ListBriefingsQuery } from "./briefing.schemas.js";
@@ -62,12 +63,7 @@ type LeadContext = Prisma.LeadGetPayload<{ include: typeof leadContextInclude }>
 type BriefingRunRecord = Prisma.BriefingRunGetPayload<{ include: typeof runInclude }>;
 
 function canSeeLead(actor: AuthenticatedUser, lead: { ownerId: string | null }): boolean {
-  return (
-    actor.role === UserRole.ADMIN ||
-    actor.role === UserRole.SALES_MANAGER ||
-    lead.ownerId === actor.id ||
-    lead.ownerId === null
-  );
+  return isWorkspaceManager(actor) || lead.ownerId === actor.id || lead.ownerId === null;
 }
 
 function toJson(value: unknown): Prisma.InputJsonValue {
@@ -475,7 +471,9 @@ async function generateBriefing(input: {
     lead: input.lead,
     meetingRequestId: input.meetingRequestId
   });
-  const knowledge = await listApprovedKnowledge({ limit: 30 });
+  if (!input.lead.workspaceId)
+    throw new AppError(409, "CONFLICT", "Lead has no persisted workspace");
+  const knowledge = await listApprovedKnowledge(input.lead.workspaceId, { limit: 30 });
   const knowledgeSources = knowledge.map((item) => ({
     id: item.versionId,
     sourceType: "APPROVED_KB",
@@ -617,10 +615,9 @@ export async function listBriefings(
       meetingRequestId: query.meetingRequestId,
       kind: query.kind,
       status: query.status,
-      lead:
-        actor.role === UserRole.ADMIN || actor.role === UserRole.SALES_MANAGER
-          ? undefined
-          : { OR: [{ ownerId: actor.id }, { ownerId: null }] }
+      lead: isWorkspaceManager(actor)
+        ? undefined
+        : { OR: [{ ownerId: actor.id }, { ownerId: null }] }
     },
     include: runInclude,
     orderBy: [{ createdAt: "desc" }],

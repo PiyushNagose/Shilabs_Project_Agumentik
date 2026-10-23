@@ -16,6 +16,8 @@ import {
 import { ZohoTimelineSyncer, type TimelineSyncer } from "../followups/zoho-timeline.syncer.js";
 import { normalizeAutomationPhone } from "../shared/automation-phone.js";
 import { isAgentCapabilityActive } from "../shared/agent-control.js";
+import { hasProspectInboundAfter } from "../shared/prospect-inbound.js";
+import { deferChannelAttemptForPromise, recordPreferredFollowUpAccepted, resolvePreferredFollowUpChannel } from "../followups/preferred-followup.service.js";
 
 type EligibilityBlock = readonly [
   code: string,
@@ -77,27 +79,6 @@ function addMinutes(date: Date, minutes: number): Date {
   return new Date(date.getTime() + minutes * 60_000);
 }
 
-async function hasProspectInboundAfter(input: { leadId: string; since: Date }): Promise<boolean> {
-  const [emailCount, messageCount] = await Promise.all([
-    workerPrisma.inboundEmail.count({
-      where: { leadId: input.leadId, status: "PROCESSED", receivedAt: { gte: input.since } }
-    }),
-    workerPrisma.message.count({
-      where: {
-        direction: "INBOUND",
-        senderType: "PROSPECT",
-        conversation: { leadId: input.leadId },
-        OR: [
-          { sentAt: { gte: input.since } },
-          { deliveredAt: { gte: input.since } },
-          { createdAt: { gte: input.since } }
-        ]
-      }
-    })
-  ]);
-  return emailCount > 0 || messageCount > 0;
-}
-
 function missingVoiceConfig(config: VoiceConfig): string[] {
   const missing: string[] = [];
   if (config.provider === "none") {
@@ -151,7 +132,7 @@ export async function scheduleCallingSequenceAfterFailedEmailSequence(input: {
   const existing = await workerPrisma.callingSequence.findUnique({ where: { idempotencyKey } });
   if (existing) return;
 
-  const now = input.now ?? new Date();
+  const now = new Date(Math.max((input.now ?? new Date()).getTime(), sequence.lead.nextActionAt?.getTime() ?? 0));
   const offsets = callingOffsets(config);
   await workerPrisma.$transaction(
     async (tx) => {
@@ -250,10 +231,10 @@ export async function scheduleCallingSequenceAfterFailedEmailSequence(input: {
           }
         }
       });
-      await tx.lead.update({
-        where: { id: sequence.leadId },
+      await tx.lead.updateMany({
+        where: { id: sequence.leadId, nextActionAt: sequence.lead.nextActionAt, nextAction: sequence.lead.nextAction },
         data: {
-          nextAction: "Call lead and send WhatsApp follow-up",
+          nextAction: sequence.lead.nextAction ?? "Call lead and send WhatsApp follow-up",
           nextActionAt: now
         }
       });
@@ -311,8 +292,11 @@ async function markAttemptBlocked(input: {
         after: { code: input.code, message: input.message }
       }
     });
-    await tx.lead.update({
-      where: { id: input.leadId },
+    await tx.lead.updateMany({
+      where: {
+        id: input.leadId,
+        OR: [{ nextActionAt: null }, { nextActionAt: { lte: now } }]
+      },
       data: {
         nextAction:
           input.sequenceStatus === "ATTENTION_REQUIRED" ? "Review call/WhatsApp automation" : null,
@@ -369,13 +353,24 @@ export async function executeCallingAutomationAttempt(input: {
   const attempt = await workerPrisma.callingAttempt.findFirst({
     where: { id: attemptId, sequence: { workspaceId: eventWorkspaceId } },
     include: {
-      sequence: true,
-      lead: { include: { contact: true, conversations: { where: { channel: "EMAIL" }, take: 1 } } },
+      sequence: { include: { followUpSequence: true } },
+      lead: { include: { contact: true, intelligence: true, conversations: true } },
       voiceCallAttempt: true
     }
   });
   if (!attempt) {
     throw new PermanentDomainEventError("CALLING_ATTEMPT_NOT_FOUND", "Calling attempt not found");
+  }
+  if (attempt.status === "ACCEPTED" && attempt.voiceCallAttempt?.providerCallId) {
+    await recordPreferredFollowUpAccepted(input.event);
+    if (attempt.activityId)
+      await syncAcceptedCallToZoho({
+        attemptId,
+        activityId: attempt.activityId,
+        env: input.env ?? process.env,
+        timelineSyncer: input.timelineSyncer
+      });
+    return;
   }
   if (attempt.status === "COMPLETED" || attempt.status === "SKIPPED") return;
   if (attempt.sequence.status !== "ACTIVE") {
@@ -417,7 +412,7 @@ export async function executeCallingAutomationAttempt(input: {
   });
   const inboundAfterSequence = await hasProspectInboundAfter({
     leadId: lead.id,
-    since: attempt.sequence.createdAt
+    since: attempt.sequence.followUpSequence?.createdAt ?? attempt.sequence.createdAt
   });
 
   const voiceConfig = getVoiceConfig(input.env);
@@ -430,66 +425,86 @@ export async function executeCallingAutomationAttempt(input: {
     voiceConfig.provider === "twilio"
       ? normalizeAutomationPhone(configuredFromPhone)
       : configuredFromPhone.trim();
-  const block: EligibilityBlock | null = !normalizedToPhone
-    ? ["CONTACT_PHONE_MISSING", "Contact phone is not usable", "ATTENTION_REQUIRED"]
-    : !normalizedFromPhone
+  const preferredChannel = payloadString(input.event, "preferredChannel");
+  const controlsBlocked =
+    ["OFF", "PAUSED"].includes(lead.intelligence?.aiControlStatus ?? "") ||
+    lead.intelligence?.humanInterventionRequired === true ||
+    lead.conversations.some((item) => ["HUMAN", "PAUSED", "CLOSED"].includes(item.mode));
+  const block: EligibilityBlock | null = controlsBlocked
+    ? ["AUTOMATION_PAUSED", "Lead controls block calling", "STOPPED"]
+    : preferredChannel &&
+        (resolvePreferredFollowUpChannel(lead) !== preferredChannel ||
+          attempt.sequence.followUpSequence?.status !== "ACTIVE")
       ? [
-          "VOICE_FROM_PHONE_MISSING",
-          `${providerDisplayName(voiceConfig)} from number is not usable`,
-          "ATTENTION_REQUIRED"
+          "PREFERRED_CHANNEL_CHANGED",
+          "Preferred channel or source follow-up sequence changed",
+          "STOPPED"
         ]
-      : lead.contact.doNotContact
-        ? ["CONTACT_DO_NOT_CONTACT", "Contact is marked do-not-contact", "STOPPED"]
-        : ["WON", "LOST", "DISQUALIFIED"].includes(lead.status)
-          ? ["TERMINAL_LEAD", `Lead status ${lead.status} forbids calling`, "STOPPED"]
-          : lead.automationOwnershipState !== "AI_ACTIVE"
-            ? [
-                "AI_OWNERSHIP_INACTIVE",
-                `Lead automation ownership is ${lead.automationOwnershipState}`,
-                "STOPPED"
-              ]
-            : conversation && ["HUMAN", "PAUSED", "CLOSED"].includes(conversation.mode)
-              ? [
-                  "AUTOMATION_PAUSED",
-                  `Conversation mode ${conversation.mode} blocks calling`,
-                  "STOPPED"
-                ]
-              : activeTakeover
-                ? ["HUMAN_TAKEOVER_ACTIVE", "Human takeover blocks calling automation", "STOPPED"]
-                : inboundAfterSequence
+      : !normalizedToPhone
+        ? ["CONTACT_PHONE_MISSING", "Contact phone is not usable", "ATTENTION_REQUIRED"]
+        : !normalizedFromPhone
+          ? [
+              "VOICE_FROM_PHONE_MISSING",
+              `${providerDisplayName(voiceConfig)} from number is not usable`,
+              "ATTENTION_REQUIRED"
+            ]
+          : lead.contact.doNotContact
+            ? ["CONTACT_DO_NOT_CONTACT", "Contact is marked do-not-contact", "STOPPED"]
+            : ["WON", "LOST", "DISQUALIFIED"].includes(lead.status)
+              ? ["TERMINAL_LEAD", `Lead status ${lead.status} forbids calling`, "STOPPED"]
+              : lead.automationOwnershipState !== "AI_ACTIVE"
+                ? [
+                    "AI_OWNERSHIP_INACTIVE",
+                    `Lead automation ownership is ${lead.automationOwnershipState}`,
+                    "STOPPED"
+                  ]
+                : conversation && ["HUMAN", "PAUSED", "CLOSED"].includes(conversation.mode)
                   ? [
-                      "INBOUND_REPLY_RECEIVED",
-                      "Inbound reply stopped calling automation",
+                      "AUTOMATION_PAUSED",
+                      `Conversation mode ${conversation.mode} blocks calling`,
                       "STOPPED"
                     ]
-                  : voiceConfig.nodeEnv === "production" && !voiceConfig.productionCallingEnabled
+                  : activeTakeover
                     ? [
-                        "PRODUCTION_CALLING_DISABLED",
-                        "Production voice calling is disabled",
-                        "ATTENTION_REQUIRED"
+                        "HUMAN_TAKEOVER_ACTIVE",
+                        "Human takeover blocks calling automation",
+                        "STOPPED"
                       ]
-                    : voiceConfig.nodeEnv === "production" &&
-                        voiceConfig.complianceConsentMode !== "confirmed"
+                    : inboundAfterSequence
                       ? [
-                          "VOICE_CONSENT_NOT_CONFIRMED",
-                          "Production calling consent/compliance is not confirmed",
-                          "ATTENTION_REQUIRED"
+                          "INBOUND_REPLY_RECEIVED",
+                          "Inbound reply stopped calling automation",
+                          "STOPPED"
                         ]
-                      : voiceConfig.nodeEnv !== "production" &&
-                          voiceConfig.e2eAllowedToNumbers.length > 0 &&
-                          !voiceConfig.e2eAllowedToNumbers.includes(normalizedToPhone)
+                      : voiceConfig.nodeEnv === "production" &&
+                          !voiceConfig.productionCallingEnabled
                         ? [
-                            "E2E_NUMBER_NOT_ALLOWED",
-                            "Destination number is not allowed for local E2E voice testing",
+                            "PRODUCTION_CALLING_DISABLED",
+                            "Production voice calling is disabled",
                             "ATTENTION_REQUIRED"
                           ]
-                        : missingVoiceConfig(voiceConfig).length > 0
+                        : voiceConfig.nodeEnv === "production" &&
+                            voiceConfig.complianceConsentMode !== "confirmed"
                           ? [
-                              "VOICE_NOT_CONFIGURED",
-                              `Missing configuration: ${missingVoiceConfig(voiceConfig).join(", ")}`,
+                              "VOICE_CONSENT_NOT_CONFIRMED",
+                              "Production calling consent/compliance is not confirmed",
                               "ATTENTION_REQUIRED"
                             ]
-                          : null;
+                          : voiceConfig.nodeEnv !== "production" &&
+                              voiceConfig.e2eAllowedToNumbers.length > 0 &&
+                              !voiceConfig.e2eAllowedToNumbers.includes(normalizedToPhone)
+                            ? [
+                                "E2E_NUMBER_NOT_ALLOWED",
+                                "Destination number is not allowed for local E2E voice testing",
+                                "ATTENTION_REQUIRED"
+                              ]
+                            : missingVoiceConfig(voiceConfig).length > 0
+                              ? [
+                                  "VOICE_NOT_CONFIGURED",
+                                  `Missing configuration: ${missingVoiceConfig(voiceConfig).join(", ")}`,
+                                  "ATTENTION_REQUIRED"
+                                ]
+                              : null;
 
   if (block) {
     await markAttemptBlocked({
@@ -508,11 +523,31 @@ export async function executeCallingAutomationAttempt(input: {
   const existingCall = await workerPrisma.voiceCallAttempt.findUnique({
     where: { idempotencyKey: attempt.idempotencyKey }
   });
+  const resumingDeferredCall = existingCall?.status === "REQUESTED" &&
+    existingCall.failureCode === "VOICE_PROMISE_DEFERRED" && !existingCall.providerCallId;
+  if (existingCall && !existingCall.providerCallId && !resumingDeferredCall) {
+    const code = existingCall.failureCode ?? "VOICE_PROVIDER_OUTCOME_UNKNOWN";
+    const message =
+      existingCall.failureMessage ??
+      "Existing call has no confirmed provider acceptance; review before retrying";
+    await markAttemptBlocked({
+      workspaceId: eventWorkspaceId,
+      attemptId,
+      sequenceId: attempt.sequenceId,
+      leadId: lead.id,
+      status: "FAILED",
+      sequenceStatus: "ATTENTION_REQUIRED",
+      code,
+      message
+    });
+    throw new PermanentDomainEventError(code, message);
+  }
   let voiceCall = existingCall;
   let activityId = attempt.activityId;
 
-  if (!voiceCall) {
-    voiceCall = await workerPrisma.voiceCallAttempt.create({
+  if (!voiceCall || resumingDeferredCall) {
+    if (await deferChannelAttemptForPromise(input.event, attempt.id)) return;
+    voiceCall = voiceCall ?? await workerPrisma.voiceCallAttempt.create({
       data: {
         workspaceId: attempt.sequence.workspaceId,
         leadId: lead.id,
@@ -531,34 +566,70 @@ export async function executeCallingAutomationAttempt(input: {
         idempotencyKey: attempt.idempotencyKey
       }
     });
+    if (resumingDeferredCall) {
+      const claimed = await workerPrisma.voiceCallAttempt.updateMany({
+        where: { id: voiceCall.id, status: "REQUESTED", failureCode: "VOICE_PROMISE_DEFERRED", providerCallId: null },
+        data: { status: "PROVIDER_PENDING", failureCode: null }
+      });
+      if (claimed.count !== 1) return;
+    }
     await workerPrisma.callingAttempt.update({
       where: { id: attempt.id },
       data: { status: "CALLING", startedAt: new Date(), voiceCallAttemptId: voiceCall.id }
     });
 
-    await assertWorkspaceIntegrationEnabled({
-      workspaceId: eventWorkspaceId,
-      provider: voiceConfig.provider === "exotel" ? "EXOTEL" : "TWILIO",
-      key: "voice"
-    });
-    const provider = input.provider ?? createConfiguredVoiceProvider(voiceConfig);
-    const result = await provider.createOutboundCall({
-      to: normalizedToPhone ?? "",
-      from: normalizedFromPhone ?? "",
-      twimlUrl: `${voiceConfig.webhookBaseUrl.replace(/\/$/, "")}/api/voice/twilio/twiml/test-call?attemptId=${voiceCall.id}`,
-      statusCallbackUrl: webhookUrl(
-        voiceConfig,
-        voiceConfig.provider === "exotel"
-          ? voiceConfig.exotel.statusCallbackPath
-          : voiceConfig.twilio.statusCallbackPath
-      ),
-      recordingCallbackUrl: voiceConfig.recordingEnabled
-        ? webhookUrl(voiceConfig, voiceConfig.twilio.recordingCallbackPath)
-        : null,
-      recordingEnabled: voiceConfig.recordingEnabled,
-      transcriptionEnabled: voiceConfig.transcriptionEnabled,
-      idempotencyKey: attempt.idempotencyKey
-    });
+    const result = await (async () => {
+      try {
+        await assertWorkspaceIntegrationEnabled({
+          workspaceId: eventWorkspaceId,
+          provider: voiceConfig.provider === "exotel" ? "EXOTEL" : "TWILIO",
+          key: "voice"
+        });
+        if (await deferChannelAttemptForPromise(input.event, attempt.id, voiceCall.id)) return null;
+        const provider = input.provider ?? createConfiguredVoiceProvider(voiceConfig);
+        return await provider.createOutboundCall({
+          to: normalizedToPhone ?? "",
+          from: normalizedFromPhone ?? "",
+          twimlUrl: `${voiceConfig.webhookBaseUrl.replace(/\/$/, "")}/api/voice/twilio/twiml/test-call?attemptId=${voiceCall.id}`,
+          statusCallbackUrl: webhookUrl(
+            voiceConfig,
+            voiceConfig.provider === "exotel"
+              ? voiceConfig.exotel.statusCallbackPath
+              : voiceConfig.twilio.statusCallbackPath
+          ),
+          recordingCallbackUrl: voiceConfig.recordingEnabled
+            ? webhookUrl(voiceConfig, voiceConfig.twilio.recordingCallbackPath)
+            : null,
+          recordingEnabled: voiceConfig.recordingEnabled,
+          transcriptionEnabled: voiceConfig.transcriptionEnabled,
+          idempotencyKey: attempt.idempotencyKey
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Voice provider request failed";
+        await workerPrisma.voiceCallAttempt.update({
+          where: { id: voiceCall.id },
+          data: {
+            status: "FAILED",
+            failureCode: "VOICE_PROVIDER_ERROR",
+            failureMessage: message,
+            completedAt: new Date()
+          }
+        });
+        await markAttemptBlocked({
+          workspaceId: eventWorkspaceId,
+          attemptId,
+          sequenceId: attempt.sequenceId,
+          leadId: lead.id,
+          status: "FAILED",
+          sequenceStatus: "ATTENTION_REQUIRED",
+          code: "VOICE_PROVIDER_ERROR",
+          message
+        });
+        throw error;
+      }
+    })();
+
+    if (!result) return;
 
     if (result.status !== "ACCEPTED" || !result.providerCallId) {
       await workerPrisma.voiceCallAttempt.update({
@@ -672,6 +743,7 @@ export async function executeCallingAutomationAttempt(input: {
       await tx.domainEventOutbox.upsert({
         where: { idempotencyKey: `domain-event:calling-attempt-accepted:${attempt.id}` },
         create: {
+          workspaceId: eventWorkspaceId,
           eventType: "CALL_REQUESTED",
           aggregateType: "VoiceCallAttempt",
           aggregateId: updatedCall.id,
@@ -686,6 +758,7 @@ export async function executeCallingAutomationAttempt(input: {
     activityId = saved.activityId;
   }
 
+  await recordPreferredFollowUpAccepted(input.event);
   if (!activityId) {
     const activity = await workerPrisma.activity.findFirst({
       where: { leadId: lead.id, type: "CALL_REQUESTED" },

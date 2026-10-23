@@ -67,6 +67,21 @@ export function createLeadIntelligenceDocument(
     body: JSON.stringify(body)
   });
 }
+export function uploadLeadIntelligenceDocument(
+  token: string,
+  leadId: string,
+  input: { title: string; kind: LeadDocumentKindName; file: File }
+): Promise<LeadDocumentDto> {
+  const body = new FormData();
+  body.set("title", input.title);
+  body.set("kind", input.kind);
+  body.set("file", input.file);
+  return apiRequest(
+    `/api/lead-intelligence/leads/${encodeURIComponent(leadId)}/documents/upload`,
+    token,
+    { method: "POST", body }
+  );
+}
 export function deleteLeadIntelligenceDocument(
   token: string,
   leadId: string,

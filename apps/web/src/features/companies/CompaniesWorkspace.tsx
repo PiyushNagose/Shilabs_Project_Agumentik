@@ -28,7 +28,7 @@ import { LeadTimeline, leadName } from "../leads/LeadExperience.js";
 import type { DetailTab } from "../leads/CrmWorkspace.js";
 
 type CompanyMode = "grid" | "list";
-type CompanySort = "name" | "activity" | "contacts";
+type CompanySort = "recent" | "name" | "activity" | "contacts";
 
 interface CompaniesData {
   companies: CompanyDto[];
@@ -192,7 +192,7 @@ export function CompaniesWorkspace({
   const [search, setSearch] = useState("");
   const [industry, setIndustry] = useState("");
   const [status, setStatus] = useState("");
-  const [sort, setSort] = useState<CompanySort>("name");
+  const [sort, setSort] = useState<CompanySort>("recent");
   const [mode, setMode] = useState<CompanyMode>("grid");
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedCompanyId, setSelectedCompanyId] = useState<string | null>(null);
@@ -281,6 +281,13 @@ export function CompaniesWorkspace({
           )
       )
       .sort((left, right) => {
+        if (sort === "recent") {
+          return (
+            Date.parse(right.createdAt) - Date.parse(left.createdAt) ||
+            left.name.localeCompare(right.name) ||
+            left.id.localeCompare(right.id)
+          );
+        }
         if (sort === "contacts") {
           return (
             data.contacts.filter((contact) => contact.companyId === right.id).length -
@@ -376,6 +383,7 @@ export function CompaniesWorkspace({
             icon={<SlidersHorizontal size={16} />}
             onChange={(value) => setSort(value as CompanySort)}
             options={[
+              { value: "recent", label: "Newest first" },
               { value: "name", label: "Company name" },
               { value: "activity", label: "Latest activity" },
               { value: "contacts", label: "Most contacts" }

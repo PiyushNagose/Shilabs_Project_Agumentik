@@ -135,8 +135,8 @@ async function loadLeadContext(leadId: string) {
   });
 }
 
-async function approvedKnowledge(): Promise<KnowledgeEvidence[]> {
-  const entries = await listApprovedKnowledge({ limit: 30 });
+async function approvedKnowledge(workspaceId: string): Promise<KnowledgeEvidence[]> {
+  const entries = await listApprovedKnowledge(workspaceId, { limit: 30 });
   return entries.map((entry) => ({
     id: entry.versionId,
     key: entry.key,
@@ -304,7 +304,8 @@ export async function generateProposal(
     );
   }
 
-  const knowledge = await approvedKnowledge();
+  if (!lead.workspaceId) throw new AppError(409, "CONFLICT", "Lead has no persisted workspace");
+  const knowledge = await approvedKnowledge(lead.workspaceId);
   let metadata: { provider: string; model: string } | null = null;
   try {
     metadata = aiMetadata(options?.env);
@@ -378,6 +379,7 @@ export async function generateProposal(
     });
     await prisma.activity.create({
       data: {
+        workspaceId: lead.workspaceId,
         leadId: input.leadId,
         actorUserId: actor.id,
         type: "PROPOSAL_GENERATED",
@@ -386,6 +388,7 @@ export async function generateProposal(
     });
     await prisma.auditEvent.create({
       data: {
+        workspaceId: lead.workspaceId,
         actorType: "USER",
         actorId: actor.id,
         entityType: "ProposalGenerationRun",

@@ -1,4 +1,5 @@
 import request from "supertest";
+import { WorkspaceMemberStatus, WorkspaceRole } from "@prisma/client";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { AuthResponse, CompanyDto, ContactDto } from "@shilabs/shared-types";
 import { createApp } from "../../app.js";
@@ -43,6 +44,11 @@ async function login(email: string): Promise<string> {
 describe("Phase 0 CRM object authorization", () => {
   beforeEach(async () => {
     await cleanup();
+    const workspace = await prisma.workspace.upsert({
+      where: { slug: "default" },
+      create: { name: "Default Workspace", slug: "default" },
+      update: {}
+    });
     const passwordHash = await hashPassword("CorrectHorse123!");
     const [owner, other] = await Promise.all([
       prisma.user.create({
@@ -51,7 +57,14 @@ describe("Phase 0 CRM object authorization", () => {
           passwordHash,
           firstName: "Record",
           lastName: "Owner",
-          role: "SALES_REP"
+          role: "SALES_REP",
+          workspaceMemberships: {
+            create: {
+              workspaceId: workspace.id,
+              role: WorkspaceRole.SALES_REP,
+              status: WorkspaceMemberStatus.ACTIVE
+            }
+          }
         }
       }),
       prisma.user.create({
@@ -60,17 +73,32 @@ describe("Phase 0 CRM object authorization", () => {
           passwordHash,
           firstName: "Other",
           lastName: "Rep",
-          role: "SALES_REP"
+          role: "SALES_REP",
+          workspaceMemberships: {
+            create: {
+              workspaceId: workspace.id,
+              role: WorkspaceRole.SALES_REP,
+              status: WorkspaceMemberStatus.ACTIVE
+            }
+          }
         }
       })
     ]);
     const stage = await prisma.pipelineStage.findUniqueOrThrow({ where: { key: "NEW" } });
-    const company = await prisma.company.create({ data: { name: companyName } });
+    const company = await prisma.company.create({
+      data: { workspaceId: workspace.id, name: companyName }
+    });
     const contact = await prisma.contact.create({
-      data: { companyId: company.id, firstName: "Private", lastName: "Contact" }
+      data: {
+        workspaceId: workspace.id,
+        companyId: company.id,
+        firstName: "Private",
+        lastName: "Contact"
+      }
     });
     const lead = await prisma.lead.create({
       data: {
+        workspaceId: workspace.id,
         companyId: company.id,
         contactId: contact.id,
         ownerId: owner.id,
@@ -80,6 +108,7 @@ describe("Phase 0 CRM object authorization", () => {
     });
     await prisma.deal.create({
       data: {
+        workspaceId: workspace.id,
         leadId: lead.id,
         stageId: stage.id,
         ownerId: owner.id,
@@ -87,7 +116,7 @@ describe("Phase 0 CRM object authorization", () => {
       }
     });
     await prisma.conversation.create({
-      data: { leadId: lead.id, channel: "EMAIL", mode: "AUTO" }
+      data: { workspaceId: workspace.id, leadId: lead.id, channel: "EMAIL", mode: "AUTO" }
     });
     expect(other.id).not.toBe(owner.id);
   }, 45000);

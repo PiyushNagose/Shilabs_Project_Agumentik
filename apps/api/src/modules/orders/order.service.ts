@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { Prisma, UserRole, type FulfillmentStatus, type PaymentStatus } from "@prisma/client";
+import { Prisma, type FulfillmentStatus, type PaymentStatus } from "@prisma/client";
 import type { OrderDto, OrderSummaryDto, PaginatedResponse } from "@shilabs/shared-types";
 import { AppError } from "../../shared/errors.js";
 import { prisma } from "../../shared/prisma.js";
 import { assertCanAccessCompany } from "../authorization/crm-record.permissions.js";
+import { isWorkspaceManager } from "../authorization/workspace-permissions.js";
 import { toPublicUser } from "../auth/auth.service.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
 import { assertCanMutateLead, leadVisibilityWhere } from "../leads/lead.permissions.js";
@@ -19,7 +20,7 @@ function workspaceIdFor(actor: AuthenticatedUser): string {
 }
 
 function isManager(actor: AuthenticatedUser): boolean {
-  return actor.role === UserRole.ADMIN || actor.role === UserRole.SALES_MANAGER;
+  return isWorkspaceManager(actor);
 }
 
 function visibleWhere(actor: AuthenticatedUser): Prisma.OrderWhereInput {
@@ -367,7 +368,7 @@ export async function createOrder(
       correlationId
     });
     return created;
-  });
+  }, { maxWait: 10_000, timeout: 30_000 });
   await publishRealtimeEvent({
     entityType: "order",
     action: "order-created",
@@ -435,7 +436,7 @@ export async function updateOrder(
       correlationId
     });
     return updated;
-  });
+  }, { maxWait: 10_000, timeout: 30_000 });
   await publishRealtimeEvent({
     entityType: "order",
     action: "order-updated",

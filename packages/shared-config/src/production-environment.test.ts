@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { assertProductionEnvironment, emitOperationalAlert } from "./index.js";
+import { assertProductionEnvironment, emitOperationalAlert, getCalendarConfig } from "./index.js";
 
 const validProductionEnv: NodeJS.ProcessEnv = {
   NODE_ENV: "production",
@@ -50,6 +50,38 @@ describe("production environment validation", () => {
     ).toThrow(
       /DATABASE_URL_LOCALHOST.*DEV_ADMIN_CREDENTIALS_NOT_ALLOWED.*JWT_SECRET_MIN_LENGTH.*MESSAGING_WEBHOOK_BASE_URL/
     );
+  });
+
+  it("loads Microsoft Calendar and Zoom configuration without embedding credentials", () => {
+    expect(
+      getCalendarConfig({
+        CALENDAR_PROVIDER: "microsoft",
+        MEETING_CONFERENCE_PROVIDER: "zoom",
+        MICROSOFT_CALENDAR_TENANT_ID: "tenant",
+        MICROSOFT_CALENDAR_CLIENT_ID: "microsoft-client",
+        MICROSOFT_CALENDAR_CLIENT_SECRET: "microsoft-secret",
+        MICROSOFT_CALENDAR_USER_ID: "owner@example.com",
+        ZOOM_ACCOUNT_ID: "zoom-account",
+        ZOOM_CLIENT_ID: "zoom-client",
+        ZOOM_CLIENT_SECRET: "zoom-secret",
+        ZOOM_HOST_USER_ID: "host@example.com"
+      })
+    ).toMatchObject({
+      provider: "microsoft",
+      conferenceProvider: "zoom",
+      microsoft: { tenantId: "tenant", userId: "owner@example.com" },
+      zoom: { accountId: "zoom-account", hostUserId: "host@example.com" }
+    });
+  });
+
+  it("rejects incomplete Microsoft and Zoom production configuration", () => {
+    expect(() =>
+      assertProductionEnvironment({
+        ...validProductionEnv,
+        CALENDAR_PROVIDER: "microsoft",
+        MEETING_CONFERENCE_PROVIDER: "zoom"
+      })
+    ).toThrow(/MICROSOFT_CALENDAR_TENANT_ID.*ZOOM_ACCOUNT_ID/);
   });
 
   it("delivers vendor-neutral alerts without placing secrets in the payload", async () => {

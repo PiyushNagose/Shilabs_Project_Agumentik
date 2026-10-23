@@ -1,3 +1,4 @@
+import { formatDateTime } from "../../utils/date-time.js";
 import type {
   ActivityDto,
   CompanyDto,
@@ -110,12 +111,7 @@ function isRecent(lead: LeadDto): boolean {
 }
 
 function formatDate(value: string | null): string {
-  if (!value) return "No activity yet";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "Time unavailable";
-  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(
-    date
-  );
+  return formatDateTime(value, "No activity yet");
 }
 
 function segmentMatch(segment: SegmentId, lead: LeadDto): boolean {
@@ -151,6 +147,7 @@ function ContactCreateForm({
   const [title, setTitle] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
+  const [whatsappId, setWhatsappId] = useState("");
   const [preferredChannel, setPreferredChannel] = useState("EMAIL");
   const [doNotContact, setDoNotContact] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -167,6 +164,7 @@ function ContactCreateForm({
         title: title.trim() || null,
         email: email.trim() || null,
         phone: phone.trim() || null,
+        whatsappId: whatsappId.trim() || null,
         source: "Manual",
         preferredChannel,
         doNotContact
@@ -229,6 +227,15 @@ function ContactCreateForm({
           <input onChange={(event) => setPhone(event.target.value)} type="tel" value={phone} />
         </label>
         <label>
+          WhatsApp number
+          <input
+            onChange={(event) => setWhatsappId(event.target.value)}
+            placeholder="Country code and number"
+            type="tel"
+            value={whatsappId}
+          />
+        </label>
+        <label>
           Preferred channel
           <Select
             ariaLabel="Preferred contact channel"
@@ -257,7 +264,13 @@ function ContactCreateForm({
       ) : null}
       <footer>
         <Button
-          disabled={saving || !companyId || !firstName.trim() || !lastName.trim()}
+          disabled={
+            saving ||
+            !companyId ||
+            !firstName.trim() ||
+            !lastName.trim() ||
+            (preferredChannel === "WHATSAPP" && !whatsappId.trim())
+          }
           type="submit"
           variant="primary"
         >
@@ -301,9 +314,7 @@ export function LeadContactsWorkspace({
     },
     accepts: (event) =>
       event.type === "realtime:reconnected" ||
-      ["workspace", "company", "contact", "lead", "task", "activity"].includes(
-        event.entityType
-      ),
+      ["workspace", "company", "contact", "lead", "task", "activity"].includes(event.entityType),
     errorMessage: "Lead contacts could not be loaded"
   });
 
@@ -612,7 +623,6 @@ export function LeadContactsWorkspace({
       <LeadQuickView
         activities={drawer.data?.activities ?? []}
         lead={drawer.data?.lead ?? null}
-        qualification={drawer.data?.qualification ?? null}
         tasks={drawer.data?.tasks ?? []}
         tasksLoading={drawer.loading}
         tasksError={drawer.error}

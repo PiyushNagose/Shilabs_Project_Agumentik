@@ -41,6 +41,8 @@ jobs:
       OPENAI_MODEL: ci-test-model
       OPENAI_EMBEDDING_MODEL: ci-test-embedding-model
       BCRYPT_SALT_ROUNDS: 10
+      DEV_ADMIN_EMAIL: ci-admin@example.local
+      DEV_ADMIN_PASSWORD: ci-only-bootstrap-password
       REALTIME_INTERNAL_SECRET: ci-test-realtime-secret
       EXOTEL_WEBHOOK_SECRET: ci-test-exotel-webhook-secret
       VOICE_AI_STREAM_TOKEN: ci-test-voice-stream-signing-secret
@@ -48,12 +50,17 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
       - run: npm ci
       - run: npx prisma generate --schema apps/api/prisma/schema.prisma
-      - run: npx prisma migrate deploy --schema apps/api/prisma/schema.prisma
+      - run: npm run db:deploy -w @shilabs/api
+      - run: npx prisma migrate status --schema apps/api/prisma/schema.prisma
+      - run: npx prisma migrate diff --from-schema-datasource apps/api/prisma/schema.prisma --to-schema-datamodel apps/api/prisma/schema.prisma --exit-code
       - run: npm run db:seed -w @shilabs/api
       - run: npm run type-check
       - run: npm run lint
       - run: npm test
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:visual

@@ -1,4 +1,4 @@
-import { IntegrationProvider, UserRole, type IntegrationAccount } from "@prisma/client";
+import { IntegrationProvider, type IntegrationAccount } from "@prisma/client";
 import { getCalendarConfig, getMessagingConfig, getVoiceConfig } from "@shilabs/shared-config";
 import type {
   IntegrationCatalogItemDto,
@@ -13,7 +13,9 @@ import { AppError } from "../../shared/errors.js";
 import { prisma } from "../../shared/prisma.js";
 import { redactSecrets } from "../../shared/redaction.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
-import { createCalendarProvider } from "../calendar/calendar.provider.js";
+import { isWorkspaceManager } from "../authorization/workspace-permissions.js";
+import { createCalendarProvider, ZoomConferenceProvider } from "../calendar/calendar.provider.js";
+import { isCalendarOAuthEnabled, resolveWorkspaceCalendarConfig } from "../calendar/calendar-oauth.service.js";
 import { getAwsSesHealth } from "../email/email.service.js";
 import { publishRealtimeEvent } from "../realtime/realtime.service.js";
 import { getMessagingHealth } from "../messaging/messaging.service.js";
@@ -61,6 +63,22 @@ const catalog: readonly CatalogDefinition[] = [
     accountKey: "default",
     name: "Google Calendar",
     description: "Availability and meeting synchronization.",
+    category: "CALENDAR"
+  },
+  {
+    key: "microsoft-calendar",
+    provider: "GOOGLE_CALENDAR",
+    accountKey: "microsoft",
+    name: "Microsoft Calendar and Teams",
+    description: "Microsoft Graph availability, calendar events, and Teams meetings.",
+    category: "CALENDAR"
+  },
+  {
+    key: "zoom-meetings",
+    provider: "GOOGLE_CALENDAR",
+    accountKey: "zoom",
+    name: "Zoom Meetings",
+    description: "Zoom conferencing attached to the selected calendar provider.",
     category: "CALENDAR"
   },
   {
@@ -120,7 +138,7 @@ function workspaceIdFor(actor: AuthenticatedUser): string {
 }
 
 export function assertCanManageIntegrations(actor: AuthenticatedUser): void {
-  if (actor.role !== UserRole.ADMIN && actor.role !== UserRole.SALES_MANAGER) {
+  if (!isWorkspaceManager(actor)) {
     throw new AppError(
       403,
       "AUTHORIZATION_ERROR",
@@ -189,6 +207,8 @@ function isEnvironmentConfigured(item: CatalogDefinition): boolean {
         process.env.ZOHO_BIGIN_REFRESH_TOKEN
       );
     if (item.key === "google-calendar") return getCalendarConfig().provider === "google";
+    if (item.key === "microsoft-calendar") return getCalendarConfig().provider === "microsoft";
+    if (item.key === "zoom-meetings") return getCalendarConfig().conferenceProvider === "zoom";
     if (item.key === "openai" || item.key === "gemini")
       return getAIConfig().AI_PROVIDER === item.key;
     if (item.key === "aws-ses" || item.key === "mailpit")
@@ -210,7 +230,7 @@ async function providerHealth(
   item: CatalogDefinition,
   workspaceId: string
 ): Promise<{ configured: boolean; error: string | null }> {
-  if (!isEnvironmentConfigured(item))
+  if (item.category !== "CALENDAR" && !isEnvironmentConfigured(item))
     return { configured: false, error: "Provider is not configured on the server" };
   if (item.key === "zoho-bigin") {
     const health = await getZohoBiginHealth({ workspaceId });
@@ -220,11 +240,26 @@ async function providerHealth(
     const health = await getAwsSesHealth({ workspaceId });
     return { configured: health.configured, error: health.lastError };
   }
-  if (item.key === "google-calendar") {
-    const health = await createCalendarProvider(getCalendarConfig()).getHealth();
+  if (item.category === "CALENDAR") {
+    const config = await resolveWorkspaceCalendarConfig(workspaceId);
+    const health = await createCalendarProvider(config).getHealth();
+    if (item.key === "zoom-meetings") {
+      if (config.conferenceProvider !== "zoom") {
+        return { configured: false, error: "Zoom conferencing is disabled" };
+      }
+      return new ZoomConferenceProvider(config).getHealth();
+    }
     return {
-      configured: health.configured && health.status === "CONFIGURED",
-      error: health.lastError
+      configured:
+        health.configured &&
+        health.status === "CONFIGURED" &&
+        ((item.key === "google-calendar" && health.provider === "GOOGLE") ||
+          (item.key === "microsoft-calendar" && health.provider === "MICROSOFT")),
+      error:
+        (item.key === "google-calendar" && health.provider !== "GOOGLE") ||
+        (item.key === "microsoft-calendar" && health.provider !== "MICROSOFT")
+          ? `${item.name} is disabled`
+          : health.lastError
     };
   }
   if (item.key === "twilio-whatsapp" || item.key === "meta-whatsapp") {
@@ -301,7 +336,7 @@ export async function listIntegrations(actor: AuthenticatedUser): Promise<Integr
       name: item.name,
       description: item.description,
       category: item.category,
-      configuredByEnvironment: isEnvironmentConfigured(item),
+      configuredByEnvironment: item.key === "google-calendar" ? isCalendarOAuthEnabled() || isEnvironmentConfigured(item) : isEnvironmentConfigured(item),
       connected: connections.some((connection) => connection.key === item.key)
     })),
     summary: {
@@ -392,9 +427,12 @@ export async function disableIntegration(
     (candidate) => candidate.provider === current.provider && candidate.accountKey === current.key
   );
   if (!item) throw new AppError(422, "VALIDATION_ERROR", "Integration provider is not supported");
-  const account = await prisma.integrationAccount.update({
-    where: { id: current.id },
-    data: { status: "DISABLED", disabledAt: new Date() }
+  const account = await prisma.$transaction(async (tx) => {
+    if (current.provider === "GOOGLE_CALENDAR" && current.key === "default") {
+      await tx.calendarOAuthState.deleteMany({ where: { workspaceId: workspaceIdFor(actor) } });
+      await tx.workspaceCalendarCredential.updateMany({ where: { workspaceId: workspaceIdFor(actor) }, data: { disabledAt: new Date() } });
+    }
+    return tx.integrationAccount.update({ where: { id: current.id }, data: { status: "DISABLED", disabledAt: new Date() } });
   });
   await recordChange(actor, account, "integration-disabled");
   return toDto(account, item);
@@ -403,7 +441,13 @@ export async function disableIntegration(
 export async function disconnectIntegration(actor: AuthenticatedUser, id: string): Promise<void> {
   assertCanManageIntegrations(actor);
   const account = await scoped(actor, id);
-  await prisma.integrationAccount.delete({ where: { id: account.id } });
+  await prisma.$transaction(async (tx) => {
+    if (account.provider === "GOOGLE_CALENDAR" && account.key === "default") {
+      await tx.calendarOAuthState.deleteMany({ where: { workspaceId: workspaceIdFor(actor) } });
+      await tx.workspaceCalendarCredential.updateMany({ where: { workspaceId: workspaceIdFor(actor) }, data: { disabledAt: new Date(), encryptedRefreshToken: "" } });
+    }
+    await tx.integrationAccount.delete({ where: { id: account.id } });
+  });
   await prisma.auditEvent.create({
     data: {
       workspaceId: workspaceIdFor(actor),

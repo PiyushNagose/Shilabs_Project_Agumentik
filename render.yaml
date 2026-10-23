@@ -58,6 +58,10 @@ services:
         sync: false
       - key: GOOGLE_CALENDAR_CLIENT_SECRET
         sync: false
+      - key: GOOGLE_CALENDAR_REDIRECT_URI
+        sync: false
+      - key: CALENDAR_OAUTH_ENCRYPTION_KEY
+        sync: false
       - key: GOOGLE_CALENDAR_REFRESH_TOKEN
         sync: false
       - key: GOOGLE_CALENDAR_ID
@@ -156,6 +160,12 @@ services:
         sync: false
       - key: AWS_SES_CONFIGURATION_SET
         sync: false
+      - key: AWS_SES_INBOUND_TOPIC_ARN
+        sync: false
+      - key: AWS_SES_INBOUND_BUCKET
+        sync: false
+      - key: AWS_SES_INBOUND_KEY_PREFIX
+        value: inbound/
       - key: AWS_SES_TIMEOUT_MS
         value: "30000"
       - key: AWS_SES_MAX_RETRIES

@@ -57,6 +57,9 @@ const lead = {
   ownerId: adminUser.id,
   source: "website",
   status: "OPEN",
+  automationOwnershipState: "AI_ACTIVE",
+  automationOwnershipChangedAt: new Date().toISOString(),
+  automationOwnershipReason: "HUMAN_REPLY_SENT",
   stageId: newStage.id,
   requirement: "Needs a production CRM workspace",
   serviceInterest: "CRM",
@@ -1010,9 +1013,27 @@ describe("web app", () => {
     finishStages(jsonResponse([newStage, qualifiedStage]));
     await waitFor(() => expect(screen.queryByText("Loading CRM")).toBeNull());
     expect(
-      within(screen.getByRole("table", { name: "Leads list" })).getByText("Filtered company")
+      await within(screen.getByRole("table", { name: "Leads list" })).findByText("Filtered company")
     ).toBeTruthy();
     expect(screen.getByRole("table", { name: "Leads list" })).toBeTruthy();
+  });
+
+  it("loads persisted proposal and meeting counts directly on Overview", async () => {
+    storeAuth();
+    window.history.replaceState(null, "", "/crm/leads/lead_1");
+    vi.spyOn(window, "fetch").mockImplementation((input) => {
+      const url = requestUrl(input);
+      if (url.includes("/api/proposals?")) return Promise.resolve(jsonResponse([generatedProposal]));
+      if (url.includes("/api/meetings/requests?leadId=lead_1")) return Promise.resolve(jsonResponse([currentMeetingRequest]));
+      return crmFetch(input);
+    });
+    render(<App />);
+    await screen.findByLabelText("Lead profile");
+    for (const label of ["Proposal records", "Meeting requests"]) {
+      await waitFor(() => {
+        expect(screen.getByText(label).closest(".tab-data-item")?.querySelector("strong")?.textContent).toBe("1");
+      });
+    }
   });
 
   it("shows the authenticated app shell after login", async () => {
@@ -1688,25 +1709,25 @@ describe("web app", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Approve" }));
     expect(await screen.findByText("Proposal approved")).toBeTruthy();
-    expect(screen.getAllByText("APPROVED").length).toBeGreaterThanOrEqual(1);
-    expect(buttonDisabled("Approve")).toBe(true);
+    expect(screen.getAllByText("Approved").length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
 
     cleanup();
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Edited AI Sales Proposal" })).toBeTruthy();
-    expect(screen.getAllByText("APPROVED").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Approved").length).toBeGreaterThanOrEqual(1);
     expect(buttonDisabled("Send approved")).toBe(false);
 
     fireEvent.click(screen.getByRole("button", { name: "Send approved" }));
     expect(await screen.findByText("Approved proposal sent")).toBeTruthy();
-    expect(screen.getAllByText("SENT").length).toBeGreaterThanOrEqual(1);
-    expect(buttonDisabled("Send approved")).toBe(true);
+    expect(screen.getAllByText("Sent").length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByRole("button", { name: "Send approved" })).toBeNull();
 
     cleanup();
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Edited AI Sales Proposal" })).toBeTruthy();
-    expect(screen.getAllByText("SENT").length).toBeGreaterThanOrEqual(1);
-    expect(buttonDisabled("Send approved")).toBe(true);
+    expect(screen.getAllByText("Sent").length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByRole("button", { name: "Send approved" })).toBeNull();
     expect(sendCalls).toBe(1);
     expect(
       fetchSpy.mock.calls.filter(
@@ -1744,10 +1765,11 @@ describe("web app", () => {
     fireEvent.click(await screen.findByRole("tab", { name: "Conversation" }));
     expect(await screen.findByText("We need a new real-estate website.")).toBeTruthy();
 
+    fireEvent.click(screen.getByText("Advanced testing tools"));
     fireEvent.change(screen.getByLabelText("Prospect message"), {
       target: { value: "Can you build our property sales site?" }
     });
-    fireEvent.click(screen.getByRole("button", { name: "Save inbound" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save test message" }));
 
     await waitFor(() => {
       expect(fetchSpy).toHaveBeenCalledWith(
@@ -1765,144 +1787,150 @@ describe("web app", () => {
     });
   });
 
-  it("submits local E2E customer replies through inbound ingestion and reply processing", async () => {
-    vi.stubEnv("VITE_APP_ENV", "e2e-local");
-    storeAuth();
-    window.history.replaceState(null, "", "/crm/leads/lead_1?tab=Conversation");
-    let submitted = false;
-    const e2eMessage = {
-      ...inboundMessage,
-      id: "message_e2e_reply",
-      providerMessageId: "e2e-customer-reply-message",
-      body: "Yes, please send pricing for the CRM rollout."
-    };
-    const fetchSpy = vi.spyOn(window, "fetch").mockImplementation((input, init) => {
-      const url = requestUrl(input);
+  it.each(["development", "e2e-local"])(
+    "submits local customer replies through inbound ingestion and reply processing in %s",
+    async (appEnv) => {
+      vi.stubEnv("VITE_APP_ENV", appEnv);
+      vi.stubEnv("DEV", true);
+      storeAuth();
+      window.history.replaceState(null, "", "/crm/leads/lead_1?tab=Conversation");
+      let submitted = false;
+      const e2eMessage = {
+        ...inboundMessage,
+        id: "message_e2e_reply",
+        providerMessageId: "e2e-customer-reply-message",
+        body: "Yes, please send pricing for the CRM rollout."
+      };
+      const fetchSpy = vi.spyOn(window, "fetch").mockImplementation((input, init) => {
+        const url = requestUrl(input);
 
-      if (url.endsWith("/api/email/e2e/customer-reply") && init?.method === "POST") {
-        submitted = true;
-        return Promise.resolve(
-          jsonResponse({
-            provider: "AWS_SES",
-            status: "PROCESSED",
-            inboundEmail: {
-              id: "inbound_email_1",
+        if (url.endsWith("/api/email/e2e/customer-reply") && init?.method === "POST") {
+          submitted = true;
+          return Promise.resolve(
+            jsonResponse({
               provider: "AWS_SES",
-              providerMessageId: "e2e-customer-reply-message",
-              providerEventId: "event_1",
+              status: "PROCESSED",
+              inboundEmail: {
+                id: "inbound_email_1",
+                provider: "AWS_SES",
+                providerMessageId: "e2e-customer-reply-message",
+                providerEventId: "event_1",
+                leadId: lead.id,
+                contactId: lead.contactId,
+                conversationId: conversation.id,
+                messageId: e2eMessage.id,
+                fromEmail: lead.contact.email,
+                toEmails: ["sales@shilabs.local"],
+                subject: "E2E Customer Reply",
+                textBody: "Yes, please send pricing for the CRM rollout.",
+                status: "PROCESSED",
+                failureCode: null,
+                failureMessage: null,
+                replyProcessingStatus: "PENDING",
+                receivedAt: new Date().toISOString(),
+                processedAt: new Date().toISOString(),
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString()
+              }
+            })
+          );
+        }
+
+        if (url.endsWith("/api/reply-processing/inbound-emails/inbound_email_1/process")) {
+          return Promise.resolve(
+            jsonResponse({
+              id: "reply_run_1",
               leadId: lead.id,
-              contactId: lead.contactId,
               conversationId: conversation.id,
               messageId: e2eMessage.id,
-              fromEmail: lead.contact.email,
-              toEmails: ["sales@shilabs.local"],
-              subject: "E2E Customer Reply",
-              textBody: "Yes, please send pricing for the CRM rollout.",
-              status: "PROCESSED",
+              inboundEmailId: "inbound_email_1",
+              status: "COMPLETED",
+              intent: "NEGOTIATION",
+              recommendedAction: "HUMAN_HANDOFF",
+              confidence: "0.91",
+              summary: "Prospect asked for a better commercial deal.",
+              draftResponse: null,
+              requiresHumanReview: true,
+              humanHandoffRequired: true,
+              provider: "OPENAI",
+              model: "test-model",
               failureCode: null,
               failureMessage: null,
-              replyProcessingStatus: "PENDING",
-              receivedAt: new Date().toISOString(),
-              processedAt: new Date().toISOString(),
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString()
-            }
-          })
-        );
-      }
-
-      if (url.endsWith("/api/reply-processing/inbound-emails/inbound_email_1/process")) {
-        return Promise.resolve(
-          jsonResponse({
-            id: "reply_run_1",
-            leadId: lead.id,
-            conversationId: conversation.id,
-            messageId: e2eMessage.id,
-            inboundEmailId: "inbound_email_1",
-            status: "COMPLETED",
-            intent: "NEGOTIATION",
-            recommendedAction: "HUMAN_HANDOFF",
-            confidence: "0.91",
-            summary: "Prospect asked for a better commercial deal.",
-            draftResponse: null,
-            requiresHumanReview: true,
-            humanHandoffRequired: true,
-            provider: "OPENAI",
-            model: "test-model",
-            failureCode: null,
-            failureMessage: null,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-          })
-        );
-      }
-
-      if (url.includes("/api/notifications?leadId=lead_1")) {
-        return Promise.resolve(jsonResponse(submitted ? [negotiationNotification] : []));
-      }
-
-      if (url.includes("/api/meetings/requests?leadId=lead_1")) {
-        return Promise.resolve(jsonResponse([]));
-      }
-
-      if (url.endsWith("/api/conversations/conversation_1/messages")) {
-        return Promise.resolve(
-          jsonResponse(submitted ? [inboundMessage, e2eMessage] : [inboundMessage])
-        );
-      }
-
-      return crmFetch(input);
-    });
-
-    render(<App />);
-
-    expect(await screen.findByText("We need a new real-estate website.")).toBeTruthy();
-    const e2eReplyPanel = await screen.findByRole("region", { name: "E2E Customer Reply" });
-    const replyTextbox = within(e2eReplyPanel).getByRole("textbox");
-    fireEvent.change(replyTextbox, {
-      target: { value: "Yes, please send pricing for the CRM rollout." }
-    });
-    fireEvent.click(within(e2eReplyPanel).getByRole("button", { name: "Submit inbound reply" }));
-
-    await waitFor(() => {
-      expect(
-        fetchSpy.mock.calls.some(([input]) => requestUrl(input).endsWith("/api/leads/lead_1"))
-      ).toBe(true);
-      expect(
-        fetchSpy.mock.calls.filter(([input]) =>
-          requestUrl(input).endsWith("/api/conversations/conversation_1/messages")
-        ).length
-      ).toBeGreaterThanOrEqual(1);
-      expect(
-        fetchSpy.mock.calls.some(([input]) =>
-          requestUrl(input).includes("/api/meetings/requests?leadId=lead_1")
-        )
-      ).toBe(true);
-    });
-    expect(fetchSpy.mock.calls).toEqual(
-      expect.arrayContaining([
-        [
-          expect.stringContaining("/api/email/e2e/customer-reply"),
-          expect.objectContaining({
-            method: "POST",
-            body: JSON.stringify({
-              leadId: lead.id,
-              subject: "E2E Customer Reply - Priya Prospect",
-              body: "Yes, please send pricing for the CRM rollout."
             })
-          })
-        ],
-        [
-          expect.stringContaining("/api/reply-processing/inbound-emails/inbound_email_1/process"),
-          expect.objectContaining({ method: "POST" })
-        ]
-      ])
-    );
-    expect(await screen.findByText("Negotiation handoff required")).toBeTruthy();
-    expect(
-      screen.getByText("Prospect is negotiating price and needs the assigned owner to respond.")
-    ).toBeTruthy();
-  });
+          );
+        }
+
+        if (url.includes("/api/notifications?leadId=lead_1")) {
+          return Promise.resolve(jsonResponse(submitted ? [negotiationNotification] : []));
+        }
+
+        if (url.includes("/api/meetings/requests?leadId=lead_1")) {
+          return Promise.resolve(jsonResponse([]));
+        }
+
+        if (url.endsWith("/api/conversations/conversation_1/messages")) {
+          return Promise.resolve(
+            jsonResponse(submitted ? [inboundMessage, e2eMessage] : [inboundMessage])
+          );
+        }
+
+        return crmFetch(input);
+      });
+
+      render(<App />);
+
+      expect(await screen.findByText("We need a new real-estate website.")).toBeTruthy();
+      const e2eReplyPanel = await screen.findByRole("region", { name: "Test customer reply" });
+      const replyTextbox = within(e2eReplyPanel).getByRole("textbox");
+      fireEvent.change(replyTextbox, {
+        target: { value: "Yes, please send pricing for the CRM rollout." }
+      });
+      fireEvent.click(
+        within(e2eReplyPanel).getByRole("button", { name: "Receive customer reply" })
+      );
+
+      await waitFor(() => {
+        expect(
+          fetchSpy.mock.calls.some(([input]) => requestUrl(input).endsWith("/api/leads/lead_1"))
+        ).toBe(true);
+        expect(
+          fetchSpy.mock.calls.filter(([input]) =>
+            requestUrl(input).endsWith("/api/conversations/conversation_1/messages")
+          ).length
+        ).toBeGreaterThanOrEqual(1);
+        expect(
+          fetchSpy.mock.calls.some(([input]) =>
+            requestUrl(input).includes("/api/meetings/requests?leadId=lead_1")
+          )
+        ).toBe(true);
+      });
+      expect(fetchSpy.mock.calls).toEqual(
+        expect.arrayContaining([
+          [
+            expect.stringContaining("/api/email/e2e/customer-reply"),
+            expect.objectContaining({
+              method: "POST",
+              body: JSON.stringify({
+                leadId: lead.id,
+                subject: `Re: ${lead.company.name}`,
+                body: "Yes, please send pricing for the CRM rollout."
+              })
+            })
+          ],
+          [
+            expect.stringContaining("/api/reply-processing/inbound-emails/inbound_email_1/process"),
+            expect.objectContaining({ method: "POST" })
+          ]
+        ])
+      );
+      expect(await screen.findByText("Negotiation handoff required")).toBeTruthy();
+      expect(
+        screen.getByText("Prospect is negotiating price and needs the assigned owner to respond.")
+      ).toBeTruthy();
+    }
+  );
 
   it("hydrates current meeting slots ahead of historical scheduling failures", async () => {
     storeAuth();
@@ -1956,7 +1984,7 @@ describe("web app", () => {
     render(<App />);
 
     expect(
-      (await screen.findByRole("button", { name: "Slots available" })).hasAttribute("disabled")
+      (await screen.findByRole("button", { name: "Times available" })).hasAttribute("disabled")
     ).toBe(true);
     expect(screen.getByText("Historical meeting request evidence (1)")).toBeTruthy();
     const slotButtons = await screen.findAllByRole("button", { name: /Confirm / });
@@ -1977,7 +2005,7 @@ describe("web app", () => {
       ).toBe(true);
     });
     expect(await screen.findByText("calendar-owner@example.test")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Open in Google Calendar" }).getAttribute("href")).toBe(
+    expect(screen.getByRole("link", { name: "Open calendar event" }).getAttribute("href")).toBe(
       "https://calendar.google.test/verified/google_event_1"
     );
   });
@@ -1991,6 +2019,7 @@ describe("web app", () => {
     await openFirstLeadProfile();
 
     fireEvent.click(await screen.findByRole("tab", { name: "Conversation" }));
+    fireEvent.click(await screen.findByText("Advanced testing tools"));
     fireEvent.change(await screen.findByLabelText("AI mode"), {
       target: { value: "HUMAN" }
     });
@@ -2006,124 +2035,323 @@ describe("web app", () => {
     });
   });
 
-  it("shows a HUMAN email reply composer and hides takeover action", async () => {
+  it.each([
+    { name: "normal", review: false },
+    { name: "review", review: true },
+    { name: "AI stopped", review: false, ownership: "AI_STOPPED", staleReview: true },
+    { name: "manually paused", review: false, ownership: "HUMAN_ACTIVE", ownershipReason: "MANUAL_PAUSE", staleReview: true },
+    { name: "HUMAN_REQUIRED client reply", review: false, ownership: "HUMAN_REQUIRED", ownershipReason: "MEANINGFUL_CLIENT_REPLY", sequenceStopped: true }
+  ])(
+    "shows a HUMAN email reply composer and hides takeover action ($name)",
+    async ({ review, ...scenario }) => {
+      storeAuth();
+      window.history.replaceState(null, "", "/crm/leads/lead_1?tab=Conversation");
+      let humanReplySent = false;
+      const emailHumanConversation = { ...humanConversation, channel: "EMAIL" };
+      const humanReplyMessage = {
+        ...inboundMessage,
+        id: "message_human_reply",
+        direction: "OUTBOUND",
+        senderType: "USER",
+        senderUserId: adminUser.id,
+        body: "Thanks, I will review commercials and respond with a revised option.",
+        deliveryStatus: "SENT",
+        sentAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        senderUser: adminUser
+      };
+      const fetchSpy = vi.spyOn(window, "fetch").mockImplementation((input, init) => {
+        const url = requestUrl(input);
+
+        if (url.endsWith("/api/leads/lead_1")) {
+          return Promise.resolve(jsonResponse({
+            ...lead,
+            automationOwnershipState: scenario.ownership ?? lead.automationOwnershipState,
+            automationOwnershipReason: scenario.ownershipReason ?? lead.automationOwnershipReason
+          }));
+        }
+        if (url.includes("/api/conversations?")) {
+          return Promise.resolve(jsonResponse([emailHumanConversation]));
+        }
+        if ((review || scenario.staleReview || scenario.sequenceStopped) && url.endsWith("/api/followups/leads/lead_1")) {
+          return Promise.resolve(
+            jsonResponse(
+              humanReplySent
+                ? []
+                : [
+                    {
+                      ...followUpSequence,
+                      status: scenario.sequenceStopped ? "STOPPED" : "ATTENTION_REQUIRED",
+                      stopReason: scenario.sequenceStopped ? "MEANINGFUL_CLIENT_REPLY" : null,
+                      reviewDraft: {
+                        attemptId: "review_attempt",
+                        subject: "CRM scope review",
+                        body: "Please approve a commercial change.",
+                        reason: "Pricing needs approval"
+                      }
+                    }
+                  ]
+            )
+          );
+        }
+
+        if (url.endsWith("/api/conversations/conversation_1/messages")) {
+          return Promise.resolve(
+            jsonResponse(humanReplySent ? [inboundMessage, humanReplyMessage] : [inboundMessage])
+          );
+        }
+
+        if (url.endsWith("/api/conversations/conversation_1/takeover/briefing")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({ code: "NOT_FOUND", message: "Active human takeover not found" }),
+              {
+                status: 404,
+                headers: { "Content-Type": "application/json" }
+              }
+            )
+          );
+        }
+
+        if (
+          url.endsWith("/api/conversations/conversation_1/human-reply") &&
+          init?.method === "POST"
+        ) {
+          humanReplySent = true;
+          return Promise.resolve(
+            jsonResponse({
+              message: humanReplyMessage,
+              outboundEmail: {
+                id: "outbound_human_reply",
+                leadId: lead.id,
+                contactId: lead.contactId,
+                actorUserId: adminUser.id,
+                toEmail: lead.contact.email,
+                fromEmail: "sales@example.local",
+                replyToEmail: null,
+                subject: "Re: Commercial discussion",
+                provider: "AWS_SES",
+                providerMessageId: "ses-human-reply",
+                idempotencyKey: "human-reply:conversation_1:test",
+                status: "SENT",
+                failureCode: null,
+                failureMessage: null,
+                sentAt: new Date().toISOString(),
+                deliveredAt: null,
+                bouncedAt: null,
+                complainedAt: null,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString()
+              },
+              zohoTimeline: null
+            })
+          );
+        }
+
+        return crmFetch(input);
+      });
+
+      render(<App />);
+
+      const humanReplyPanel = await screen.findByRole("region", { name: "Human reply" });
+      expect(humanReplyPanel).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Take over" })).toBeNull();
+      if (review) {
+        expect(
+          within(humanReplyPanel).getByText("Pricing needs approval", { exact: false })
+        ).toBeTruthy();
+        fireEvent.click(
+          within(humanReplyPanel).getByRole("button", { name: "Use suggested reply" })
+        );
+        expect(
+          within(humanReplyPanel).getByRole("textbox", { name: "Human reply" })
+        ).toHaveProperty("value", "Please approve a commercial change.");
+      } else {
+        expect(within(humanReplyPanel).queryByText("CRM scope review")).toBeNull();
+        expect(within(humanReplyPanel).queryByRole("button", { name: "Use suggested reply" })).toBeNull();
+      }
+      if (scenario.ownership) {
+        const outreach = screen.getByRole("region", { name: "Production outreach" });
+        expect(within(outreach).getByText("Stopped", { exact: true })).toBeTruthy();
+        expect(within(outreach).queryByText("Next action")).toBeNull();
+        expect(within(outreach).queryByText("Needs attention")).toBeNull();
+      }
+      fireEvent.change(within(humanReplyPanel).getByRole("textbox", { name: "Human reply" }), {
+        target: { value: "Thanks, I will review commercials and respond with a revised option." }
+      });
+      fireEvent.click(
+        within(humanReplyPanel).getByRole("button", {
+          name: review ? "Send reviewed reply" : "Send human reply"
+        })
+      );
+
+      await waitFor(() => {
+        expect(
+          fetchSpy.mock.calls.some(([input]) =>
+            requestUrl(input).endsWith("/api/conversations/conversation_1/human-reply")
+          )
+        ).toBe(true);
+      });
+      expect(
+        await screen.findByText(
+          "Thanks, I will review commercials and respond with a revised option."
+        )
+      ).toBeTruthy();
+      if (!review) {
+        const sentRequest = fetchSpy.mock.calls.find(([input, init]) =>
+          requestUrl(input).endsWith("/api/conversations/conversation_1/human-reply") && init?.method === "POST"
+        );
+        const sentBody: unknown = JSON.parse(typeof sentRequest?.[1]?.body === "string" ? sentRequest[1].body : "{}");
+        expect(sentBody).not.toHaveProperty("subject");
+        expect(sentBody).not.toHaveProperty("idempotencyKey", "reviewed-follow-up:review_attempt");
+      }
+    }
+  );
+
+  it.each([
+    { name: "WON", patch: { status: "WON" }, reason: "closed" },
+    { name: "LOST", patch: { status: "LOST" }, reason: "closed" },
+    { name: "CLOSED", patch: { status: "CLOSED" }, reason: "closed" },
+    { name: "DISQUALIFIED", patch: { status: "DISQUALIFIED" }, reason: "closed" },
+    { name: "closed stage", patch: { stage: { ...newStage, isClosed: true } }, reason: "closed" },
+    { name: "DNC", patch: { contact: { ...lead.contact, doNotContact: true } }, reason: "contact" },
+    { name: "WON with stale scheduled follow-up", patch: { status: "WON" }, reason: "closed", sequenceStatus: "ACTIVE" },
+    { name: "WON with stale retry", patch: { status: "WON" }, reason: "closed", withoutReview: true },
+    { name: "WON without conversation", patch: { status: "WON" }, reason: "closed", noConversation: true }
+  ])("blocks stale conversation actions for $name", async ({ patch, reason, ...scenario }) => {
+    storeAuth();
+    vi.stubEnv("VITE_APP_ENV", "e2e-local");
+    window.history.replaceState(null, "", "/crm/leads/lead_1?tab=Conversation");
+    const stoppedLead = {
+      ...lead,
+      automationOwnershipState: "HUMAN_REQUIRED",
+      automationOwnershipReason: "FOLLOW_UP_REQUIRES_REVIEW",
+      ...patch
+    };
+    vi.spyOn(window, "fetch").mockImplementation((input) => {
+      const url = requestUrl(input);
+      if (url.endsWith("/api/leads/lead_1")) {
+        return Promise.resolve(jsonResponse(stoppedLead));
+      }
+      if (url.includes("/api/conversations?")) {
+        return Promise.resolve(jsonResponse(scenario.noConversation ? [] : [{
+          ...humanConversation, channel: "EMAIL", lead: stoppedLead
+        }]));
+      }
+      if (url.endsWith("/api/followups/leads/lead_1")) {
+        return Promise.resolve(jsonResponse([{
+          ...followUpSequence,
+          status: scenario.sequenceStatus ?? "ATTENTION_REQUIRED",
+          lastErrorMessage: "Stale review error: attempt_technical_id",
+          reviewDraft: scenario.withoutReview ? null : {
+            attemptId: "review_attempt",
+            subject: "Stale commercial review",
+            body: "Please approve a commercial change.",
+            reason: "Pricing needs approval"
+          }
+        }]));
+      }
+      if (url.endsWith("/api/conversations/conversation_1/takeover/briefing")) {
+        return Promise.resolve(new Response(null, { status: 404 }));
+      }
+      return crmFetch(input);
+    });
+
+    render(<App />);
+
+    if (!scenario.noConversation) {
+      const thread = await screen.findByRole("region", { name: "Conversation thread" });
+      expect(within(thread).getByText(inboundMessage.body)).toBeTruthy();
+    }
+    const outreach = await screen.findByRole("region", { name: "Production outreach" });
+    expect(within(outreach).getByText("Stopped", { exact: true })).toBeTruthy();
+    expect(within(outreach).getByRole("heading", { name: "AI follow-up" })).toBeTruthy();
+    expect(within(outreach).getByText(
+      reason === "closed"
+        ? "Follow-up is stopped because this opportunity is closed."
+        : reason === "contact"
+          ? "Follow-up is stopped because this contact must not be contacted."
+          : "Follow-up automation is stopped."
+    )).toBeTruthy();
+    expect(within(outreach).queryByText("Needs attention")).toBeNull();
+    expect(within(outreach).queryByText(/attempt_technical_id/)).toBeNull();
+    expect(within(outreach).queryByText("Next action")).toBeNull();
+    expect(within(outreach).queryByText(/hand follow-up to AI/)).toBeNull();
+    expect(screen.queryByRole("region", { name: "Human reply" })).toBeNull();
+    expect(screen.queryByText("Stale commercial review")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Use suggested reply|Send reviewed reply|Prepare follow-up again|Start AI follow-up/ })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Test customer reply" })).toBeNull();
+    expect(screen.queryByText("Advanced testing tools")).toBeNull();
+  });
+
+  it.each([
+    { ownership: "AI_STOPPED", mode: "AUTO" },
+    { ownership: "AI_STOPPED", mode: "PAUSED" },
+    { ownership: "AI_ACTIVE", mode: "PAUSED" },
+    { ownership: "HUMAN_REQUIRED", mode: "AUTO" }
+  ])("allows human takeover with $ownership ownership and $mode mode", async ({ ownership, mode }) => {
     storeAuth();
     window.history.replaceState(null, "", "/crm/leads/lead_1?tab=Conversation");
-    let humanReplySent = false;
-    const emailHumanConversation = { ...humanConversation, channel: "EMAIL" };
-    const humanReplyMessage = {
-      ...inboundMessage,
-      id: "message_human_reply",
-      direction: "OUTBOUND",
-      senderType: "USER",
-      senderUserId: adminUser.id,
-      body: "Thanks, I will review commercials and respond with a revised option.",
-      deliveryStatus: "SENT",
-      sentAt: new Date().toISOString(),
-      createdAt: new Date().toISOString(),
-      senderUser: adminUser
-    };
     const fetchSpy = vi.spyOn(window, "fetch").mockImplementation((input, init) => {
       const url = requestUrl(input);
-
+      if (url.endsWith("/api/leads/lead_1")) {
+        return Promise.resolve(jsonResponse({
+          ...lead,
+          automationOwnershipState: ownership,
+          automationOwnershipReason: mode === "PAUSED" ? "MANUAL_PAUSE" : "MEANINGFUL_CLIENT_REPLY"
+        }));
+      }
       if (url.includes("/api/conversations?")) {
-        return Promise.resolve(jsonResponse([emailHumanConversation]));
+        return Promise.resolve(jsonResponse([{ ...conversation, channel: "EMAIL", mode }]));
       }
-
-      if (url.endsWith("/api/conversations/conversation_1/messages")) {
-        return Promise.resolve(
-          jsonResponse(humanReplySent ? [inboundMessage, humanReplyMessage] : [inboundMessage])
-        );
+      if (url.endsWith("/api/followups/leads/lead_1")) {
+        return Promise.resolve(jsonResponse([{
+          ...followUpSequence, status: "STOPPED", stopReason: "MEANINGFUL_CLIENT_REPLY"
+        }]));
       }
-
+      if (url.endsWith("/api/conversations/conversation_1/takeover") && init?.method === "POST") {
+        return Promise.resolve(jsonResponse(takeoverBriefing.takeover));
+      }
       if (url.endsWith("/api/conversations/conversation_1/takeover/briefing")) {
-        return Promise.resolve(
-          new Response(
-            JSON.stringify({ code: "NOT_FOUND", message: "Active human takeover not found" }),
-            {
-              status: 404,
-              headers: { "Content-Type": "application/json" }
-            }
-          )
-        );
+        return Promise.resolve(jsonResponse(takeoverBriefing));
       }
+      return crmFetch(input);
+    });
 
-      if (
-        url.endsWith("/api/conversations/conversation_1/human-reply") &&
-        init?.method === "POST"
-      ) {
-        humanReplySent = true;
+    render(<App />);
+
+    await screen.findByRole("region", { name: "Conversation thread" });
+    fireEvent.click(screen.getByText("Advanced testing tools"));
+    if (ownership === "AI_STOPPED" || mode === "PAUSED") {
+      expect(screen.queryByLabelText("AI mode")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Test AI call" })).toBeNull();
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Take over" }));
+    const replyPanel = await screen.findByRole("region", { name: "Human reply" });
+    expect(within(replyPanel).getByRole("button", { name: "Send human reply" })).toBeTruthy();
+    expect(fetchSpy.mock.calls.some(([input, init]) =>
+      requestUrl(input).endsWith("/api/conversations/conversation_1/takeover") && init?.method === "POST"
+    )).toBe(true);
+  });
+
+  it("does not let an operator start AI follow-up before a substantive human action", async () => {
+    window.localStorage.setItem("shilabs.accessToken", "header.payload.signature");
+    window.localStorage.setItem("shilabs.user", JSON.stringify(adminUser));
+    const fetchSpy = vi.spyOn(window, "fetch").mockImplementation((input) => {
+      const url = requestUrl(input);
+
+      if (url.endsWith("/api/leads/lead_1")) {
         return Promise.resolve(
           jsonResponse({
-            message: humanReplyMessage,
-            outboundEmail: {
-              id: "outbound_human_reply",
-              leadId: lead.id,
-              contactId: lead.contactId,
-              actorUserId: adminUser.id,
-              toEmail: lead.contact.email,
-              fromEmail: "sales@example.local",
-              replyToEmail: null,
-              subject: "Re: Commercial discussion",
-              provider: "AWS_SES",
-              providerMessageId: "ses-human-reply",
-              idempotencyKey: "human-reply:conversation_1:test",
-              status: "SENT",
-              failureCode: null,
-              failureMessage: null,
-              sentAt: new Date().toISOString(),
-              deliveredAt: null,
-              bouncedAt: null,
-              complainedAt: null,
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString()
-            },
-            zohoTimeline: null
+            ...lead,
+            automationOwnershipState: "HUMAN_ACTIVE",
+            automationOwnershipReason: "LEAD_CREATED"
           })
         );
       }
 
-      return crmFetch(input);
-    });
-
-    render(<App />);
-
-    const humanReplyPanel = await screen.findByRole("region", { name: "Human reply" });
-    expect(humanReplyPanel).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Take over" })).toBeNull();
-    fireEvent.change(within(humanReplyPanel).getByRole("textbox", { name: "Human reply" }), {
-      target: { value: "Thanks, I will review commercials and respond with a revised option." }
-    });
-    fireEvent.click(within(humanReplyPanel).getByRole("button", { name: "Send human reply" }));
-
-    await waitFor(() => {
-      expect(
-        fetchSpy.mock.calls.some(([input]) =>
-          requestUrl(input).endsWith("/api/conversations/conversation_1/human-reply")
-        )
-      ).toBe(true);
-    });
-    expect(
-      await screen.findByText(
-        "Thanks, I will review commercials and respond with a revised option."
-      )
-    ).toBeTruthy();
-  });
-
-  it("starts production follow-up automation from the conversation tab and shows persisted state", async () => {
-    window.localStorage.setItem("shilabs.accessToken", "header.payload.signature");
-    window.localStorage.setItem("shilabs.user", JSON.stringify(adminUser));
-    let started = false;
-    const fetchSpy = vi.spyOn(window, "fetch").mockImplementation((input) => {
-      const url = requestUrl(input);
-
-      if (url.endsWith("/api/followups/leads/lead_1/start")) {
-        started = true;
-        return Promise.resolve(jsonResponse(followUpSequence));
-      }
-
       if (url.endsWith("/api/followups/leads/lead_1")) {
-        return Promise.resolve(jsonResponse(started ? [followUpSequence] : []));
+        return Promise.resolve(jsonResponse([]));
       }
 
       return crmFetch(input);
@@ -2133,36 +2361,27 @@ describe("web app", () => {
     await openFirstLeadProfile();
 
     fireEvent.click(await screen.findByRole("tab", { name: "Conversation" }));
-    expect(await screen.findByText("Follow-up automation")).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: "Start follow-up automation" }));
-
-    expect(await screen.findByText("FIRST EMAIL")).toBeTruthy();
-    expect(screen.getAllByText("ACTIVE").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText("SCHEDULED")).toBeTruthy();
+    expect(await screen.findByText("AI follow-up")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Start AI follow-up" })).toBeNull();
     expect(
-      fetchSpy.mock.calls.some(
-        ([input, init]) =>
-          requestUrl(input).endsWith("/api/followups/leads/lead_1/start") &&
-          init?.method === "POST" &&
-          init.body === JSON.stringify({ idempotencyKey: "crm-follow-up:lead_1" })
+      screen.getByText(
+        "Automation is paused while the assigned salesperson handles this conversation."
       )
-    ).toBe(true);
+    ).toBeTruthy();
+    expect(
+      fetchSpy.mock.calls.some(([input]) =>
+        requestUrl(input).endsWith("/api/followups/leads/lead_1/start")
+      )
+    ).toBe(false);
   });
 
   it("hydrates an existing follow-up sequence after a full browser refresh on a routed CRM lead", async () => {
     storeAuth();
-    let started = false;
     const fetchSpy = vi.spyOn(window, "fetch").mockImplementation((input) => {
       const url = requestUrl(input);
 
-      if (url.endsWith("/api/followups/leads/lead_1/start")) {
-        started = true;
-        return Promise.resolve(jsonResponse(followUpSequence));
-      }
-
       if (url.endsWith("/api/followups/leads/lead_1")) {
-        return Promise.resolve(jsonResponse(started ? [followUpSequence] : []));
+        return Promise.resolve(jsonResponse([followUpSequence]));
       }
 
       return crmFetch(input);
@@ -2171,19 +2390,18 @@ describe("web app", () => {
     render(<App />);
     await openFirstLeadProfile();
     fireEvent.click(await screen.findByRole("tab", { name: "Conversation" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Start follow-up automation" }));
 
-    expect(await screen.findByText("FIRST EMAIL")).toBeTruthy();
+    expect(await screen.findByText("Send first follow-up email")).toBeTruthy();
     expect(window.location.pathname).toBe("/crm/leads/lead_1");
     expect(window.location.search).toBe("?tab=Conversation");
 
     cleanup();
     render(<App />);
 
-    expect(await screen.findByText("Follow-up automation")).toBeTruthy();
-    expect(await screen.findByText("FIRST EMAIL")).toBeTruthy();
-    expect(screen.getByText("ACTIVE")).toBeTruthy();
-    expect(screen.getByText("SCHEDULED")).toBeTruthy();
+    expect(await screen.findByText("AI follow-up")).toBeTruthy();
+    expect(await screen.findByText("Send first follow-up email")).toBeTruthy();
+    expect(screen.getByText("Active")).toBeTruthy();
+    expect(screen.getAllByText("Scheduled").length).toBeGreaterThan(0);
     expect(screen.getAllByText("AI sales automation for website leads").length).toBeGreaterThan(0);
     expect(
       fetchSpy.mock.calls.filter(([input]) =>
@@ -2207,12 +2425,12 @@ describe("web app", () => {
 
     render(<App />);
 
-    expect(await screen.findByText("Follow-up automation")).toBeTruthy();
-    expect(await screen.findByText("FIRST EMAIL")).toBeTruthy();
-    expect(screen.getByText("ACTIVE")).toBeTruthy();
-    expect(screen.getByText("SCHEDULED")).toBeTruthy();
+    expect(await screen.findByText("AI follow-up")).toBeTruthy();
+    expect(await screen.findByText("Send first follow-up email")).toBeTruthy();
+    expect(screen.getByText("Active")).toBeTruthy();
+    expect(screen.getAllByText("Scheduled").length).toBeGreaterThan(0);
     expect(screen.getAllByText("AI sales automation for website leads").length).toBeGreaterThan(0);
-    expect(screen.queryByRole("button", { name: "Accelerate E2E" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Speed up test schedule" })).toBeNull();
     expect(
       fetchSpy.mock.calls.some(([input]) =>
         requestUrl(input).endsWith("/api/followups/leads/lead_1")
@@ -2235,8 +2453,12 @@ describe("web app", () => {
 
     render(<App />);
 
-    expect(await screen.findByText("No next action")).toBeTruthy();
-    expect(screen.queryByText("FIRST EMAIL")).toBeNull();
+    expect(
+      await screen.findByText(
+        "Email follow-up is complete. The next channel action is shown above."
+      )
+    ).toBeTruthy();
+    expect(screen.queryByText("First email")).toBeNull();
   });
 
   it("lets an admin accelerate an existing active follow-up only in local E2E UI", async () => {
@@ -2247,6 +2469,16 @@ describe("web app", () => {
     const eligibleFollowUpSequence = { ...followUpSequence, e2eAccelerationEligible: true };
     const fetchSpy = vi.spyOn(window, "fetch").mockImplementation((input, init) => {
       const url = requestUrl(input);
+
+      if (url.endsWith("/api/leads/lead_1")) {
+        return Promise.resolve(
+          jsonResponse({
+            ...lead,
+            automationOwnershipState: "AI_ACTIVE",
+            automationOwnershipReason: "HUMAN_REPLY_SENT"
+          })
+        );
+      }
 
       if (
         url.endsWith("/api/followups/sequences/sequence_1/e2e/accelerate") &&
@@ -2267,13 +2499,14 @@ describe("web app", () => {
 
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Accelerate E2E" }));
+    fireEvent.click(await screen.findByText("Advanced testing tools"));
+    fireEvent.click(await screen.findByRole("button", { name: "Speed up test schedule" }));
 
     await waitFor(() => {
-      expect(screen.queryByRole("button", { name: "Accelerate E2E" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Speed up test schedule" })).toBeNull();
     });
-    expect(screen.getByText("ACTIVE")).toBeTruthy();
-    expect(screen.getByText("SCHEDULED")).toBeTruthy();
+    expect(screen.getByText("Active")).toBeTruthy();
+    expect(screen.getAllByText("Scheduled").length).toBeGreaterThan(0);
     expect(
       fetchSpy.mock.calls.filter(
         ([input, init]) =>
@@ -2397,6 +2630,7 @@ describe("web app", () => {
       mode: "HUMAN"
     };
     let conversationCreated = false;
+    let humanReplySent = false;
     const fetchSpy = vi.spyOn(window, "fetch").mockImplementation((input, init) => {
       const url = requestUrl(input);
       if (url.includes("/api/conversations?") && url.includes("channel=EMAIL")) {
@@ -2410,6 +2644,7 @@ describe("web app", () => {
         url.endsWith("/api/conversations/conversation_initial_email/human-reply") &&
         init?.method === "POST"
       ) {
+        humanReplySent = true;
         return Promise.resolve(
           jsonResponse({
             message: { ...inboundMessage, id: "message_initial_email", direction: "OUTBOUND" },
@@ -2427,6 +2662,7 @@ describe("web app", () => {
         return Promise.resolve(jsonResponse([]));
       }
       if (url.includes("/api/tasks")) {
+        if (humanReplySent) return Promise.reject(new Error("Refresh temporarily unavailable"));
         return Promise.resolve(jsonResponse([initialEmailTask]));
       }
       return crmFetch(input);
@@ -2485,7 +2721,7 @@ describe("web app", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Sessions" }));
     expect(await screen.findByText("Lead stage changed")).toBeTruthy();
     expect(screen.getByText("Stage moved from New to Qualified")).toBeTruthy();
-    expect(screen.getByText(/Development Admin \/ LEAD_API/)).toBeTruthy();
+    expect(screen.getAllByText("Development Admin").length).toBeGreaterThan(0);
   });
 
   it("renders rich lead contacts and preserves the selected system filter behind quick view", async () => {

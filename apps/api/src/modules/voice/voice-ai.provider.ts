@@ -19,6 +19,7 @@ export interface VoiceAiSession {
 
 export interface VoiceAiSessionInput {
   providerCallId: string;
+  workspaceId: string;
   instructions: string;
   onAudio: (payload: string) => void;
   onTranscript: (turn: VoiceTranscriptTurn) => void;
@@ -285,7 +286,7 @@ export class LocalVoskWindowsVoiceAIProvider implements VoiceAIProvider {
         return;
       }
       void (async () => {
-        const approvedKnowledge = await listApprovedKnowledge({ limit: 10 });
+        const approvedKnowledge = await listApprovedKnowledge(input.workspaceId, { limit: 10 });
         const result = await this.aiProvider.generateSalesReply({
           messages: turns.map((turn, index) => ({
             id: `voice-turn-${String(index)}`,

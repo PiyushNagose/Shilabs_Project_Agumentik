@@ -23,14 +23,18 @@ export async function listProposalsController(
   request: Request,
   response: Response<ProposalDto[]>
 ): Promise<void> {
-  response.status(200).json(await listProposals(request.validatedQuery as ListProposalsQuery));
+  response
+    .status(200)
+    .json(
+      await listProposals(getRequiredUser(request), request.validatedQuery as ListProposalsQuery)
+    );
 }
 
 export async function getProposalController(
   request: Request<{ id: string }>,
   response: Response<ProposalDto>
 ): Promise<void> {
-  response.status(200).json(await getProposal(request.params.id));
+  response.status(200).json(await getProposal(getRequiredUser(request), request.params.id));
 }
 
 export async function createProposalController(

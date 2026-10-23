@@ -241,9 +241,23 @@ describe("Phase 7.5 lead automation ownership", () => {
 
     await expect(prisma.lead.findUniqueOrThrow({ where: { id: leadA.id } })).resolves.toMatchObject(
       {
-        automationOwnershipState: "HUMAN_REQUIRED"
+        automationOwnershipState: "HUMAN_REQUIRED",
+        nextAction: "Review customer reply and respond"
       }
     );
+    const ownershipActivities = await prisma.activity.findMany({
+      where: { leadId: leadA.id, type: "AUTOMATION_OWNERSHIP_CHANGED" },
+      orderBy: { occurredAt: "asc" }
+    });
+    expect(
+      ownershipActivities.map((activity) => ({
+        from: (activity.metadata as { from?: string } | null)?.from,
+        to: (activity.metadata as { to?: string } | null)?.to
+      }))
+    ).toEqual([
+      { from: "AI_ACTIVE", to: "AI_STOPPED" },
+      { from: "AI_STOPPED", to: "HUMAN_REQUIRED" }
+    ]);
     await expect(
       prisma.followUpSequence.findUniqueOrThrow({ where: { id: sequenceA.id } })
     ).resolves.toMatchObject({ status: "STOPPED" });

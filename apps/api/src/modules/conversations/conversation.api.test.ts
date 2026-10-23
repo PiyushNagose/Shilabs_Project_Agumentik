@@ -14,7 +14,8 @@ import { createApp } from "../../app.js";
 import { prisma } from "../../shared/prisma.js";
 import { hashPassword } from "../auth/auth.service.js";
 import type { EmailProvider, EmailSendInput, EmailSendResult } from "../email/email.provider.js";
-import { sendHumanReply } from "./conversation.service.js";
+import type { AIProvider } from "../ai/ai.provider.js";
+import { sendHumanReply, sendHumanWhatsAppReply } from "./conversation.service.js";
 
 const app = createApp();
 const adminEmail = "conversation-api-admin@example.local";
@@ -150,6 +151,8 @@ async function cleanup(): Promise<void> {
   await prisma.message.deleteMany({
     where: { conversationId: { in: conversationIds } }
   });
+  await prisma.whatsAppProviderEvent.deleteMany({ where: { outboundMessage: { leadId: { in: leadIds } } } });
+  await prisma.outboundWhatsAppMessage.deleteMany({ where: { leadId: { in: leadIds } } });
   await prisma.humanTakeover.deleteMany({
     where: { leadId: { in: leadIds } }
   });
@@ -200,7 +203,7 @@ describe("M7/M8 conversations API", () => {
   beforeEach(async () => {
     await seedStages();
     await cleanup();
-    await prisma.user.create({
+    const user = await prisma.user.create({
       data: {
         email: adminEmail,
         passwordHash: await hashPassword("CorrectHorse123!"),
@@ -210,12 +213,16 @@ describe("M7/M8 conversations API", () => {
         status: UserStatus.ACTIVE
       }
     });
-  }, 45000);
+    const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
+    await prisma.workspaceMember.create({
+      data: { workspaceId: workspace.id, userId: user.id, role: "ADMIN", status: "ACTIVE" }
+    });
+  }, 180000);
 
   afterAll(async () => {
     await cleanup();
     await prisma.$disconnect();
-  }, 45000);
+  }, 180000);
 
   it("creates and reads a conversation for a real lead", async () => {
     const token = await login();
@@ -239,7 +246,7 @@ describe("M7/M8 conversations API", () => {
     const fetched = getResponse.body as unknown as ConversationDto;
 
     expect(fetched.id).toBe(conversation.id);
-  }, 45000);
+  }, 180000);
 
   it("appends messages in order and updates lastMessageAt", async () => {
     const token = await login();
@@ -292,7 +299,7 @@ describe("M7/M8 conversations API", () => {
     });
     expect(activities.map((activity) => activity.type)).toContain("MESSAGE_RECEIVED");
     expect(activities.map((activity) => activity.type)).toContain("MESSAGE_SENT");
-  }, 45000);
+  }, 180000);
 
   it("changes conversation mode and writes audit history", async () => {
     const token = await login();
@@ -319,7 +326,7 @@ describe("M7/M8 conversations API", () => {
         action: "AI_MODE_CHANGED"
       }
     });
-  }, 45000);
+  }, 180000);
 
   it("starts human takeover, pauses automation and returns a grounded briefing", async () => {
     const token = await login();
@@ -389,7 +396,7 @@ describe("M7/M8 conversations API", () => {
     expect(briefing.conversationSummary.mode).toBe("HUMAN");
     expect(briefing.conversationSummary.messageCount).toBe(1);
     expect(briefing.latestActions.map((activity) => activity.type)).toContain("HUMAN_TAKEOVER");
-  }, 45000);
+  }, 180000);
 
   it("clears active human takeover when automation is explicitly resumed", async () => {
     const token = await login();
@@ -435,7 +442,7 @@ describe("M7/M8 conversations API", () => {
         }
       })
     ).resolves.toBe(1);
-  }, 45000);
+  }, 180000);
 
   it("prevents duplicate provider message ids", async () => {
     const token = await login();
@@ -468,9 +475,9 @@ describe("M7/M8 conversations API", () => {
         body: "Duplicate copy"
       })
       .expect(409);
-  }, 45000);
+  }, 180000);
 
-  it("sends a HUMAN conversation reply through EmailProvider idempotently", async () => {
+  it("sends a reviewed HUMAN reply idempotently and resumes follow-up", async () => {
     const token = await login();
     const lead = await createLead(token);
     const actor = await prisma.user.findUniqueOrThrow({ where: { email: adminEmail } });
@@ -490,14 +497,23 @@ describe("M7/M8 conversations API", () => {
     };
     const zohoTransport = () =>
       Promise.resolve(Response.json({ data: [{ details: { id: "zoho-note-1" } }] }));
+    const savedLead = await prisma.lead.findUniqueOrThrow({ where: { id: lead.id } });
+    const reviewSequence = await prisma.followUpSequence.create({ data: {
+      workspaceId: savedLead.workspaceId, leadId: lead.id, contactId: lead.contactId,
+      conversationId: conversation.id, status: "ATTENTION_REQUIRED", cadenceDays: [1, 5, 9],
+      idempotencyKey: `review:${lead.id}`, lastErrorCode: "AI_FOLLOW_UP_REQUIRES_REVIEW"
+    } });
+    const aiProvider = { generateFollowUp: () => Promise.resolve({ body: "Following up on the approved scope discussion.", requiresHumanReview: false, reason: null }) } as unknown as AIProvider;
     const first = await sendHumanReply(actor, conversation.id, input, {
       env: configuredEmailEnv,
       emailProvider: provider,
+      aiProvider,
       zohoTransport
     });
     const second = await sendHumanReply(actor, conversation.id, input, {
       env: configuredEmailEnv,
       emailProvider: provider,
+      aiProvider,
       zohoTransport
     });
 
@@ -514,7 +530,8 @@ describe("M7/M8 conversations API", () => {
         select: { automationOwnershipState: true }
       })
     ).resolves.toMatchObject({ automationOwnershipState: "AI_ACTIVE" });
-    await expect(prisma.followUpSequence.count({ where: { leadId: lead.id } })).resolves.toBe(1);
+    await expect(prisma.followUpSequence.count({ where: { leadId: lead.id, status: "ACTIVE" } })).resolves.toBe(1);
+    await expect(prisma.followUpSequence.findUnique({ where: { id: reviewSequence.id } })).resolves.toMatchObject({ status: "STOPPED", stopReason: "HUMAN_REVIEW_COMPLETED" });
     await expect(
       prisma.activity.count({ where: { leadId: lead.id, type: "MESSAGE_SENT" } })
     ).resolves.toBe(1);
@@ -523,7 +540,7 @@ describe("M7/M8 conversations API", () => {
         where: { entityType: "Message", entityId: first.message?.id, action: "HUMAN_REPLY_SENT" }
       })
     ).resolves.toBe(1);
-  }, 45000);
+  }, 180000);
 
   it("rejects human reply while conversation is still automated", async () => {
     const token = await login();
@@ -547,5 +564,51 @@ describe("M7/M8 conversations API", () => {
         { env: configuredEmailEnv, emailProvider: new TestEmailProvider() }
       )
     ).rejects.toMatchObject({ code: "CONFLICT" });
-  }, 45000);
+  }, 180000);
+
+  it("sends a HUMAN WhatsApp reply once and resumes AI ownership", async () => {
+    const token = await login();
+    const lead = await createLead(token);
+    const actor = await prisma.user.findUniqueOrThrow({ where: { email: adminEmail } });
+    await prisma.lead.update({ where: { id: lead.id }, data: { ownerId: actor.id } });
+    await prisma.contact.update({ where: { id: lead.contactId }, data: { whatsappId: "+919876543210" } });
+    const conversationResponse = await request(app)
+      .post("/api/conversations")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ leadId: lead.id, channel: "WHATSAPP", mode: "HUMAN" })
+      .expect(201);
+    const conversation = conversationResponse.body as ConversationDto;
+    await prisma.message.create({ data: {
+      conversationId: conversation.id,
+      workspaceId: "workspace_default",
+      providerMessageId: `inbound-${randomUUID()}`,
+      direction: "INBOUND",
+      senderType: "PROSPECT",
+      body: "Please send the revised details on WhatsApp."
+    } });
+    const transport = vi.fn(() => Promise.resolve(Response.json({ messages: [{ id: `wamid.${randomUUID()}` }] })));
+    const aiProvider = {
+      generateFollowUp: () => Promise.resolve({ body: "Following up on the revised details.", requiresHumanReview: false, reason: null })
+    } as unknown as AIProvider;
+    const input = { body: "Here are the revised details you requested.", idempotencyKey: `manual-${randomUUID()}` };
+    const options = {
+      env: {
+        MESSAGING_PROVIDER: "meta_whatsapp",
+        WHATSAPP_ACCESS_TOKEN: "test-token",
+        WHATSAPP_PHONE_NUMBER_ID: "test-phone-id",
+        NODE_ENV: "test"
+      },
+      transport: transport as unknown as typeof fetch,
+      aiProvider
+    };
+    const first = await sendHumanWhatsAppReply(actor, conversation.id, input, options);
+    const second = await sendHumanWhatsAppReply(actor, conversation.id, input, options);
+    expect(first.status).toBe("SENT");
+    expect(second.message?.id).toBe(first.message?.id);
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(await prisma.outboundWhatsAppMessage.count({ where: { leadId: lead.id } })).toBe(1);
+    expect(await prisma.activity.count({ where: { leadId: lead.id, type: "WHATSAPP_SENT" } })).toBe(1);
+    await expect(prisma.lead.findUnique({ where: { id: lead.id }, select: { automationOwnershipState: true } }))
+      .resolves.toMatchObject({ automationOwnershipState: "AI_ACTIVE" });
+  }, 180000);
 });

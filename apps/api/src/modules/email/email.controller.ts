@@ -10,6 +10,7 @@ import type {
   SesInboundEmailDto
 } from "@shilabs/shared-types";
 import { getRequiredUser } from "../../middleware/auth.middleware.js";
+import { receiveSesSns } from "./email-ses-receiving.service.js";
 import {
   getAwsSesHealth,
   createEmailSuppression,
@@ -106,6 +107,13 @@ export async function ingestSesInboundEmailController(
       }
     })
   );
+}
+
+export async function receiveSesSnsController(request: Request, response: Response): Promise<void> {
+  const result = await receiveSesSns(request.body);
+  const pending = result !== null && typeof result === "object" &&
+    "status" in result && result.status === "PENDING_MANUAL_CONFIRMATION";
+  response.status(pending ? 202 : 200).json(result);
 }
 
 export async function ingestE2ECustomerReplyController(

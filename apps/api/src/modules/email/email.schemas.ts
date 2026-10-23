@@ -2,6 +2,17 @@ import { z } from "zod";
 
 const optionalEmailBodySchema = z.string().trim().min(1).max(20000).optional();
 const emailAddressSchema = z.email().trim().toLowerCase().max(320);
+const emailAttachmentSchema = z.object({
+  fileName: z.string().trim().min(1).max(255),
+  contentType: z.string().trim().min(1).max(255),
+  contentBase64: z
+    .string()
+    .min(1)
+    .max(10_000_000)
+    .regex(/^[A-Za-z0-9+/]+={0,2}$/u, "Attachment content must be valid base64"),
+  contentId: z.string().trim().min(1).max(255).optional(),
+  disposition: z.enum(["attachment", "inline"]).default("attachment")
+});
 
 export const sendEmailSchema = z
   .object({
@@ -9,14 +20,32 @@ export const sendEmailSchema = z
     subject: z.string().trim().min(1).max(500),
     textBody: optionalEmailBodySchema,
     htmlBody: optionalEmailBodySchema,
+    ccEmails: z.array(emailAddressSchema).max(20).default([]),
+    attachments: z.array(emailAttachmentSchema).max(10).default([]),
+    threadId: z.string().trim().min(1).max(500).optional(),
+    inReplyTo: z.string().trim().min(1).max(998).optional(),
+    references: z.array(z.string().trim().min(1).max(998)).max(50).default([]),
     idempotencyKey: z.string().trim().min(8).max(200)
   })
   .refine((value) => Boolean(value.textBody ?? value.htmlBody), {
     message: "Either textBody or htmlBody is required",
     path: ["textBody"]
+  })
+  .superRefine((value, context) => {
+    const decodedBytes = value.attachments.reduce(
+      (total, attachment) => total + Math.floor((attachment.contentBase64.length * 3) / 4),
+      0
+    );
+    if (decodedBytes > 7_500_000) {
+      context.addIssue({
+        code: "custom",
+        path: ["attachments"],
+        message: "Combined email attachments must not exceed 7.5 MB"
+      });
+    }
   });
 
-export type SendEmailInput = z.infer<typeof sendEmailSchema>;
+export type SendEmailInput = z.input<typeof sendEmailSchema>;
 
 export const validatePreSendEmailSchema = z.object({
   leadId: z.string().min(1)

@@ -10,8 +10,9 @@ import { replyUnderstandingResultSchema } from "../ai/ai.schemas.js";
 import { sourceContainsGroundedQuote } from "../ai/grounding.js";
 import { publishDomainEvent } from "../domain-events/domain-events.service.js";
 import type { EmailProvider } from "../email/email.provider.js";
+import { isNonMeaningfulInboundMetadata } from "../email/inbound-email-classification.js";
 import { listApprovedKnowledge } from "../knowledge-base/knowledge-base.service.js";
-import { createMeetingRequestForReply } from "../meetings/meeting.service.js";
+import { confirmMeetingFromCustomerReply, createMeetingRequestForReply } from "../meetings/meeting.service.js";
 import { createNegotiationHandoffForReply } from "../notifications/notification.service.js";
 import { recalculateQualification } from "../qualification/qualification.service.js";
 import { orchestrateSalesConversationForReply } from "../sales-conversation/sales-conversation-orchestrator.service.js";
@@ -47,7 +48,7 @@ type EligibleReplyInboundRecord = ReplyInboundRecord & {
   message: NonNullable<ReplyInboundRecord["message"]>;
 };
 
-const replyProcessingTransactionOptions = { timeout: 15000 };
+const replyProcessingTransactionOptions = { maxWait: 10000, timeout: 30000 };
 function toDto(run: ReplyRunRecord): ReplyProcessingRunDto {
   return {
     id: run.id,
@@ -178,17 +179,21 @@ export async function processInboundReply(
       AgentType.REPLY_UNDERSTANDING
     );
 
-  const messages = await prisma.message.findMany({
+  const messages = (await prisma.message.findMany({
     where: { conversationId: eligibleInbound.conversationId ?? "" },
-    select: { id: true, senderType: true, body: true, createdAt: true },
+    select: { id: true, senderType: true, body: true, createdAt: true, metadata: true },
     orderBy: { createdAt: "asc" },
     take: 80
-  });
+  })).filter((message) => !isNonMeaningfulInboundMetadata(message.metadata));
   const qualification = await prisma.leadQualification.findUnique({
     where: { leadId: eligibleInbound.leadId ?? "" },
     include: { evidence: true }
   });
-  const approvedKnowledge = await listApprovedKnowledge({ limit: 20 });
+  if (!eligibleInbound.lead.workspaceId)
+    throw new AppError(409, "CONFLICT", "Lead has no persisted workspace");
+  const approvedKnowledge = await listApprovedKnowledge(eligibleInbound.lead.workspaceId, {
+    limit: 20
+  });
   const approvedKnowledgeIds = new Set(approvedKnowledge.map((item) => item.versionId));
   const inputContext = {
     inboundEmailId: eligibleInbound.id,
@@ -397,6 +402,7 @@ async function findEligibleInbound(
     }
   });
   if (!inbound?.lead || !inbound.conversation || !inbound.message) return null;
+  if (isNonMeaningfulInboundMetadata(inbound.message.metadata)) return null;
   return inbound as EligibleReplyInboundRecord;
 }
 
@@ -406,8 +412,13 @@ async function createMeetingRequestForMeetingIntent(input: {
   intent: string | null;
   summary: string | null;
 }): Promise<void> {
-  if (input.intent !== "MEETING_REQUEST") return;
   try {
+    if (!["NEGOTIATION", "NOT_INTERESTED", "UNCLEAR"].includes(input.intent ?? "UNCLEAR") && await confirmMeetingFromCustomerReply({
+      leadId: input.inbound.lead.id,
+      conversationId: input.inbound.conversation.id,
+      messageId: input.inbound.message.id
+    })) return;
+    if (input.intent !== "MEETING_REQUEST") return;
     await createMeetingRequestForReply({
       leadId: input.inbound.lead.id,
       conversationId: input.inbound.conversation.id,

@@ -12,6 +12,7 @@ import { whatsAppDomainEventHandlers } from "../messaging/whatsapp-send.handler.
 import { PermanentDomainEventError } from "./domain-event.errors.js";
 import { publishWorkerRealtimeEvent } from "../realtime/realtime.publisher.js";
 import { meetingDomainEventHandlers } from "../meetings/meeting-confirmed.handler.js";
+import { notificationDomainEventHandlers } from "../notifications/notification-escalated.handler.js";
 import {
   triggerWorkflowsForDomainEvent,
   workflowDomainEventHandlers
@@ -33,6 +34,7 @@ const INTERNAL_EVENT_TYPES = new Set([
   "VOICE_CONVERSATION_COMPLETED",
   "MEETING_REQUESTED",
   "NOTIFICATION_ACKNOWLEDGED",
+  "NOTIFICATION_READ",
   "PROPOSAL_GENERATED",
   "PROPOSAL_APPROVED",
   "PROPOSAL_SENT"
@@ -229,6 +231,7 @@ export async function processDomainEventJob(input: {
         ...callingDomainEventHandlers,
         ...whatsAppDomainEventHandlers,
         ...meetingDomainEventHandlers,
+        ...notificationDomainEventHandlers,
         ...workflowDomainEventHandlers
       }
     );

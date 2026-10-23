@@ -62,7 +62,9 @@ function mediaPayload(message: JsonRecord): string | null {
   return nestedString(message, "media", "payload");
 }
 
-async function buildInstructions(providerCallId: string): Promise<string> {
+async function buildInstructions(
+  providerCallId: string
+): Promise<{ instructions: string; workspaceId: string } | null> {
   const call = await prisma.voiceCallAttempt.findUnique({
     where: { providerCallId },
     include: {
@@ -76,35 +78,37 @@ async function buildInstructions(providerCallId: string): Promise<string> {
       }
     }
   });
-  const approvedKnowledge = await listApprovedKnowledge({ limit: 10 });
-  const lead = call?.lead;
-  const leadContext = lead
-    ? [
-        `Company: ${lead.company.name}`,
-        `Contact: ${`${lead.contact.firstName} ${lead.contact.lastName}`.trim()}`,
-        `Requirement: ${lead.requirement ?? "unknown"}`,
-        `Service interest: ${lead.serviceInterest ?? "unknown"}`,
-        `Existing qualification: ${JSON.stringify(lead.qualification ?? {})}`
-      ].join("\n")
-    : "Lead context was not found yet. Keep the conversation short and factual.";
+  if (!call?.workspaceId) return null;
+  const approvedKnowledge = await listApprovedKnowledge(call.workspaceId, { limit: 10 });
+  const lead = call.lead;
+  const leadContext = [
+    `Company: ${lead.company.name}`,
+    `Contact: ${`${lead.contact.firstName} ${lead.contact.lastName}`.trim()}`,
+    `Requirement: ${lead.requirement ?? "unknown"}`,
+    `Service interest: ${lead.serviceInterest ?? "unknown"}`,
+    `Existing qualification: ${JSON.stringify(lead.qualification ?? {})}`
+  ].join("\n");
   const knowledge = approvedKnowledge
     .map((item) => `- [${item.versionId}] ${item.content}`)
     .join("\n");
-  return [
-    "You are Shilabs AI Sales Engine speaking on an outbound sales follow-up call.",
-    "Keep responses concise, natural, and professional. Ask one question at a time.",
-    "Use only the lead context and approved knowledge below. If you do not know, say you will have a teammate follow up.",
-    "Do not negotiate pricing, discounts, contract terms, legal terms, or commercial concessions.",
-    "If the customer asks to negotiate, reduce price, get a discount, or discuss commercial terms, acknowledge and say a human owner will follow up. Do not counteroffer.",
-    "If the customer requests a meeting, collect preference at a high level but do not book a meeting.",
-    "If the customer asks to stop contact, acknowledge and stop.",
-    "",
-    "Lead context:",
-    leadContext,
-    "",
-    "Approved knowledge:",
-    knowledge || "No approved knowledge is available."
-  ].join("\n");
+  return {
+    workspaceId: call.workspaceId,
+    instructions: [
+      "You are Shilabs AI Sales Engine speaking on an outbound sales follow-up call.",
+      "Keep responses concise, natural, and professional. Ask one question at a time.",
+      "Use only the lead context and approved knowledge below. If you do not know, say you will have a teammate follow up.",
+      "Do not negotiate pricing, discounts, contract terms, legal terms, or commercial concessions.",
+      "If the customer asks to negotiate, reduce price, get a discount, or discuss commercial terms, acknowledge and say a human owner will follow up. Do not counteroffer.",
+      "If the customer requests a meeting, collect preference at a high level but do not book a meeting.",
+      "If the customer asks to stop contact, acknowledge and stop.",
+      "",
+      "Lead context:",
+      leadContext,
+      "",
+      "Approved knowledge:",
+      knowledge || "No approved knowledge is available."
+    ].join("\n")
+  };
 }
 
 export function installExotelVoiceAiWebSocketServer(server: Server): () => Promise<void> {
@@ -172,10 +176,12 @@ export function installExotelVoiceAiWebSocketServer(server: Server): () => Promi
           providerCallId,
           payload: JSON.parse(JSON.stringify(message)) as Prisma.InputJsonObject
         }).then(async () => {
-          const instructions = await buildInstructions(providerCallId ?? "");
+          const context = await buildInstructions(providerCallId ?? "");
+          if (!context) return;
           voiceAiSession = await createVoiceAIProvider().startSession({
             providerCallId: providerCallId ?? "",
-            instructions,
+            workspaceId: context.workspaceId,
+            instructions: context.instructions,
             onTranscript: (turn) => turns.push(turn),
             onAudio: (payload) => {
               if (exotelSocket.readyState !== WebSocket.OPEN) return;

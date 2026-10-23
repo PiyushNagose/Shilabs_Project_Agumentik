@@ -1,7 +1,8 @@
 import { Router } from "express";
-import { UserRole } from "@prisma/client";
 import { asyncHandler } from "../../middleware/async-handler.js";
-import { requireAuth, requireRole } from "../../middleware/auth.middleware.js";
+import { getRequiredUser, requireAuth } from "../../middleware/auth.middleware.js";
+import { canAccessWorkspaceOperations } from "../authorization/workspace-permissions.js";
+import { AppError } from "../../shared/errors.js";
 import { getOperationsDashboardController } from "./operations.controller.js";
 
 export const operationsRoutes = Router();
@@ -9,6 +10,12 @@ export const operationsRoutes = Router();
 operationsRoutes.use(requireAuth);
 operationsRoutes.get(
   "/dashboard",
-  requireRole([UserRole.ADMIN, UserRole.SALES_MANAGER]),
+  (request, _response, next) => {
+    if (!canAccessWorkspaceOperations(getRequiredUser(request))) {
+      next(new AppError(403, "AUTHORIZATION_ERROR", "Insufficient role permissions"));
+      return;
+    }
+    next();
+  },
   asyncHandler(getOperationsDashboardController)
 );

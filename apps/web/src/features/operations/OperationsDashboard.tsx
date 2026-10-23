@@ -1,4 +1,5 @@
 import type React from "react";
+import { formatDateTime } from "../../utils/date-time.js";
 import { useMemo, useState } from "react";
 import type {
   OperationsDashboardDto,
@@ -27,10 +28,7 @@ interface ProviderErrorGroup {
 }
 
 function formatDate(value: string): string {
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short"
-  }).format(new Date(value));
+  return formatDateTime(value);
 }
 
 function healthTone(status: OperationsProviderHealthDto["status"]): "hot" | "warm" | "neutral" {
@@ -84,7 +82,9 @@ function groupProviderHealth(items: OperationsProviderHealthDto[]): {
 }
 
 function providerErrorKey(error: OperationsProviderErrorDto): string {
-  return [error.source, error.provider, error.status, error.message].join("::");
+  return [error.source, error.provider, error.status, error.message, error.nextRunAt ?? ""].join(
+    "::"
+  );
 }
 
 function groupProviderErrors(errors: OperationsProviderErrorDto[]): ProviderErrorGroup[] {
@@ -140,7 +140,7 @@ function ProviderHealthCard({
             : "Health check evidence available"}
         </p>
       )}
-      <footer>{formatDate(item.checkedAt)}</footer>
+      <footer>Checked {formatDate(item.checkedAt)}</footer>
     </article>
   );
 }
@@ -161,8 +161,14 @@ function ProviderErrorCard({
       <div>
         <strong>{error.source}</strong>
         <span>
-          {error.provider} - {formatDate(error.occurredAt)}
+          {error.provider} - Updated {formatDate(error.occurredAt)}
         </span>
+        {error.nextRunAt ? (
+          <span>
+            {error.status === "FAILED" ? "Next retry" : "Scheduled for"}{" "}
+            {formatDate(error.nextRunAt)}
+          </span>
+        ) : null}
       </div>
       <p>{error.message}</p>
       <div className="dashboard-card-badges">
@@ -267,7 +273,8 @@ export function OperationsDashboard({ accessToken }: OperationsDashboardProps): 
           source: item.type,
           status: item.status,
           message: item.detail,
-          occurredAt: item.occurredAt
+          occurredAt: item.occurredAt,
+          nextRunAt: item.nextRunAt
         })) ?? []
       ),
     [dashboard]

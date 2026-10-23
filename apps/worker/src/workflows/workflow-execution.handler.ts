@@ -1,6 +1,7 @@
-import { Prisma, type DomainEventOutbox } from "@prisma/client";
+import { LeadStatus, LeadTemperature, Prisma, type DomainEventOutbox } from "@prisma/client";
 import { emitOperationalAlert } from "@shilabs/shared-config";
 import type {
+  AgentComposerNodeDto,
   WorkflowDefinitionDto,
   WorkflowEdgeDto,
   WorkflowNodeDto,
@@ -11,6 +12,16 @@ import type { DomainEventHandlerMap } from "../domain-events/domain-event.proces
 import { PermanentDomainEventError } from "../domain-events/domain-event.errors.js";
 import { workerPrisma } from "../domain-events/domain-event.repository.js";
 import { assertWorkspaceIntegrationEnabled } from "../integrations/integration-guard.js";
+import {
+  invokePublishedAgent,
+  type AgentRuntimeAdapters
+} from "../agents/agent-composer.runtime.js";
+
+function workflowTransaction<T>(
+  operation: (tx: Prisma.TransactionClient) => Promise<T>
+): Promise<T> {
+  return workerPrisma.$transaction(operation, { maxWait: 10_000, timeout: 30_000 });
+}
 
 function payloadString(event: DomainEventOutbox, key: string): string | null {
   const value = (event.payload as Prisma.JsonObject)[key];
@@ -19,6 +30,23 @@ function payloadString(event: DomainEventOutbox, key: string): string | null {
 function configString(node: WorkflowNodeDto, key: string): string {
   const value = node.config[key];
   return typeof value === "string" ? value.trim() : "";
+}
+function executionContextValue(
+  input: Prisma.JsonValue | null,
+  key: string
+): Prisma.JsonValue | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const root = input;
+  const policyContext = root.policyContext;
+  if (policyContext && typeof policyContext === "object" && !Array.isArray(policyContext))
+    return policyContext[key];
+  return root[key];
+}
+
+function executionContextBoolean(input: Prisma.JsonValue | null, key: string): boolean {
+  const value = executionContextValue(input, key);
+  if (typeof value === "boolean") return value;
+  return typeof value === "string" && value.toLowerCase() === "true";
 }
 async function assertIntegrationEnabled(input: {
   workspaceId: string;
@@ -120,7 +148,7 @@ async function recordOwnership(input: {
   state: "AI_STOPPED" | "HUMAN_REQUIRED";
   reason: string;
 }): Promise<void> {
-  await workerPrisma.$transaction(async (tx) => {
+  await workflowTransaction(async (tx) => {
     const lead = await tx.lead.findFirst({
       where: { id: input.leadId, workspaceId: input.workspaceId }
     });
@@ -175,11 +203,15 @@ async function createWorkflowTask(input: {
   executionId: string;
   correlationId: string;
   node: WorkflowNodeDto;
+  sourceType?: "WORKFLOW_EXECUTION" | "AGENT_EXECUTION";
+  resumeOnCompletion?: boolean;
+  createdByAgentId?: string;
 }): Promise<void> {
   const title = configString(input.node, "title") || input.node.label;
   const dueMinutes =
     typeof input.node.config.dueMinutes === "number" ? input.node.config.dueMinutes : 60;
-  const projectionKey = `workflow:${input.executionId}:node:${input.node.id}`;
+  const sourceType = input.sourceType ?? "WORKFLOW_EXECUTION";
+  const projectionKey = `${sourceType === "AGENT_EXECUTION" ? "agent" : "workflow"}:${input.executionId}:node:${input.node.id}`;
   await workerPrisma.task.upsert({
     where: { projectionKey },
     update: {},
@@ -198,13 +230,146 @@ async function createWorkflowTask(input: {
             : "NORMAL",
       dueAt: new Date(Date.now() + dueMinutes * 60_000),
       assignedToUserId: input.lead.ownerId,
-      createdByType: "WORKFLOW",
-      sourceType: "WORKFLOW_EXECUTION",
+      createdByType: sourceType === "AGENT_EXECUTION" ? "AGENT" : "WORKFLOW",
+      createdByAgentId: input.createdByAgentId,
+      sourceType,
       sourceId: input.executionId,
       projectionKey,
-      metadata: { nodeId: input.node.id },
+      metadata: { nodeId: input.node.id, resumeOnCompletion: input.resumeOnCompletion ?? false },
       correlationId: input.correlationId
     }
+  });
+}
+
+async function updateAgentLead(input: {
+  workspaceId: string;
+  leadId: string;
+  executionId: string;
+  correlationId: string;
+  node: AgentComposerNodeDto;
+  changes: Record<string, string | number | null>;
+}): Promise<void> {
+  const stageId = typeof input.changes.stageId === "string" ? input.changes.stageId : null;
+  if (stageId) {
+    const stage = await workerPrisma.pipelineStage.findFirst({
+      where: { id: stageId, workspaceId: input.workspaceId, status: "ACTIVE" },
+      select: { id: true }
+    });
+    if (!stage)
+      throw new PermanentDomainEventError(
+        "AGENT_STAGE_INVALID",
+        "Selected pipeline stage is not active in this workspace"
+      );
+  }
+  const data: Prisma.LeadUncheckedUpdateInput = { lastActivityAt: new Date() };
+  if (typeof input.changes.status === "string") {
+    if (!Object.values(LeadStatus).includes(input.changes.status as LeadStatus))
+      throw new PermanentDomainEventError("AGENT_STATUS_INVALID", "Lead status is invalid");
+    data.status = input.changes.status as LeadStatus;
+  }
+  if (typeof input.changes.temperature === "string") {
+    if (!Object.values(LeadTemperature).includes(input.changes.temperature as LeadTemperature))
+      throw new PermanentDomainEventError(
+        "AGENT_TEMPERATURE_INVALID",
+        "Lead temperature is invalid"
+      );
+    data.temperature = input.changes.temperature as LeadTemperature;
+  }
+  if (typeof input.changes.score === "number") {
+    if (
+      !Number.isInteger(input.changes.score) ||
+      input.changes.score < 0 ||
+      input.changes.score > 100
+    )
+      throw new PermanentDomainEventError(
+        "AGENT_SCORE_INVALID",
+        "Lead score must be from 0 to 100"
+      );
+    data.score = input.changes.score;
+  }
+  if (stageId) data.stageId = stageId;
+  for (const key of ["requirement", "serviceInterest", "nextAction"] as const) {
+    const value = input.changes[key];
+    if (typeof value === "string" || value === null) data[key] = value;
+  }
+  await workflowTransaction(async (tx) => {
+    const lead = await tx.lead.findFirst({
+      where: { id: input.leadId, workspaceId: input.workspaceId }
+    });
+    if (!lead) throw new PermanentDomainEventError("LEAD_NOT_FOUND", "Agent lead is unavailable");
+    await tx.lead.update({ where: { id: lead.id }, data });
+    const sourceId = `${input.executionId}:${input.node.id}:update-lead`;
+    if (!(await tx.activity.findFirst({ where: { sourceType: "AGENT_EXECUTION", sourceId } })))
+      await tx.activity.create({
+        data: {
+          workspaceId: input.workspaceId,
+          leadId: lead.id,
+          entityType: "AGENT",
+          entityId: input.executionId,
+          actorType: "AGENT",
+          sourceType: "AGENT_EXECUTION",
+          sourceId,
+          type: "NOTE_ADDED",
+          title: "Lead updated by agent",
+          description: input.node.label,
+          metadata: { changes: input.changes },
+          correlationId: input.correlationId,
+          visibility: "BUSINESS"
+        }
+      });
+  });
+}
+
+async function assignAgentOwner(input: {
+  workspaceId: string;
+  leadId: string;
+  executionId: string;
+  correlationId: string;
+  node: AgentComposerNodeDto;
+  ownerId: string;
+}): Promise<void> {
+  const member = await workerPrisma.workspaceMember.findFirst({
+    where: {
+      workspaceId: input.workspaceId,
+      userId: input.ownerId,
+      status: "ACTIVE",
+      user: { status: "ACTIVE" }
+    },
+    select: { userId: true }
+  });
+  if (!member)
+    throw new PermanentDomainEventError(
+      "AGENT_OWNER_INVALID",
+      "Selected owner is not an active member of this workspace"
+    );
+  await workflowTransaction(async (tx) => {
+    const lead = await tx.lead.findFirst({
+      where: { id: input.leadId, workspaceId: input.workspaceId }
+    });
+    if (!lead) throw new PermanentDomainEventError("LEAD_NOT_FOUND", "Agent lead is unavailable");
+    await tx.lead.update({
+      where: { id: lead.id },
+      data: { ownerId: input.ownerId, lastActivityAt: new Date() }
+    });
+    const sourceId = `${input.executionId}:${input.node.id}:assign-owner`;
+    if (!(await tx.activity.findFirst({ where: { sourceType: "AGENT_EXECUTION", sourceId } })))
+      await tx.activity.create({
+        data: {
+          workspaceId: input.workspaceId,
+          leadId: lead.id,
+          entityType: "AGENT",
+          entityId: input.executionId,
+          actorType: "AGENT",
+          sourceType: "AGENT_EXECUTION",
+          sourceId,
+          type: "NOTE_ADDED",
+          title: "Lead owner assigned",
+          description: input.node.label,
+          metadata: { fromOwnerId: lead.ownerId, toOwnerId: input.ownerId },
+          correlationId: input.correlationId,
+          visibility: "BUSINESS"
+        }
+      });
   });
 }
 
@@ -226,7 +391,7 @@ async function queueWorkflowCommunication(input: {
         "COMMUNICATION_MESSAGE_MISSING",
         "Email communication requires an approved message"
       );
-    await workerPrisma.$transaction(async (tx) => {
+    await workflowTransaction(async (tx) => {
       const conversation =
         (await tx.conversation.findFirst({
           where: { leadId: input.lead.id, channel: "EMAIL", status: "OPEN" },
@@ -294,7 +459,7 @@ async function queueWorkflowCommunication(input: {
       "COMMUNICATION_CHANNEL_INVALID",
       "Communication channel is not supported"
     );
-  await workerPrisma.$transaction(async (tx) => {
+  await workflowTransaction(async (tx) => {
     const sequence = await tx.callingSequence.upsert({
       where: { idempotencyKey: `${key}:${channel.toLowerCase()}` },
       update: {},
@@ -332,7 +497,10 @@ async function queueWorkflowCommunication(input: {
           callingSequenceId: sequence.id,
           callingAttemptId: attempt.id,
           leadId: input.lead.id,
-          contactId: input.lead.contactId
+          contactId: input.lead.contactId,
+          ...(channel === "WHATSAPP"
+            ? { textBody: configString(input.node, "message") || null }
+            : {})
         },
         correlationId: input.correlationId,
         idempotencyKey: `${key}:${channel.toLowerCase()}:dispatch`
@@ -345,11 +513,76 @@ async function queueWorkflowCommunication(input: {
   });
 }
 
+function createAgentRuntimeAdapters(input: {
+  workspaceId: string;
+  agentId: string;
+  lead: { id: string; contactId: string; companyId: string; ownerId: string | null };
+  correlationId: string;
+}): AgentRuntimeAdapters {
+  return {
+    createTask: async ({ executionId, node, title }) =>
+      createWorkflowTask({
+        workspaceId: input.workspaceId,
+        lead: input.lead,
+        executionId,
+        correlationId: input.correlationId,
+        sourceType: "AGENT_EXECUTION",
+        resumeOnCompletion: node.type === "HUMAN_HANDOFF",
+        createdByAgentId: input.agentId,
+        node: {
+          id: node.id,
+          type: "TASK",
+          label: node.label,
+          position: node.position,
+          config: { ...node.config, title }
+        }
+      }),
+    queueCommunication: async ({ executionId, node, channel, subject, message }) =>
+      queueWorkflowCommunication({
+        workspaceId: input.workspaceId,
+        lead: input.lead,
+        executionId,
+        correlationId: input.correlationId,
+        node: {
+          id: node.id,
+          type: "COMMUNICATION",
+          label: node.label,
+          position: node.position,
+          config: { channel, subject, message }
+        }
+      }),
+    updateLead: async ({ executionId, node, changes }) =>
+      updateAgentLead({
+        workspaceId: input.workspaceId,
+        leadId: input.lead.id,
+        executionId,
+        correlationId: input.correlationId,
+        node,
+        changes
+      }),
+    assignOwner: async ({ executionId, node, ownerId }) =>
+      assignAgentOwner({
+        workspaceId: input.workspaceId,
+        leadId: input.lead.id,
+        executionId,
+        correlationId: input.correlationId,
+        node,
+        ownerId
+      })
+  };
+}
+
 async function executeNode(input: {
   event: DomainEventOutbox;
   execution: NonNullable<Awaited<ReturnType<typeof loadExecution>>>;
   node: WorkflowNodeDto;
-}): Promise<{ branch?: string; waiting?: Date; human?: boolean; stopped?: boolean }> {
+}): Promise<{
+  branch?: string;
+  waiting?: Date;
+  externalResume?: boolean;
+  human?: boolean;
+  stopped?: boolean;
+}> {
   const { execution, node } = input;
   const lead = execution.lead;
   if (!lead)
@@ -381,7 +614,18 @@ async function executeNode(input: {
               ? (lead.serviceInterest ?? "")
               : field === "ownership"
                 ? lead.automationOwnershipState
-                : "";
+                : field === "meaningfulReply"
+                  ? String(
+                      executionContextBoolean(execution.input, "meaningfulReply") ||
+                        executionContextValue(execution.input, "sourceEventType") ===
+                          "CUSTOMER_REPLIED"
+                    )
+                  : field === "requiresHuman"
+                    ? String(
+                        executionContextBoolean(execution.input, "requiresHuman") ||
+                          executionContextBoolean(execution.input, "requiresHumanReview")
+                      )
+                    : "";
     return { branch: actual.toLowerCase() === expected ? "true" : "false" };
   }
   if (node.type === "WAIT") {
@@ -415,48 +659,32 @@ async function executeNode(input: {
       node
     });
   if (node.type === "AGENT_INVOKE") {
-    const agent = await workerPrisma.agent.findFirst({
-      where: {
-        id: configString(node, "agentId"),
-        workspaceId: execution.workspaceId,
-        status: "ACTIVE"
-      },
-      include: { currentVersion: true }
-    });
-    if (!agent?.currentVersion)
+    const agentId = configString(node, "agentId");
+    if (!agentId)
       throw new PermanentDomainEventError(
-        "AGENT_NOT_AVAILABLE",
-        "Configured agent is not active in this workspace"
+        "AGENT_NOT_CONFIGURED",
+        "Agent invocation has no configured agent"
       );
-    await workerPrisma.agentExecution.upsert({
-      where: {
-        workspaceId_agentId_sourceEntityType_sourceEntityId: {
-          workspaceId: execution.workspaceId,
-          agentId: agent.id,
-          sourceEntityType: "WorkflowStep",
-          sourceEntityId: `${execution.id}:${node.id}`
-        }
-      },
-      update: {},
-      create: {
+    const agentResult = await invokePublishedAgent({
+      workspaceId: execution.workspaceId,
+      agentId,
+      leadId: lead.id,
+      source: "WORKFLOW",
+      sourceEntityType: "WorkflowStep",
+      sourceEntityId: `${execution.id}:${node.id}`,
+      correlationId: execution.correlationId,
+      parentWorkflowExecutionId: execution.id,
+      parentWorkflowNodeId: node.id,
+      adapters: createAgentRuntimeAdapters({
         workspaceId: execution.workspaceId,
-        agentId: agent.id,
-        versionId: agent.currentVersion.id,
-        source: "WORKFLOW",
-        sourceEntityType: "WorkflowStep",
-        sourceEntityId: `${execution.id}:${node.id}`,
-        entityType: "Lead",
-        entityId: lead.id,
-        leadId: lead.id,
-        status: "SUCCEEDED",
-        startedAt: new Date(),
-        completedAt: new Date(),
-        durationMs: 0,
-        summary: `Invoked by workflow: ${node.label}`,
-        result: { workflowExecutionId: execution.id, nodeId: node.id },
+        agentId,
+        lead,
         correlationId: execution.correlationId
-      }
+      })
     });
+    if (agentResult.outcome === "WAITING")
+      return { waiting: agentResult.nextRunAt, externalResume: true };
+    if (agentResult.outcome === "HUMAN_REQUIRED") return { human: true };
   }
   if (node.type === "INTEGRATION_ACTION") {
     const connectionId = configString(node, "connectionId");
@@ -515,6 +743,7 @@ async function executeNode(input: {
         lead,
         executionId: execution.id,
         correlationId: execution.correlationId,
+        resumeOnCompletion: true,
         node: {
           ...node,
           config: {
@@ -552,6 +781,7 @@ async function executeNode(input: {
       lead,
       executionId: execution.id,
       correlationId: execution.correlationId,
+      resumeOnCompletion: true,
       node: {
         ...node,
         config: {
@@ -661,13 +891,17 @@ async function handleWorkflow(event: DomainEventOutbox): Promise<void> {
     const existing = await workerPrisma.workflowStepExecution.findUnique({
       where: { idempotencyKey: stepKey }
     });
-    if (existing?.status === "WAITING")
+    if (existing?.status === "WAITING" && node.type !== "AGENT_INVOKE")
       await workerPrisma.workflowStepExecution.update({
         where: { id: existing.id },
         data: { status: "SUCCEEDED", completedAt: new Date(), nextAttemptAt: null }
       });
     let result: Awaited<ReturnType<typeof executeNode>> = {};
-    if (!existing || existing.status === "FAILED") {
+    if (
+      !existing ||
+      existing.status === "FAILED" ||
+      (existing.status === "WAITING" && node.type === "AGENT_INVOKE")
+    ) {
       const step = existing
         ? await workerPrisma.workflowStepExecution.update({
             where: { id: existing.id },
@@ -722,7 +956,7 @@ async function handleWorkflow(event: DomainEventOutbox): Promise<void> {
         throw error;
       }
       if (result.waiting) {
-        await workerPrisma.$transaction([
+        const writes: Prisma.PrismaPromise<unknown>[] = [
           workerPrisma.workflowStepExecution.update({
             where: { id: step.id },
             data: { status: "WAITING", nextAttemptAt: result.waiting }
@@ -730,22 +964,26 @@ async function handleWorkflow(event: DomainEventOutbox): Promise<void> {
           workerPrisma.workflowExecution.update({
             where: { id: execution.id },
             data: { status: "WAITING", currentNodeId: node.id, nextRunAt: result.waiting }
-          }),
-          workerPrisma.domainEventOutbox.upsert({
-            where: { idempotencyKey: `${stepKey}:resume` },
-            update: {},
-            create: {
-              workspaceId: execution.workspaceId,
-              eventType: "WORKFLOW_EXECUTION_RESUME",
-              aggregateType: "WorkflowExecution",
-              aggregateId: execution.id,
-              payload: { workflowExecutionId: execution.id, leadId: execution.leadId },
-              correlationId: execution.correlationId,
-              idempotencyKey: `${stepKey}:resume`,
-              nextAttemptAt: result.waiting
-            }
           })
-        ]);
+        ];
+        if (!result.externalResume)
+          writes.push(
+            workerPrisma.domainEventOutbox.upsert({
+              where: { idempotencyKey: `${stepKey}:resume` },
+              update: {},
+              create: {
+                workspaceId: execution.workspaceId,
+                eventType: "WORKFLOW_EXECUTION_RESUME",
+                aggregateType: "WorkflowExecution",
+                aggregateId: execution.id,
+                payload: { workflowExecutionId: execution.id, leadId: execution.leadId },
+                correlationId: execution.correlationId,
+                idempotencyKey: `${stepKey}:resume`,
+                nextAttemptAt: result.waiting
+              }
+            })
+          );
+        await workerPrisma.$transaction(writes);
         return;
       }
       await workerPrisma.workflowStepExecution.update({
@@ -819,9 +1057,58 @@ async function handleWorkflow(event: DomainEventOutbox): Promise<void> {
   }
 }
 
+async function handleAgentResume(event: DomainEventOutbox): Promise<void> {
+  if (!event.workspaceId)
+    throw new PermanentDomainEventError(
+      "WORKSPACE_CONTEXT_MISSING",
+      "Agent resume event has no workspace"
+    );
+  const executionId = payloadString(event, "agentExecutionId");
+  if (!executionId)
+    throw new PermanentDomainEventError(
+      "AGENT_EXECUTION_ID_MISSING",
+      "Agent resume event has no execution id"
+    );
+  const execution = await workerPrisma.agentExecution.findFirst({
+    where: { id: executionId, workspaceId: event.workspaceId }
+  });
+  if (!execution)
+    throw new PermanentDomainEventError(
+      "AGENT_EXECUTION_NOT_FOUND",
+      "Agent execution is unavailable in this workspace"
+    );
+  if (["SUCCEEDED", "FAILED", "CANCELED", "HUMAN_REQUIRED"].includes(execution.status)) return;
+  if (!execution.leadId || !execution.sourceEntityType || !execution.sourceEntityId)
+    throw new PermanentDomainEventError(
+      "AGENT_EXECUTION_CONTEXT_MISSING",
+      "Agent execution has incomplete resume context"
+    );
+  const lead = await workerPrisma.lead.findFirst({
+    where: { id: execution.leadId, workspaceId: event.workspaceId },
+    include: { contact: true, company: true }
+  });
+  if (!lead) throw new PermanentDomainEventError("LEAD_NOT_FOUND", "Agent lead is unavailable");
+  await invokePublishedAgent({
+    workspaceId: event.workspaceId,
+    agentId: execution.agentId,
+    leadId: lead.id,
+    source: execution.source,
+    sourceEntityType: execution.sourceEntityType,
+    sourceEntityId: execution.sourceEntityId,
+    correlationId: execution.correlationId,
+    adapters: createAgentRuntimeAdapters({
+      workspaceId: event.workspaceId,
+      agentId: execution.agentId,
+      lead,
+      correlationId: execution.correlationId
+    })
+  });
+}
+
 export const workflowDomainEventHandlers: DomainEventHandlerMap = {
   WORKFLOW_EXECUTION_REQUESTED: { handle: handleWorkflow },
-  WORKFLOW_EXECUTION_RESUME: { handle: handleWorkflow }
+  WORKFLOW_EXECUTION_RESUME: { handle: handleWorkflow },
+  AGENT_EXECUTION_RESUME: { handle: handleAgentResume }
 };
 
 export async function triggerWorkflowsForDomainEvent(event: DomainEventOutbox): Promise<void> {
@@ -853,7 +1140,7 @@ export async function triggerWorkflowsForDomainEvent(event: DomainEventOutbox): 
     const triggerEvent = trigger ? configString(trigger, "event") : "";
     if (triggerEvent !== "*" && triggerEvent !== event.eventType) continue;
     const idempotencyKey = `workflow:${workflow.id}:event:${event.id}`;
-    await workerPrisma.$transaction(async (tx) => {
+    await workflowTransaction(async (tx) => {
       const execution = await tx.workflowExecution.upsert({
         where: { idempotencyKey },
         update: {},

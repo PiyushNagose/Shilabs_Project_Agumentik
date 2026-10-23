@@ -27,6 +27,118 @@ export interface TwilioWhatsAppSignatureInput {
 
 export type MessagingTransport = typeof fetch;
 
+export interface WhatsAppTextSendResult {
+  status: "ACCEPTED" | "FAILED" | "NOT_CONFIGURED" | "UNCERTAIN";
+  providerMessageId: string | null;
+  providerStatus: string | null;
+  lastError: string | null;
+}
+
+export async function sendWhatsAppText(
+  config: MessagingConfig,
+  input: { to: string; body: string; idempotencyKey: string; replyToProviderMessageId?: string | null },
+  transport: MessagingTransport = fetch
+): Promise<WhatsAppTextSendResult> {
+  const missing = config.provider === "meta_whatsapp"
+    ? [
+        !config.metaWhatsApp.accessToken && "WHATSAPP_ACCESS_TOKEN",
+        !config.metaWhatsApp.phoneNumberId && "WHATSAPP_PHONE_NUMBER_ID"
+      ].filter((value): value is string => Boolean(value))
+    : config.provider === "twilio_whatsapp"
+      ? [
+          !config.twilioWhatsApp.accountSid && "TWILIO_WHATSAPP_ACCOUNT_SID",
+          !config.twilioWhatsApp.authToken && "TWILIO_WHATSAPP_AUTH_TOKEN",
+          !config.twilioWhatsApp.sandboxFrom && "TWILIO_WHATSAPP_SANDBOX_FROM"
+        ].filter((value): value is string => Boolean(value))
+      : ["MESSAGING_PROVIDER"];
+  if (missing.length > 0) {
+    return {
+      status: "NOT_CONFIGURED",
+      providerMessageId: null,
+      providerStatus: null,
+      lastError: `Missing configuration: ${missing.join(", ")}`
+    };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
+  let responseStatus: number | null = null;
+  try {
+    if (config.provider === "meta_whatsapp") {
+      const response = await transport(
+        `${config.metaWhatsApp.graphApiBaseUrl.replace(/\/$/u, "")}/${encodeURIComponent(config.metaWhatsApp.phoneNumberId)}/messages`,
+        {
+          method: "POST",
+          signal: controller.signal,
+          headers: {
+            Authorization: `Bearer ${config.metaWhatsApp.accessToken}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            messaging_product: "whatsapp",
+            to: input.to.replace(/^\+/u, ""),
+            type: "text",
+            text: { body: input.body, preview_url: false },
+            ...(input.replyToProviderMessageId
+              ? { context: { message_id: input.replyToProviderMessageId } }
+              : {})
+          })
+        }
+      );
+      responseStatus = response.status;
+      const data = await parseJson(response);
+      if (!response.ok) throw new Error(metaErrorMessage(response.status, data));
+      const messages: unknown = data?.messages;
+      const first: unknown = Array.isArray(messages) ? (messages as unknown[])[0] : null;
+      const firstRecord = first && typeof first === "object" && !Array.isArray(first)
+        ? first as Record<string, unknown> : null;
+      const providerMessageId = typeof firstRecord?.id === "string" ? firstRecord.id : null;
+      if (!providerMessageId) throw new Error("WhatsApp provider did not return a message ID");
+      return { status: "ACCEPTED", providerMessageId, providerStatus: "accepted", lastError: null };
+    }
+    const payload = new URLSearchParams({
+      From: `whatsapp:${config.twilioWhatsApp.sandboxFrom.replace(/^whatsapp:/iu, "")}`,
+      To: `whatsapp:${input.to.replace(/^whatsapp:/iu, "")}`,
+      Body: input.body
+    });
+    const response = await transport(
+      `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(config.twilioWhatsApp.accountSid)}/Messages.json`,
+      {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          Authorization: `Basic ${Buffer.from(`${config.twilioWhatsApp.accountSid}:${config.twilioWhatsApp.authToken}`).toString("base64")}`,
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Idempotency-Key": input.idempotencyKey
+        },
+        body: payload
+      }
+    );
+    responseStatus = response.status;
+    const data = await parseJson(response);
+    if (!response.ok) throw new Error(metaErrorMessage(response.status, data));
+    if (typeof data?.sid !== "string") throw new Error("WhatsApp provider did not return a message ID");
+    return {
+      status: "ACCEPTED",
+      providerMessageId: data.sid,
+      providerStatus: typeof data.status === "string" ? data.status : "accepted",
+      lastError: null
+    };
+  } catch (error) {
+    return {
+      status: responseStatus === null || responseStatus >= 500 || [408, 409, 429].includes(responseStatus) || responseStatus < 300
+        ? "UNCERTAIN" : "FAILED",
+      providerMessageId: null,
+      providerStatus: null,
+      lastError: responseStatus === null || responseStatus >= 500 || responseStatus < 300
+        ? "WhatsApp delivery could not be confirmed. Check the provider before sending another reply."
+        : sanitizeError(error)
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function missingMetaConfig(config: MessagingConfig): string[] {
   const missing: string[] = [];
   if (config.provider !== "meta_whatsapp") missing.push("MESSAGING_PROVIDER");

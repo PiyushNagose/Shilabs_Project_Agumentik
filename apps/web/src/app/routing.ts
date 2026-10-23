@@ -187,6 +187,7 @@ export const navigationByRole: Readonly<Record<UserRoleName, readonly AppRouteId
     "orders",
     "operations",
     "users",
+    "reports",
     "settings"
   ],
   SALES_MANAGER: [
@@ -202,7 +203,8 @@ export const navigationByRole: Readonly<Record<UserRoleName, readonly AppRouteId
     "orders",
     "operations",
     "team",
-    "reports"
+    "reports",
+    "settings"
   ],
   SALES_REP: [
     "dashboard",

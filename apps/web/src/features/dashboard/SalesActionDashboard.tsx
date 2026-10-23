@@ -1,4 +1,5 @@
 import type React from "react";
+import { formatDateTime } from "../../utils/date-time.js";
 import { useMemo, useState } from "react";
 import type { SalesActionDashboardDto, SalesActionDashboardItemDto } from "@shilabs/shared-types";
 import { Icon } from "../../components/Icon.js";
@@ -13,6 +14,10 @@ import {
 } from "../../services/api-client.js";
 import type { DetailTab } from "../leads/CrmWorkspace.js";
 import { usePersistedResource } from "../../hooks/usePersistedResource.js";
+import {
+  NotificationDeliveryState,
+  NotificationEscalationControl
+} from "./NotificationEscalationControl.js";
 
 const DASHBOARD_SECTION_PREVIEW_LIMIT = 5;
 const PRIORITY_ACTION_PREVIEW_LIMIT = 5;
@@ -26,6 +31,7 @@ interface DashboardItemGroup {
 
 interface SalesActionDashboardProps {
   accessToken: string;
+  canEscalate?: boolean;
   onOpenLead: (leadId: string, tab?: DetailTab) => void;
   onOpenOperations?: () => void;
 }
@@ -35,16 +41,29 @@ function isDomainEventItem(item: SalesActionDashboardItemDto): boolean {
 }
 
 function formatDate(value: string): string {
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short"
-  }).format(new Date(value));
+  return formatDateTime(value);
 }
 
 function statusTone(severity: SalesActionDashboardItemDto["severity"]): "hot" | "warm" | "neutral" {
   if (severity === "CRITICAL") return "hot";
   if (severity === "WARNING") return "warm";
   return "neutral";
+}
+
+function dashboardStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    ATTENTION_REQUIRED: "Needs attention",
+    CONFIRMATION_REQUIRED: "Needs confirmation",
+    PROVIDER_PENDING: "Provider pending",
+    WAITING_APPROVAL: "Waiting approval",
+    NOT_CONFIGURED: "Setup required",
+    IN_PROGRESS: "In progress"
+  };
+  if (labels[status]) return labels[status];
+  return status
+    .split("_")
+    .map((part) => `${part.charAt(0)}${part.slice(1).toLowerCase()}`)
+    .join(" ");
 }
 
 function targetTab(item: SalesActionDashboardItemDto): DetailTab | undefined {
@@ -71,7 +90,7 @@ function leadLabel(item: SalesActionDashboardItemDto): string {
   if (!item.lead) {
     if (item.sourceEntityType.startsWith("DomainEventOutbox:")) {
       const eventType = item.sourceEntityType.slice("DomainEventOutbox:".length);
-      return `System automation · ${eventType.replaceAll("_", " ")}`;
+      return `System automation - ${dashboardStatusLabel(eventType)}`;
     }
     return "Platform operation";
   }
@@ -113,6 +132,7 @@ function groupDashboardItems(items: SalesActionDashboardItemDto[]): DashboardIte
 }
 
 function DashboardSection({
+  renderEscalation,
   emptyDetail,
   items,
   title,
@@ -124,6 +144,7 @@ function DashboardSection({
   onOpenOperations,
   onToggleExpanded
 }: {
+  renderEscalation?: (item: SalesActionDashboardItemDto) => React.ReactNode;
   emptyDetail: string;
   expanded: boolean;
   groupRepeated?: boolean;
@@ -172,8 +193,9 @@ function DashboardSection({
                       </StatusBadge>
                     ) : null}
                     <StatusBadge tone={statusTone(group.item.severity)}>
-                      {group.item.status.replaceAll("_", " ")}
+                      {dashboardStatusLabel(group.item.status)}
                     </StatusBadge>
+                    <NotificationDeliveryState state={group.item.notificationDeliveryState} />
                   </div>
                 </div>
                 <p>
@@ -186,8 +208,9 @@ function DashboardSection({
                   ) : null}
                 </p>
                 <footer>
-                  <span>{formatDate(group.item.occurredAt)}</span>
+                  <span>Updated {formatDate(group.item.occurredAt)}</span>
                   <div className="dashboard-card-actions">
+                    {renderEscalation?.(group.item)}
                     {group.item.leadId ? (
                       <button
                         onClick={() => openDashboardItem(group.item, onOpenLead)}
@@ -253,6 +276,7 @@ function DashboardSection({
 
 export function SalesActionDashboard({
   accessToken,
+  canEscalate = false,
   onOpenLead,
   onOpenOperations
 }: SalesActionDashboardProps): React.JSX.Element {
@@ -330,6 +354,20 @@ export function SalesActionDashboard({
       });
     }
   }
+
+  const renderEscalation = (item: SalesActionDashboardItemDto): React.ReactNode => {
+    const notificationId = notificationIdFromItem(item);
+    return canEscalate && notificationId && !item.notificationDeliveryState ? (
+      <NotificationEscalationControl
+        accessToken={accessToken}
+        notificationId={notificationId}
+        existingStatus={item.status === "ESCALATED" ? "ESCALATED" : undefined}
+        onChanged={async () => {
+          await loadDashboard();
+        }}
+      />
+    ) : null;
+  };
 
   const totalItems = dashboard?.summary.totalActionItems ?? 0;
   const topItems = useMemo(
@@ -424,13 +462,17 @@ export function SalesActionDashboard({
                     <strong>{item.title}</strong>
                     <span>{leadLabel(item)}</span>
                   </div>
-                  <StatusBadge tone={statusTone(item.severity)}>
-                    {item.status.replaceAll("_", " ")}
-                  </StatusBadge>
+                  <div className="dashboard-card-badges">
+                    <StatusBadge tone={statusTone(item.severity)}>
+                      {dashboardStatusLabel(item.status)}
+                    </StatusBadge>
+                    <NotificationDeliveryState state={item.notificationDeliveryState} />
+                  </div>
                 </div>
                 <footer>
-                  <span>{formatDate(item.occurredAt)}</span>
+                  <span>Updated {formatDate(item.occurredAt)}</span>
                   <div className="dashboard-card-actions">
+                    {renderEscalation(item)}
                     {item.leadId ? (
                       <button onClick={() => openDashboardItem(item, onOpenLead)} type="button">
                         <Icon name="briefcase" size={15} />
@@ -470,6 +512,7 @@ export function SalesActionDashboard({
         />
         <DashboardSection
           emptyDetail="No negotiation handoff or human takeover requires attention."
+          renderEscalation={renderEscalation}
           expanded={expandedSections.has("handoffs")}
           items={dashboard.negotiationAndTakeoverAlerts}
           title="Handoffs & Takeovers"
@@ -521,7 +564,7 @@ export function SalesActionDashboard({
                         <span>{leadLabel(item)}</span>
                       </div>
                       <StatusBadge tone={statusTone(item.severity)}>
-                        {item.status.replaceAll("_", " ")}
+                        {dashboardStatusLabel(item.status)}
                       </StatusBadge>
                     </div>
                     <p>
@@ -534,7 +577,7 @@ export function SalesActionDashboard({
                       ) : null}
                     </p>
                     <footer>
-                      <span>{formatDate(item.occurredAt)}</span>
+                      <span>Updated {formatDate(item.occurredAt)}</span>
                       <div className="dashboard-card-actions">
                         {item.leadId ? (
                           <button onClick={() => openDashboardItem(item, onOpenLead)} type="button">

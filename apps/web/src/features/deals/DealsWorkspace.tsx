@@ -16,7 +16,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Columns3,
-  DollarSign,
+  Banknote,
   GripVertical,
   LayoutList,
   Mail,
@@ -30,6 +30,7 @@ import { useMemo, useState } from "react";
 import { Badge, Button, Drawer, Modal, Select } from "../../components/ui/index.js";
 import { StateBlock } from "../../components/StateBlock.js";
 import { usePersistedResource } from "../../hooks/usePersistedResource.js";
+import { isWorkspaceManager } from "../auth/workspace-access.js";
 import {
   createDeal,
   createPipeline,
@@ -77,6 +78,12 @@ function money(deal: DealDto): string {
 function date(value: string | null): string {
   if (!value) return "Not scheduled";
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(value));
+}
+function displayStatus(value: string): string {
+  return value
+    .toLowerCase()
+    .replaceAll("_", " ")
+    .replace(/^./, (letter) => letter.toUpperCase());
 }
 function initials(deal: DealDto): string {
   return `${deal.lead.contact.firstName[0] ?? ""}${deal.lead.contact.lastName[0] ?? ""}`.toUpperCase();
@@ -132,8 +139,10 @@ function DealRelations({
                   <strong>{task.title}</strong>
                   <span>{task.description ?? "No description"}</span>
                 </div>
-                <Badge>{task.status}</Badge>
-                <time>{date(task.dueAt)}</time>
+                <span className="deal-related-status" data-label="Status">
+                  <Badge>{displayStatus(task.status)}</Badge>
+                </span>
+                <time data-label="Due">{date(task.dueAt)}</time>
               </article>
             ))
           ) : (
@@ -148,8 +157,10 @@ function DealRelations({
                   <strong>{meeting.title}</strong>
                   <span>{meeting.timeZone}</span>
                 </div>
-                <Badge>{meeting.status}</Badge>
-                <time>{date(meeting.windowStart)}</time>
+                <span className="deal-related-status" data-label="Status">
+                  <Badge>{displayStatus(meeting.status)}</Badge>
+                </span>
+                <time data-label="Scheduled">{date(meeting.windowStart)}</time>
               </article>
             ))
           ) : (
@@ -164,8 +175,10 @@ function DealRelations({
                   <strong>{proposal.title}</strong>
                   <span>{proposal.serviceType ?? "General proposal"}</span>
                 </div>
-                <Badge>{proposal.status}</Badge>
-                <time>{date(proposal.updatedAt)}</time>
+                <span className="deal-related-status" data-label="Status">
+                  <Badge>{displayStatus(proposal.status)}</Badge>
+                </span>
+                <time data-label="Updated">{date(proposal.updatedAt)}</time>
               </article>
             ))
           ) : (
@@ -641,8 +654,11 @@ export function DealsWorkspace({
       data?.pipelines[0],
     [data, pipelineId]
   );
-  const canManage = currentUser.role === "ADMIN" || currentUser.role === "SALES_MANAGER";
+  const canManage = isWorkspaceManager(currentUser);
   const quickDeal = detail.data;
+  const createExistingDeal = createLeadId
+    ? (data?.deals.find((deal) => deal.leadId === createLeadId) ?? null)
+    : null;
   const moveDeal = async (dealId: string, stageId: string): Promise<void> => {
     setMutationError(null);
     try {
@@ -862,6 +878,7 @@ export function DealsWorkspace({
                   <div>
                     {deals.map((deal) => (
                       <article
+                        data-deal-id={deal.id}
                         draggable
                         key={deal.id}
                         onClick={() => setSelectedId(deal.id)}
@@ -874,7 +891,7 @@ export function DealsWorkspace({
                         <p>{leadName(deal.lead)}</p>
                         <footer>
                           <span>
-                            <DollarSign size={13} /> {money(deal)}
+                            <Banknote size={13} /> {money(deal)}
                           </span>
                           <span>
                             <CalendarDays size={13} /> {date(deal.closeDate)}
@@ -928,10 +945,19 @@ export function DealsWorkspace({
       <Modal
         footer={
           <Button
-            disabled={!createLeadId || !activePipeline?.stages[0]}
+            disabled={!createLeadId || (!createExistingDeal && !activePipeline?.stages[0])}
             onClick={() =>
               void (async () => {
-                if (!createLeadId || !activePipeline?.stages[0]) return;
+                if (!createLeadId) return;
+
+                if (createExistingDeal) {
+                  setCreateOpen(false);
+                  setCreateLeadId("");
+                  onRouteChange(createExistingDeal.id);
+                  return;
+                }
+
+                if (!activePipeline?.stages[0]) return;
                 setMutationError(null);
                 try {
                   await createDeal(accessToken, {
@@ -950,7 +976,7 @@ export function DealsWorkspace({
             }
             variant="primary"
           >
-            Create deal
+            {createExistingDeal ? "Open existing deal" : "Create deal"}
           </Button>
         }
         onClose={() => setCreateOpen(false)}
@@ -962,23 +988,37 @@ export function DealsWorkspace({
             Related lead
             <Select
               ariaLabel="Related lead"
-              onChange={setCreateLeadId}
+              onChange={(value) => {
+                setCreateLeadId(value);
+                setMutationError(null);
+              }}
               options={[
                 { value: "", label: "Select a lead" },
-                ...(data?.leads
-                  .filter((lead) => !data.deals.some((deal) => deal.leadId === lead.id))
-                  .map((lead) => ({
+                ...(data?.leads.map((lead) => {
+                  const existingDeal = data.deals.find((deal) => deal.leadId === lead.id);
+
+                  return {
                     value: lead.id,
-                    label: `${leadName(lead)} / ${lead.company.name}`
-                  })) ?? [])
+                    label: existingDeal
+                      ? `${leadName(lead)} / ${lead.company.name} - Existing deal: ${existingDeal.stage.label}`
+                      : `${leadName(lead)} / ${lead.company.name}`
+                  };
+                }) ?? [])
               ]}
               value={createLeadId}
             />
           </label>
-          <p>
-            The deal starts in {activePipeline?.stages[0]?.label ?? "the first active stage"}.
-            Value, owner, probability and close date can be updated from the deal workspace.
-          </p>
+          {createExistingDeal ? (
+            <p>
+              This lead already has a deal in {createExistingDeal.stage.label}. Open it to continue
+              without creating a duplicate.
+            </p>
+          ) : (
+            <p>
+              The deal starts in {activePipeline?.stages[0]?.label ?? "the first active stage"}.
+              Value, owner, probability and close date can be updated from the deal workspace.
+            </p>
+          )}
         </div>
       </Modal>
     </div>

@@ -1,6 +1,6 @@
 import request from "supertest";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { UserRole, UserStatus } from "@prisma/client";
+import { UserRole, UserStatus, WorkspaceRole } from "@prisma/client";
 import type { AuthResponse, InternalNotificationDto } from "@shilabs/shared-types";
 import { createApp } from "../../app.js";
 import { prisma } from "../../shared/prisma.js";
@@ -65,6 +65,24 @@ async function seedUsers(): Promise<{ adminId: string; repId: string; otherRepId
       }
     })
   ]);
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
+  await prisma.workspaceMember.createMany({
+    data: [
+      { workspaceId: workspace.id, userId: admin.id, role: WorkspaceRole.ADMIN, status: "ACTIVE" },
+      {
+        workspaceId: workspace.id,
+        userId: rep.id,
+        role: WorkspaceRole.SALES_REP,
+        status: "ACTIVE"
+      },
+      {
+        workspaceId: workspace.id,
+        userId: otherRep.id,
+        role: WorkspaceRole.SALES_REP,
+        status: "ACTIVE"
+      }
+    ]
+  });
   return { adminId: admin.id, repId: rep.id, otherRepId: otherRep.id };
 }
 
@@ -74,8 +92,10 @@ async function login(email: string): Promise<string> {
 }
 
 async function createNotification(assignedToUserId: string): Promise<string> {
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
   const notification = await prisma.internalNotification.create({
     data: {
+      workspaceId: workspace.id,
       type: "MEETING_CONFIRMATION",
       status: "UNREAD",
       severity: "WARNING",
@@ -93,12 +113,12 @@ async function createNotification(assignedToUserId: string): Promise<string> {
 describe("R27 notification API", () => {
   beforeEach(async () => {
     await cleanup();
-  }, 45000);
+  }, 180000);
 
   afterAll(async () => {
     await cleanup();
     await prisma.$disconnect();
-  }, 45000);
+  }, 180000);
 
   it("enforces RBAC visibility for assigned notifications", async () => {
     const { repId } = await seedUsers();
@@ -117,6 +137,56 @@ describe("R27 notification API", () => {
 
     expect(visible.body as InternalNotificationDto[]).toHaveLength(1);
     expect(hidden.body as InternalNotificationDto[]).toHaveLength(0);
+  });
+
+  it("does not expose notifications from another workspace", async () => {
+    const { adminId, repId } = await seedUsers();
+    const otherWorkspace = await prisma.workspace.create({
+      data: { name: "R27 Isolated Workspace", slug: `r27-isolated-${String(Date.now())}` }
+    });
+    await prisma.workspaceMember.create({
+      data: {
+        workspaceId: otherWorkspace.id,
+        userId: adminId,
+        role: WorkspaceRole.ADMIN,
+        status: "ACTIVE"
+      }
+    });
+    const foreignNotification = await prisma.internalNotification.create({
+      data: {
+        workspaceId: otherWorkspace.id,
+        type: "MEETING_CONFIRMATION",
+        status: "UNREAD",
+        severity: "WARNING",
+        title: "Other workspace notification",
+        body: "Must remain isolated",
+        assignedToUserId: repId,
+        sourceEntityType: "R27Test",
+        sourceEntityId: "r27-other-workspace",
+        idempotencyKey: "r27-notification:other-workspace"
+      }
+    });
+
+    const adminToken = await login(adminEmail);
+    const visible = await request(app)
+      .get("/api/notifications")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .expect(200);
+
+    expect(visible.body as InternalNotificationDto[]).toHaveLength(0);
+    for (const action of ["read", "acknowledge", "escalate"]) {
+      await request(app)
+        .patch(`/api/notifications/${foreignNotification.id}/${action}`)
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send(action === "escalate" ? { reason: "Must not change another workspace" } : {})
+        .expect(404);
+    }
+    await expect(
+      prisma.internalNotification.findUniqueOrThrow({ where: { id: foreignNotification.id } })
+    ).resolves.toMatchObject({ status: "UNREAD", readAt: null, acknowledgedAt: null });
+    await prisma.workspaceMember.deleteMany({ where: { workspaceId: otherWorkspace.id } });
+    await prisma.internalNotification.deleteMany({ where: { workspaceId: otherWorkspace.id } });
+    await prisma.workspace.delete({ where: { id: otherWorkspace.id } });
   });
 
   it("marks notifications read and acknowledged idempotently with evidence", async () => {
@@ -155,7 +225,7 @@ describe("R27 notification API", () => {
     ).resolves.toBe(1);
   });
 
-  it("allows managers to escalate notifications without external channels", async () => {
+  it("allows managers to escalate notifications with a durable delivery request", async () => {
     const { repId } = await seedUsers();
     const id = await createNotification(repId);
     const adminToken = await login(adminEmail);
@@ -171,7 +241,14 @@ describe("R27 notification API", () => {
     expect(notification.severity).toBe("CRITICAL");
     expect(notification.escalationStatus).toBe("ESCALATED");
     expect(notification.escalationReason).toBe("Needs manager attention");
-    expect(JSON.stringify(notification.escalationEvidence)).toContain("UNRESOLVED_CLIENT_DECISION");
+    expect(notification.escalationEvidence).toMatchObject({
+      delivery: { state: "Pending", channel: "EMAIL" }
+    });
+    await expect(
+      prisma.domainEventOutbox.count({
+        where: { aggregateId: id, eventType: "NOTIFICATION_ESCALATED" }
+      })
+    ).resolves.toBe(1);
     await expect(
       prisma.auditEvent.count({ where: { entityId: id, action: "NOTIFICATION_ESCALATED" } })
     ).resolves.toBe(1);

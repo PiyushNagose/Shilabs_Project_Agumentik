@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { CalendarConfig } from "@shilabs/shared-config";
 import {
   GoogleCalendarProvider,
+  MicrosoftCalendarProvider,
   NotConfiguredCalendarProvider,
   UnsupportedCalendarProvider,
+  ZoomConferenceProvider,
   type CalendarTransport
 } from "./calendar.provider.js";
 
@@ -30,6 +32,8 @@ function buildConfig(overrides: Partial<CalendarConfig> = {}): CalendarConfig {
       clientSecret: "",
       userId: ""
     },
+    conferenceProvider: "native",
+    zoom: { accountId: "", clientId: "", clientSecret: "", hostUserId: "me" },
     ...overrides
   };
 }
@@ -70,6 +74,42 @@ function parseJsonBody(body: unknown): Record<string, unknown> {
 }
 
 describe("calendar provider foundation", () => {
+  it("confirms Google cancellation only after the provider accepts the delete", async () => {
+    const calls: { url: string; method: string | undefined }[] = [];
+    const transport: CalendarTransport = (url, init) => {
+      const requestUrl = url instanceof Request ? url.url : String(url);
+      calls.push({ url: requestUrl, method: init?.method });
+      if (requestUrl.includes("oauth2.googleapis.com")) {
+        return Promise.resolve(Response.json({
+          access_token: "test-token",
+          expires_in: 3600,
+          scope: "https://www.googleapis.com/auth/calendar.freebusy https://www.googleapis.com/auth/calendar.events"
+        }));
+      }
+      return Promise.resolve(new Response(null, { status: 204 }));
+    };
+    const provider = new GoogleCalendarProvider(buildGoogleConfig(), transport);
+    await expect(provider.cancelMeeting({ externalMeetingId: "meeting-test-id" }))
+      .resolves.toEqual({ status: "SYNCED", lastError: null });
+    expect(calls[1]).toEqual({
+      url: "https://www.googleapis.com/calendar/v3/calendars/primary/events/meeting-test-id?sendUpdates=all",
+      method: "DELETE"
+    });
+  });
+
+  it("does not mark a rejected Microsoft cancellation as complete", async () => {
+    const config = buildConfig({
+      provider: "microsoft",
+      microsoft: { tenantId: "tenant", clientId: "client", clientSecret: "secret", userId: "owner@example.test" }
+    });
+    const transport: CalendarTransport = (url) => (url instanceof Request ? url.url : String(url)).includes("login.microsoftonline.com")
+      ? Promise.resolve(Response.json({ access_token: "test-token", expires_in: 3600 }))
+      : Promise.resolve(new Response(null, { status: 403 }));
+    const provider = new MicrosoftCalendarProvider(config, transport);
+    await expect(provider.cancelMeeting({ externalMeetingId: "event-1" }))
+      .resolves.toMatchObject({ status: "FAILED" });
+  });
+
   it("reports truthful NOT_CONFIGURED health and no fake availability", async () => {
     const provider = new NotConfiguredCalendarProvider(buildConfig());
 
@@ -88,19 +128,19 @@ describe("calendar provider foundation", () => {
     });
   });
 
-  it("keeps unsupported provider selections behind the provider boundary", async () => {
-    const provider = new UnsupportedCalendarProvider(buildConfig({ provider: "microsoft" }));
+  it("keeps unknown provider selections behind the provider boundary", async () => {
+    const provider = new UnsupportedCalendarProvider(buildConfig());
 
     await expect(provider.getHealth()).resolves.toMatchObject({
-      provider: "MICROSOFT",
+      provider: "NONE",
       status: "ERROR",
       configured: false,
       lastError: "Provider-specific calendar adapter is not implemented in R20"
     });
 
     await expect(provider.getAvailability(availabilityInput)).resolves.toMatchObject({
-      provider: "MICROSOFT",
-      status: "ERROR",
+      provider: "NONE",
+      status: "NOT_CONFIGURED",
       slots: [],
       unavailableReason: "Provider-specific calendar adapter is not implemented in R20"
     });
@@ -192,7 +232,8 @@ describe("calendar provider foundation", () => {
         "GOOGLE_CALENDAR_CLIENT_ID",
         "GOOGLE_CALENDAR_CLIENT_SECRET",
         "GOOGLE_CALENDAR_REFRESH_TOKEN",
-        "GOOGLE_CALENDAR_ID"
+        "GOOGLE_CALENDAR_ID",
+        "GOOGLE_CALENDAR_SCOPE_EVENTS"
       ]
     });
   });
@@ -290,11 +331,17 @@ describe("calendar provider foundation", () => {
 
     expect(calls.map((call) => call.url)).toEqual([
       "https://oauth2.googleapis.com/token",
-      "https://www.googleapis.com/calendar/v3/calendars/primary/events?sendUpdates=all"
+      "https://www.googleapis.com/calendar/v3/calendars/primary/events?sendUpdates=all&conferenceDataVersion=1"
     ]);
     const eventBody = parseJsonBody(calls[1]?.body);
     expect(eventBody.id).toMatch(/^[a-v0-9]+$/);
     expect(eventBody.id).not.toContain("z");
+    expect(eventBody.conferenceData).toEqual({
+      createRequest: {
+        requestId: String(eventBody.id),
+        conferenceSolutionKey: { type: "hangoutsMeet" }
+      }
+    });
     expect(result).toMatchObject({
       provider: "GOOGLE",
       status: "FAILED",
@@ -329,6 +376,7 @@ describe("calendar provider foundation", () => {
             id: eventId,
             status: "confirmed",
             htmlLink: `https://calendar.google.test/verified/${eventId}`,
+            hangoutLink: `https://meet.google.test/${eventId}`,
             organizer: { email: "calendar-owner@example.test" }
           })
         );
@@ -369,7 +417,7 @@ describe("calendar provider foundation", () => {
       provider: "GOOGLE",
       status: "SYNCED",
       externalMeetingId: eventId,
-      externalMeetingUrl: `https://calendar.google.test/verified/${eventId}`,
+      externalMeetingUrl: `https://meet.google.test/${eventId}`,
       externalCalendarId: "primary",
       organizerEmail: "calendar-owner@example.test"
     });
@@ -377,7 +425,7 @@ describe("calendar provider foundation", () => {
       provider: "GOOGLE",
       status: "SYNCED",
       externalMeetingId: eventId,
-      externalMeetingUrl: `https://calendar.google.test/verified/${eventId}`,
+      externalMeetingUrl: `https://meet.google.test/${eventId}`,
       externalCalendarId: "primary",
       organizerEmail: "calendar-owner@example.test"
     });
@@ -465,5 +513,165 @@ describe("calendar provider foundation", () => {
       lastError:
         "Google Calendar meeting creation is missing required configuration: GOOGLE_CALENDAR_SCOPE_EVENTS"
     });
+  });
+
+  it("reports Microsoft configuration gaps without calling Graph", async () => {
+    const provider = new MicrosoftCalendarProvider(buildConfig({ provider: "microsoft" }));
+
+    await expect(provider.getHealth()).resolves.toMatchObject({
+      provider: "MICROSOFT",
+      status: "NOT_CONFIGURED",
+      configured: false,
+      missingConfig: [
+        "MICROSOFT_CALENDAR_TENANT_ID",
+        "MICROSOFT_CALENDAR_CLIENT_ID",
+        "MICROSOFT_CALENDAR_CLIENT_SECRET",
+        "MICROSOFT_CALENDAR_USER_ID"
+      ]
+    });
+  });
+
+  it("uses Microsoft Graph schedule data and creates a verified Teams meeting", async () => {
+    const calls: { url: string; body: unknown }[] = [];
+    const transport: CalendarTransport = (url, init) => {
+      const requestUrl = url instanceof Request ? url.url : String(url);
+      calls.push({ url: requestUrl, body: init?.body });
+      if (requestUrl.includes("login.microsoftonline.com")) {
+        return Promise.resolve(Response.json({ access_token: "graph-token", expires_in: 3600 }));
+      }
+      if (requestUrl.endsWith("/calendar/getSchedule")) {
+        return Promise.resolve(
+          Response.json({
+            value: [
+              {
+                scheduleItems: [
+                  {
+                    start: { dateTime: "2026-09-23T04:00:00.000Z" },
+                    end: { dateTime: "2026-09-23T04:30:00.000Z" }
+                  }
+                ]
+              }
+            ]
+          })
+        );
+      }
+      if (requestUrl.endsWith("/events")) {
+        return Promise.resolve(
+          Response.json({
+            id: "graph-event-1",
+            webLink: "https://outlook.test/event/1",
+            onlineMeeting: { joinUrl: "https://teams.test/join/1" }
+          })
+        );
+      }
+      return Promise.resolve(
+        Response.json({
+          id: "graph-event-1",
+          webLink: "https://outlook.test/event/1",
+          isCancelled: false,
+          onlineMeeting: { joinUrl: "https://teams.test/join/1" },
+          organizer: { emailAddress: { address: "owner@example.test" } }
+        })
+      );
+    };
+    const config = buildConfig({
+      provider: "microsoft",
+      microsoft: {
+        tenantId: "tenant",
+        clientId: "client",
+        clientSecret: "secret",
+        userId: "owner@example.test"
+      }
+    });
+    const provider = new MicrosoftCalendarProvider(config, transport);
+
+    const availability = await provider.getAvailability(availabilityInput);
+    const meeting = await provider.createMeeting({
+      idempotencyKey: "meeting:microsoft-1",
+      title: "Microsoft meeting",
+      startsAt: new Date("2026-09-23T05:00:00.000Z"),
+      endsAt: new Date("2026-09-23T05:30:00.000Z"),
+      timeZone: "Asia/Kolkata",
+      attendees: ["customer@example.test"]
+    });
+
+    expect(availability.slots).toHaveLength(3);
+    expect(meeting).toMatchObject({
+      provider: "MICROSOFT",
+      status: "SYNCED",
+      externalMeetingId: "graph-event-1",
+      externalMeetingUrl: "https://teams.test/join/1",
+      organizerEmail: "owner@example.test"
+    });
+    const createCall = calls.find((call) => call.url.endsWith("/events"));
+    const body = parseJsonBody(createCall?.body);
+    expect(body).toMatchObject({
+      isOnlineMeeting: true,
+      onlineMeetingProvider: "teamsForBusiness"
+    });
+    expect(String(body.transactionId)).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("fails safely when Zoom credentials are missing", async () => {
+    const provider = new ZoomConferenceProvider(buildConfig({ conferenceProvider: "zoom" }));
+    await expect(
+      provider.createMeeting({
+        idempotencyKey: "meeting:zoom-missing",
+        title: "Zoom meeting",
+        startsAt: new Date("2026-09-23T05:00:00.000Z"),
+        endsAt: new Date("2026-09-23T05:30:00.000Z"),
+        timeZone: "Asia/Kolkata",
+        attendees: []
+      })
+    ).rejects.toThrow("ZOOM_ACCOUNT_ID");
+  });
+
+  it("creates a real Zoom meeting through Server-to-Server OAuth", async () => {
+    const calls: string[] = [];
+    const transport: CalendarTransport = (url) => {
+      const requestUrl = url instanceof Request ? url.url : String(url);
+      calls.push(requestUrl);
+      if (requestUrl.startsWith("https://zoom.us/oauth/token")) {
+        return Promise.resolve(Response.json({ access_token: "zoom-token", expires_in: 3600 }));
+      }
+      return Promise.resolve(
+        Response.json({
+          id: 987654321,
+          join_url: "https://zoom.test/j/987654321",
+          host_email: "host@example.test"
+        })
+      );
+    };
+    const provider = new ZoomConferenceProvider(
+      buildConfig({
+        conferenceProvider: "zoom",
+        zoom: {
+          accountId: "account",
+          clientId: "client",
+          clientSecret: "secret",
+          hostUserId: "host@example.test"
+        }
+      }),
+      transport
+    );
+
+    await expect(
+      provider.createMeeting({
+        idempotencyKey: "meeting:zoom-1",
+        title: "Zoom meeting",
+        startsAt: new Date("2026-09-23T05:00:00.000Z"),
+        endsAt: new Date("2026-09-23T05:30:00.000Z"),
+        timeZone: "Asia/Kolkata",
+        attendees: ["customer@example.test"]
+      })
+    ).resolves.toEqual({
+      id: "987654321",
+      joinUrl: "https://zoom.test/j/987654321",
+      hostEmail: "host@example.test"
+    });
+    expect(calls).toEqual([
+      "https://zoom.us/oauth/token?grant_type=account_credentials&account_id=account",
+      "https://api.zoom.us/v2/users/host%40example.test/meetings"
+    ]);
   });
 });

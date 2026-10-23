@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { Badge, Button, Drawer } from "../../components/ui/index.js";
 import { StateBlock } from "../../components/StateBlock.js";
+import { formatDateTime } from "../../utils/date-time.js";
 
 export function leadName(lead: LeadDto): string {
   return `${lead.contact.firstName} ${lead.contact.lastName}`.trim() || lead.company.name;
@@ -45,22 +46,16 @@ export function leadPriority(tasks: TaskDto[]): TaskDto["priority"] | "NONE" {
 }
 
 function formatDate(value: string | null): string {
-  if (!value) return "Not scheduled";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "Time unavailable";
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short"
-  }).format(new Date(value));
+  return formatDateTime(value);
 }
 
 function actorLabel(activity: ActivityDto): string {
+  if (activity.actorType === "AGENT") return "AI assistant";
+  if (activity.actorType === "WORKFLOW") return "Automation";
+  if (activity.actorType === "SYSTEM") return "System";
   if (activity.actorUser) {
     return `${activity.actorUser.firstName} ${activity.actorUser.lastName}`;
   }
-  if (activity.actorType === "AGENT") return "AI agent";
-  if (activity.actorType === "WORKFLOW") return "Workflow";
-  if (activity.actorType === "SYSTEM") return "System";
   return "CRM user";
 }
 
@@ -69,18 +64,51 @@ function ownershipActivityDescription(activity: ActivityDto): string | null {
   const metadata = activity.metadata as { from?: unknown; to?: unknown } | null;
   const from = typeof metadata?.from === "string" ? metadata.from : "";
   const to = typeof metadata?.to === "string" ? metadata.to : "";
-  if (to === "HUMAN_ACTION_COMPLETED") return "Required human action completed.";
-  if (to === "AI_ACTIVE") return "AI follow-up resumed after the human action.";
-  if (to === "HUMAN_REQUIRED") return "AI paused and assigned the next action to a person.";
-  if (to === "HUMAN_ACTIVE") return "A person is handling the next action.";
-  if (to === "AI_STOPPED") return "AI follow-up stopped.";
+  if (to === "HUMAN_ACTION_COMPLETED") return "Your response was completed.";
+  if (to === "AI_ACTIVE") return "AI is handling the scheduled follow-up.";
+  if (to === "HUMAN_REQUIRED") return "AI paused because your response is needed.";
+  if (to === "HUMAN_ACTIVE") return "The next action is assigned to you.";
+  if (to === "AI_STOPPED") return "AI follow-up is stopped.";
   if (from && to) {
-    return `Ownership changed from ${from.replaceAll("_", " ")} to ${to.replaceAll("_", " ")}.`;
+    return "Responsibility for the next action changed.";
   }
   return "Automation ownership updated.";
 }
 
+function ownershipLabel(state: LeadDto["automationOwnershipState"]): string {
+  if (state === "AI_ACTIVE") return "AI following up";
+  if (state === "HUMAN_REQUIRED") return "Needs your response";
+  if (state === "HUMAN_ACTION_COMPLETED") return "Handing over to AI";
+  if (state === "AI_STOPPED") return "AI stopped";
+  return "Handled by you";
+}
+
+function activityTitle(activity: ActivityDto): string {
+  if (
+    activity.type === "MESSAGE_RECEIVED" &&
+    activity.description.startsWith("AI lead automation startup failed:")
+  )
+    return "Automatic follow-up needs attention";
+  if (activity.type === "MESSAGE_SENT") return "Email sent";
+  if (activity.type === "MESSAGE_RECEIVED") return "Customer replied";
+  if (activity.type === "TASK_COMPLETED") return "Task completed";
+  if (activity.type !== "AUTOMATION_OWNERSHIP_CHANGED") {
+    if (!/^[A-Z0-9_ ]+$/.test(activity.title)) return activity.title;
+    const title = activity.title.replaceAll("_", " ").toLowerCase();
+    return `${title.charAt(0).toUpperCase()}${title.slice(1)}`;
+  }
+  const metadata = activity.metadata as { to?: unknown } | null;
+  return typeof metadata?.to === "string"
+    ? ownershipLabel(metadata.to as LeadDto["automationOwnershipState"])
+    : "Next action updated";
+}
+
 function activityDescription(activity: ActivityDto): string {
+  if (
+    activity.type === "MESSAGE_RECEIVED" &&
+    activity.description.startsWith("AI lead automation startup failed:")
+  )
+    return "Automatic follow-up could not start and needs your review.";
   const ownershipDescription = ownershipActivityDescription(activity);
   if (ownershipDescription !== null) return ownershipDescription;
   return activity.summary || activity.description || "Activity recorded";
@@ -88,17 +116,18 @@ function activityDescription(activity: ActivityDto): string {
 
 export function LeadFactStrip({
   lead,
-  qualification,
   tasks
 }: {
   lead: LeadDto;
-  qualification: LeadQualificationDto | null;
   tasks: TaskDto[];
 }): React.JSX.Element {
   const facts = [
-    ["Lead status", lead.status.replaceAll("_", " ")],
+    [
+      "Lead status",
+      lead.contact.doNotContact ? "Do not contact" : lead.status.replaceAll("_", " ")
+    ],
     ["Deal stage", lead.stage.label],
-    ["AI intent", leadAiIntent(lead, qualification)],
+    ["Managed by", ownershipLabel(lead.automationOwnershipState)],
     ["Priority", leadPriority(tasks) === "NONE" ? "No open task" : leadPriority(tasks)],
     ["Score", String(lead.score)]
   ];
@@ -132,13 +161,11 @@ export function LeadTimeline({ activities }: { activities: ActivityDto[] }): Rea
           </span>
           <article>
             <header>
-              <div>
-                <strong>{activity.title}</strong>
-                <span>
-                  {actorLabel(activity)} / {activity.sourceType ?? "CRM"}
-                </span>
+              <div className="timeline-heading">
+                <strong>{activityTitle(activity)}</strong>
+                <span>{actorLabel(activity)}</span>
               </div>
-              <time dateTime={activity.occurredAt}>{formatDate(activity.occurredAt)}</time>
+              <time dateTime={activity.occurredAt}>Recorded {formatDate(activity.occurredAt)}</time>
             </header>
             <p>{activityDescription(activity)}</p>
             {!ownershipActivityDescription(activity) &&
@@ -235,7 +262,13 @@ export function LeadTaskList({
               >
                 {task.priority}
               </Badge>
-              <time dateTime={task.dueAt ?? undefined}>{formatDate(task.dueAt)}</time>
+              <time dateTime={(completed ? task.completedAt : task.dueAt) ?? undefined}>
+                {completed
+                  ? `Completed ${formatDateTime(task.completedAt, "time not recorded")}`
+                  : task.dueAt
+                    ? `${isAiScheduledEmail ? "Scheduled for" : "Due"} ${formatDate(task.dueAt)}`
+                    : "Not scheduled"}
+              </time>
             </div>
           </article>
         );
@@ -247,7 +280,6 @@ export function LeadTaskList({
 export function LeadQuickView({
   activities,
   lead,
-  qualification,
   tasks,
   tasksLoading,
   tasksError,
@@ -260,7 +292,6 @@ export function LeadQuickView({
 }: {
   activities: ActivityDto[];
   lead: LeadDto | null;
-  qualification: LeadQualificationDto | null;
   tasks: TaskDto[];
   tasksLoading: boolean;
   tasksError: string | null;
@@ -326,7 +357,7 @@ export function LeadQuickView({
             </div>
           </header>
 
-          <LeadFactStrip lead={lead} qualification={qualification} tasks={tasks} />
+          <LeadFactStrip lead={lead} tasks={tasks} />
 
           <section className="quick-summary-grid" aria-label="Lead summary">
             <article>
@@ -337,7 +368,11 @@ export function LeadQuickView({
             <article>
               <Clock3 size={16} />
               <span>Next action</span>
-              <strong>{lead.nextAction ?? "No next action"}</strong>
+              <strong>
+                {lead.nextAction
+                  ? `${lead.nextAction} · ${formatDate(lead.nextActionAt)}`
+                  : "No next action"}
+              </strong>
             </article>
             <article>
               <CalendarDays size={16} />

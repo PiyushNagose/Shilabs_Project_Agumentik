@@ -10,6 +10,7 @@ import { vi } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../shared/prisma.js";
 import { hashPassword } from "../auth/auth.service.js";
+import { confirmMeetingFromCustomerReply } from "./meeting.service.js";
 
 const app = createApp();
 const password = "CorrectHorse123!";
@@ -75,6 +76,8 @@ async function cleanup(): Promise<void> {
     }
   });
   await prisma.meetingRequest.deleteMany({ where: { id: { in: meetingRequestIds } } });
+  await prisma.message.deleteMany({ where: { conversation: { leadId: { in: leadIds } } } });
+  await prisma.conversation.deleteMany({ where: { leadId: { in: leadIds } } });
   await prisma.activity.deleteMany({ where: { leadId: { in: leadIds } } });
   await prisma.auditEvent.deleteMany({
     where: {
@@ -129,6 +132,12 @@ async function seedLead(): Promise<{
       }
     })
   ]);
+  await prisma.workspaceMember.createMany({
+    data: [
+      { workspaceId: workspace.id, userId: admin.id, role: "ADMIN", status: "ACTIVE" },
+      { workspaceId: workspace.id, userId: rep.id, role: "SALES_REP", status: "ACTIVE" }
+    ]
+  });
   const stage = await prisma.pipelineStage.findUniqueOrThrow({ where: { key: "NEW" } });
   const company = await prisma.company.create({
     data: {
@@ -253,6 +262,39 @@ describe("R21 meeting scheduling API", () => {
     expect((listResponse.body as MeetingRequestDto[]).map((item) => item.id)).toContain(meeting.id);
   }, 45000);
 
+  it("cancels an unconfirmed meeting without claiming a provider cancellation", async () => {
+    const seeded = await seedLead();
+    const adminToken = await login(adminEmail);
+    const created = await request(app)
+      .post("/api/meetings/requests")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({
+        leadId: seeded.leadId,
+        ownerId: seeded.repId,
+        title: "Initial discovery",
+        timeZone: "Asia/Kolkata",
+        windowStart: "2026-11-24T09:00:00+05:30",
+        windowEnd: "2026-11-24T17:00:00+05:30",
+        durationMinutes: 30,
+        idempotencyKey: "r21-meeting-cancel-unconfirmed"
+      })
+      .expect(201);
+    const meeting = created.body as MeetingRequestDto;
+    const cancelled = await request(app)
+      .post(`/api/meetings/requests/${meeting.id}/cancel`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ reason: "Customer asked to postpone discovery" })
+      .expect(200);
+    expect((cancelled.body as MeetingRequestDto).status).toBe("CANCELLED");
+    const repeated = await request(app)
+      .post(`/api/meetings/requests/${meeting.id}/cancel`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ reason: "Customer asked to postpone discovery" })
+      .expect(200);
+    expect((repeated.body as MeetingRequestDto).status).toBe("CANCELLED");
+    expect(await prisma.activity.count({ where: { leadId: seeded.leadId, title: "Meeting cancelled" } })).toBe(1);
+  }, 45000);
+
   it("reuses an R10-created meeting request, hydrates slots, and confirms idempotently", async () => {
     process.env.CALENDAR_PROVIDER = "google";
     process.env.GOOGLE_CALENDAR_CLIENT_ID = "google-client";
@@ -263,6 +305,8 @@ describe("R21 meeting scheduling API", () => {
       "https://www.googleapis.com/auth/calendar.freebusy https://www.googleapis.com/auth/calendar.events";
 
     let eventInsertCount = 0;
+    let eventDeleteCount = 0;
+    let eventPatchCount = 0;
     vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
       const url =
         typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
@@ -286,6 +330,14 @@ describe("R21 meeting scheduling API", () => {
             headers: { "Content-Type": "application/json" }
           })
         );
+      }
+      if (url.includes("/events/") && init?.method === "DELETE") {
+        eventDeleteCount += 1;
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (url.includes("/events/") && init?.method === "PATCH") {
+        eventPatchCount += 1;
+        return Promise.resolve(Response.json({ id: "rescheduled" }));
       }
       if (url.includes("/events?sendUpdates=all")) {
         eventInsertCount += 1;
@@ -406,6 +458,16 @@ describe("R21 meeting scheduling API", () => {
     expect(confirmedMeeting.providerCalendarId).toBe("primary");
     expect(confirmedMeeting.providerOrganizerEmail).toBe("calendar-owner@example.test");
     expect(confirmedMeeting.providerMeetingUrl).toContain("https://calendar.google.test/verified/");
+    await expect(
+      prisma.internalNotification.findFirstOrThrow({
+        where: { meetingRequestId: existing.id },
+        orderBy: { createdAt: "desc" }
+      })
+    ).resolves.toMatchObject({
+      workspaceId: "workspace_default",
+      status: "ACKNOWLEDGED",
+      acknowledgedByUserId: seeded.adminId
+    });
 
     const repeatedConfirmResponse = await request(app)
       .post(`/api/meetings/requests/${existing.id}/confirm`)
@@ -432,6 +494,37 @@ describe("R21 meeting scheduling API", () => {
       "CONFIRMATION_REQUIRED"
     );
     expect(await prisma.meetingRequest.count({ where: { leadId: seeded.leadId } })).toBe(2);
+    const startsAt = new Date(Date.now() + 7 * 86400000);
+    startsAt.setUTCMinutes(0, 0, 0);
+    const endsAt = new Date(startsAt.getTime() + 30 * 60000);
+    const rescheduleBody = { startsAt: startsAt.toISOString(), endsAt: endsAt.toISOString(), reason: "Customer requested next week" };
+    const rescheduled = await request(app)
+      .post(`/api/meetings/requests/${existing.id}/reschedule`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send(rescheduleBody)
+      .expect(200);
+    const changedMeeting = rescheduled.body as MeetingRequestDto;
+    expect(changedMeeting.providerMeetingId).toBe(confirmedMeeting.providerMeetingId);
+    expect(changedMeeting.slots.find((slot) => slot.id === changedMeeting.selectedSlotId)?.startsAt).toBe(startsAt.toISOString());
+    await request(app)
+      .post(`/api/meetings/requests/${existing.id}/reschedule`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send(rescheduleBody)
+      .expect(200);
+    expect(eventPatchCount).toBe(1);
+    expect(await prisma.domainEventOutbox.count({ where: { aggregateId: existing.id, eventType: "MEETING_REMINDER_DUE" } })).toBeGreaterThan(0);
+    const cancelledResponse = await request(app)
+      .post(`/api/meetings/requests/${existing.id}/cancel`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ reason: "Customer requested a later appointment" })
+      .expect(200);
+    expect((cancelledResponse.body as MeetingRequestDto).status).toBe("CANCELLED");
+    await request(app)
+      .post(`/api/meetings/requests/${existing.id}/cancel`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ reason: "Customer requested a later appointment" })
+      .expect(200);
+    expect(eventDeleteCount).toBe(1);
 
     const duplicateDefaultKeyRequest = await request(app)
       .post("/api/meetings/requests")
@@ -450,5 +543,96 @@ describe("R21 meeting scheduling API", () => {
       (repeatedSlotRequestAfterConfirmation.body as MeetingRequestDto).id
     );
     expect(await prisma.meetingRequest.count({ where: { leadId: seeded.leadId } })).toBe(2);
-  }, 90000);
+  }, 180000);
+
+  it("records a meeting outcome once and preserves human ownership", async () => {
+    const seeded = await seedLead();
+    const adminToken = await login(adminEmail);
+    const startsAt = new Date(Date.now() - 3600000);
+    const endsAt = new Date(Date.now() - 1800000);
+    const meeting = await prisma.meetingRequest.create({ data: {
+      workspaceId: "workspace_default", leadId: seeded.leadId, contactId: seeded.contactId,
+      requestedByUserId: seeded.adminId, ownerId: seeded.repId,
+      status: "CONFIRMED", title: "Discovery discussion", timeZone: "Asia/Kolkata",
+      durationMinutes: 30, slotMinutes: 30, windowStart: startsAt, windowEnd: endsAt,
+      provider: "GOOGLE_CALENDAR", providerMeetingId: "outcome-test-event",
+      idempotencyKey: "meeting-outcome-fixture",
+      slots: { create: { startsAt, endsAt, timeZone: "Asia/Kolkata", status: "SELECTED" } }
+    }, include: { slots: true } });
+    await prisma.meetingRequest.update({ where: { id: meeting.id }, data: { selectedSlotId: meeting.slots[0]?.id } });
+    await prisma.lead.update({ where: { id: seeded.leadId }, data: {
+      automationOwnershipState: "HUMAN_REQUIRED", nextAction: "Prepare for confirmed meeting", nextActionAt: startsAt
+    } });
+    const body = { outcome: "COMPLETED", notes: "Customer confirmed the implementation scope; share a proposal next.", idempotencyKey: "outcome-fixture-save" };
+    for (let index = 0; index < 2; index += 1) {
+      const response = await request(app).post(`/api/meetings/requests/${meeting.id}/outcome`)
+        .set("Authorization", `Bearer ${adminToken}`).send(body).expect(200);
+      expect((response.body as MeetingRequestDto).outcome).toBe("COMPLETED");
+    }
+    expect(await prisma.activity.count({ where: { sourceId: meeting.id, title: "Meeting completed" } })).toBe(1);
+    await expect(prisma.lead.findUnique({ where: { id: seeded.leadId } })).resolves.toMatchObject({
+      automationOwnershipState: "HUMAN_REQUIRED", nextActionAt: null,
+      nextAction: "Review meeting notes and agree next steps"
+    });
+    await request(app).post(`/api/meetings/requests/${meeting.id}/cancel`)
+      .set("Authorization", `Bearer ${adminToken}`).send({ reason: "Too late to cancel" }).expect(409);
+  }, 45000);
+
+  it("confirms an explicitly offered customer time without starting AI", async () => {
+    process.env.CALENDAR_PROVIDER = "google";
+    process.env.GOOGLE_CALENDAR_CLIENT_ID = "google-client";
+    process.env.GOOGLE_CALENDAR_CLIENT_SECRET = "google-secret";
+    process.env.GOOGLE_CALENDAR_REFRESH_TOKEN = "google-refresh";
+    process.env.GOOGLE_CALENDAR_ID = "primary";
+    process.env.GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.freebusy https://www.googleapis.com/auth/calendar.events";
+    let inserts = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      const url =
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("oauth2.googleapis.com")) return Promise.resolve(Response.json({
+        access_token: "test-token", expires_in: 3600, scope: process.env.GOOGLE_CALENDAR_SCOPE
+      }));
+      if (url.endsWith("/freeBusy")) return Promise.resolve(Response.json({ calendars: { primary: { busy: [] } } }));
+      if (init?.method === "POST" && url.includes("/events?")) {
+        inserts += 1;
+        const body = (typeof init.body === "string" ? JSON.parse(init.body) : {}) as { id: string };
+        return Promise.resolve(Response.json({ id: body.id, htmlLink: `https://calendar.google.test/${body.id}` }));
+      }
+      const id = decodeURIComponent(url.split("/events/")[1] ?? "");
+      return Promise.resolve(Response.json({ id, status: "confirmed", htmlLink: `https://calendar.google.test/${id}` }));
+    });
+    const seeded = await seedLead();
+    const adminToken = await login(adminEmail);
+    const start = new Date("2026-12-01T09:00:00+05:30");
+    const end = new Date(start.getTime() + 1800000);
+    const created = await request(app).post("/api/meetings/requests")
+      .set("Authorization", `Bearer ${adminToken}`).send({
+        leadId: seeded.leadId, ownerId: seeded.repId, title: "Customer confirmed discussion",
+        timeZone: "Asia/Kolkata", windowStart: start.toISOString(), windowEnd: end.toISOString(), durationMinutes: 30
+      }).expect(201);
+    const meeting = created.body as MeetingRequestDto;
+    const conversation = await prisma.conversation.create({ data: {
+      workspaceId: "workspace_default", leadId: seeded.leadId, channel: "EMAIL", mode: "HUMAN"
+    } });
+    const inbound = await prisma.message.create({ data: {
+      workspaceId: "workspace_default", conversationId: conversation.id,
+      senderType: "PROSPECT", direction: "INBOUND", body: "Confirm meeting 2026-12-01 09:00"
+    } });
+    const input = { leadId: seeded.leadId, conversationId: conversation.id, messageId: inbound.id };
+    await expect(confirmMeetingFromCustomerReply(input)).resolves.toBe(false);
+    await prisma.message.create({ data: {
+      workspaceId: "workspace_default", conversationId: conversation.id,
+      senderType: "USER", direction: "OUTBOUND",
+      body: "Please reply: Confirm meeting 2026-12-01 09:00", sentAt: new Date(Date.now() - 60000),
+      createdAt: new Date(inbound.createdAt.getTime() - 60000), deliveryStatus: "SENT"
+    } });
+    await prisma.lead.update({ where: { id: seeded.leadId }, data: { automationOwnershipState: "HUMAN_REQUIRED" } });
+    await expect(confirmMeetingFromCustomerReply(input)).resolves.toBe(true);
+    await expect(confirmMeetingFromCustomerReply(input)).resolves.toBe(true);
+    expect(inserts).toBe(1);
+    await expect(prisma.meetingRequest.findUnique({ where: { id: meeting.id } })).resolves.toMatchObject({
+      status: "CONFIRMED", confirmedByUserId: null
+    });
+    await expect(prisma.lead.findUnique({ where: { id: seeded.leadId } })).resolves.toMatchObject({ automationOwnershipState: "HUMAN_REQUIRED" });
+  }, 45000);
 });

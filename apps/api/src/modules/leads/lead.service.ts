@@ -55,6 +55,10 @@ export function toLeadDto(lead: LeadRecord): LeadDto {
     contactId: lead.contactId,
     ownerId: lead.ownerId,
     source: lead.source,
+    leadType: lead.leadType,
+    country: lead.country,
+    priority: lead.priority,
+    campaign: lead.campaign,
     status: lead.status,
     stageId: lead.stageId,
     requirement: lead.requirement,
@@ -97,13 +101,22 @@ async function sendAutomaticLeadAcknowledgement(
 ): Promise<void> {
   if (!shouldSendAutomaticAcknowledgement() || !lead.contact.email) return;
   const contactName = lead.contact.firstName.trim() || "there";
-  const body = `Hi ${contactName},\n\nThank you for contacting Shilabs. We have received your request, and a member of our team will review it and follow up with you shortly.\n\nBest regards,\nShilabs`;
+  const leadType = lead.leadType?.trim().toLowerCase();
+  const isOutboundLead =
+    leadType === "outbound" ||
+    (leadType !== "inbound" && /^(?:outbound|cold[ _-]outreach)$/i.test(lead.source.trim()));
+  const subject = isOutboundLead ? "Following up on our outreach" : "We received your request";
+  const acknowledgement = isOutboundLead
+    ? "A member of the Shilabs team will review your details and follow up with you shortly."
+    : "Thank you for contacting Shilabs. We have received your request, and a member of our team will review it and follow up with you shortly.";
+  const body = `Hi ${contactName},\n\n${acknowledgement}\n\nBest regards,\nShilabs`;
   const outbound = await sendOutboundEmail(actor, {
     leadId: lead.id,
-    subject: "We received your request",
+    subject,
     textBody: body,
     idempotencyKey: `lead-acknowledgement:${lead.id}`
   });
+  await prisma.outboundEmail.update({ where: { id: outbound.id }, data: { senderType: "SYSTEM" } });
   if (outbound.status !== "SENT") return;
 
   await prisma.$transaction(async (tx) => {
@@ -115,12 +128,19 @@ async function sendAutomaticLeadAcknowledgement(
     const conversation =
       existingConversation ??
       (await tx.conversation.create({
-        data: { leadId: lead.id, channel: "EMAIL", mode: "HUMAN", status: "OPEN" },
+        data: {
+          workspaceId: lead.workspaceId,
+          leadId: lead.id,
+          channel: "EMAIL",
+          mode: "HUMAN",
+          status: "OPEN"
+        },
         select: { id: true }
       }));
     const message = await tx.message.upsert({
       where: { providerMessageId: outbound.providerMessageId ?? outbound.id },
       create: {
+        workspaceId: lead.workspaceId,
         conversationId: conversation.id,
         providerMessageId: outbound.providerMessageId ?? outbound.id,
         direction: "OUTBOUND",
@@ -202,6 +222,10 @@ function getEditableLeadSnapshot(lead: LeadRecord): Prisma.InputJsonObject {
   return {
     id: lead.id,
     source: lead.source,
+    leadType: lead.leadType,
+    country: lead.country,
+    priority: lead.priority,
+    campaign: lead.campaign,
     requirement: lead.requirement,
     serviceInterest: lead.serviceInterest,
     estimatedValue: lead.estimatedValue?.toString() ?? null,
@@ -338,6 +362,10 @@ export async function createLead(
       owner: ownerId ? { connect: { id: ownerId } } : undefined,
       stage: { connect: { id: defaultStage.id } },
       source: input.source,
+      leadType: input.leadType ?? null,
+      country: input.country ?? null,
+      priority: input.priority ?? null,
+      campaign: input.campaign ?? null,
       requirement: input.requirement ?? null,
       serviceInterest: input.serviceInterest ?? null,
       estimatedValue: input.estimatedValue ? new Prisma.Decimal(input.estimatedValue) : null,
@@ -401,6 +429,10 @@ export async function updateLead(
     action: leadEvents.updated,
     data: {
       source: input.source,
+      leadType: "leadType" in input ? (input.leadType ?? null) : undefined,
+      country: "country" in input ? (input.country ?? null) : undefined,
+      priority: "priority" in input ? (input.priority ?? null) : undefined,
+      campaign: "campaign" in input ? (input.campaign ?? null) : undefined,
       requirement: "requirement" in input ? (input.requirement ?? null) : undefined,
       serviceInterest: "serviceInterest" in input ? (input.serviceInterest ?? null) : undefined,
       estimatedValue:

@@ -6,10 +6,16 @@ import type {
   LeadIntelligenceDto
 } from "@shilabs/shared-types";
 import { getRequiredUser } from "../../middleware/auth.middleware.js";
+import { AppError } from "../../shared/errors.js";
+import { prisma } from "../../shared/prisma.js";
+import { assertCanMutateLead } from "../leads/lead.permissions.js";
 import type {
   CreateLeadDocumentInput,
+  UploadLeadDocumentInput,
   UpdateLeadIntelligenceControlsInput
 } from "./lead-intelligence.schemas.js";
+import { uploadLeadDocumentSchema } from "./lead-intelligence.schemas.js";
+import { extractLeadDocumentUpload } from "./lead-document-upload.js";
 import {
   createLeadDocument,
   decideLeadFollowUp,
@@ -69,6 +75,29 @@ export async function createLeadDocumentController(
   response
     .status(201)
     .json(await createLeadDocument(getRequiredUser(request), request.params.leadId, request.body));
+}
+
+export async function uploadLeadDocumentController(
+  request: Request<{ leadId: string }, LeadDocumentDto, UploadLeadDocumentInput>,
+  response: Response<LeadDocumentDto>
+): Promise<void> {
+  const input = uploadLeadDocumentSchema.parse(request.body);
+  const actor = getRequiredUser(request);
+  const lead = await prisma.lead.findFirst({
+    where: { id: request.params.leadId, workspaceId: actor.activeWorkspaceId ?? "" },
+    select: { ownerId: true, workspaceId: true }
+  });
+  if (!lead) throw new AppError(404, "NOT_FOUND", "Lead not found");
+  assertCanMutateLead(actor, lead);
+  const extracted = await extractLeadDocumentUpload(request.file);
+  response.status(201).json(
+    await createLeadDocument(getRequiredUser(request), request.params.leadId, {
+      ...input,
+      sourceType: "UPLOAD",
+      mimeType: extracted.mimeType,
+      content: extracted.content
+    })
+  );
 }
 
 export async function deleteLeadDocumentController(

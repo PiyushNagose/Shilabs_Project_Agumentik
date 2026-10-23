@@ -1,0 +1,79 @@
+:root {
+  --motion-enter: 500ms;
+  --motion-reveal: 700ms;
+  --motion-stagger: 120ms;
+  --motion-stagger-limit: 480ms;
+  --motion-distance: 18px;
+  --motion-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+@keyframes overlayReveal {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes modalReveal {
+  from {
+    opacity: 0;
+    translate: 0 12px;
+    scale: 0.985;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+    scale: 1;
+  }
+}
+
+@keyframes drawerReveal {
+  from {
+    opacity: 0;
+    translate: 32px 0;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+
+.ui-overlay {
+  animation: overlayReveal 180ms var(--motion-ease);
+}
+.ui-modal {
+  animation: modalReveal var(--motion-enter) var(--motion-ease);
+}
+.ui-drawer {
+  animation: drawerReveal var(--motion-enter) var(--motion-ease);
+}
+
+.tab-panel {
+  animation: none;
+}
+
+.agent-tabs button,
+.detail-tabs button,
+.view-toggle button,
+.app-sidebar-nav a,
+.themed-select-trigger > svg {
+  transition:
+    color 140ms ease,
+    background-color 140ms ease,
+    border-color 140ms ease,
+    rotate 180ms var(--motion-ease);
+}
+
+.themed-select.open .themed-select-trigger > svg {
+  rotate: 180deg;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-overlay,
+  .ui-modal,
+  .ui-drawer {
+    animation: none;
+  }
+}

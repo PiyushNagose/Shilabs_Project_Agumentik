@@ -5,7 +5,7 @@ import { UserRole, UserStatus, WorkspaceRole } from "@prisma/client";
 import type { AuthResponse } from "@shilabs/shared-types";
 import { createApp } from "../../app.js";
 import { prisma } from "../../shared/prisma.js";
-import { hashPassword } from "../auth/auth.service.js";
+import { hashPassword, logout } from "../auth/auth.service.js";
 import { installRealtimeWebSocketServer, publishRealtimeEvent } from "./realtime.service.js";
 
 const adminEmail = "realtime-admin@example.local";
@@ -38,6 +38,37 @@ function expectNoSocketMessage(socket: WebSocket, waitMs = 250): Promise<void> {
       resolve();
     }, waitMs);
     socket.once("message", onMessage);
+  });
+}
+
+function expectUnauthorizedSocket(url: string, protocols: string[] = []): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(url, protocols);
+    const timer = setTimeout(() => {
+      socket.terminate();
+      reject(new Error("Timed out waiting for websocket rejection"));
+    }, 5000);
+    socket.on("error", () => {
+      clearTimeout(timer);
+      reject(new Error("Websocket failed without an authentication response"));
+    });
+    socket.once("open", () => {
+      clearTimeout(timer);
+      socket.terminate();
+      reject(new Error("Unauthenticated websocket was accepted"));
+    });
+    socket.once("unexpected-response", (_request, response) => {
+      clearTimeout(timer);
+      response.resume();
+      socket.terminate();
+      try {
+        expect(response.statusCode).toBe(401);
+        expect(response.headers["sec-websocket-protocol"]).toBeUndefined();
+        resolve();
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error("Websocket rejection assertion failed"));
+      }
+    });
   });
 }
 
@@ -118,6 +149,31 @@ describe("realtime websocket API", () => {
     await prisma.$disconnect();
   });
 
+  it("rejects URL credentials, missing or ambiguous protocols, invalid tokens and revoked sessions", async () => {
+    const login = await request(createApp())
+      .post("/api/auth/login")
+      .send({ email: adminEmail, password: "CorrectHorse123!" })
+      .expect(200);
+    const token = (login.body as AuthResponse).accessToken;
+    const url = `${baseUrl.replace("http:", "ws:")}/realtime`;
+    const protocols = ["shilabs.realtime.v1", `bearer.${token}`];
+    await expectUnauthorizedSocket(`${url}?token=${encodeURIComponent(token)}`);
+    await expectUnauthorizedSocket(`${url}?token=${encodeURIComponent(token)}`, protocols);
+    await expectUnauthorizedSocket(`${url}?token=`, protocols);
+    await expectUnauthorizedSocket(url);
+    await expectUnauthorizedSocket(url, ["shilabs.realtime.v1"]);
+    await expectUnauthorizedSocket(url, [`bearer.${token}`]);
+    await expectUnauthorizedSocket(url, ["shilabs.realtime.v1", "bearer."]);
+    await expectUnauthorizedSocket(url, ["shilabs.realtime.v1", "bearer.invalid"]);
+    await expectUnauthorizedSocket(url, [...protocols, "bearer.other"]);
+    const workspaceB = await prisma.workspace.findUniqueOrThrow({
+      where: { slug: workspaceSlugs[1] }
+    });
+    await expectUnauthorizedSocket(`${url}?workspaceId=${workspaceB.id}`, protocols);
+    await logout(token);
+    await expectUnauthorizedSocket(url, protocols);
+  });
+
   it("authenticates websocket clients and delivers persisted lead updates to authorized users", async () => {
     const login = await request(createApp())
       .post("/api/auth/login")
@@ -128,9 +184,11 @@ describe("realtime websocket API", () => {
       where: { slug: workspaceSlugs[0] }
     });
     const socket = new WebSocket(
-      `${baseUrl.replace("http:", "ws:")}/realtime?token=${encodeURIComponent(accessToken)}&workspaceId=${workspaceA.id}`
+      `${baseUrl.replace("http:", "ws:")}/realtime?workspaceId=${workspaceA.id}`,
+      ["shilabs.realtime.v1", `bearer.${accessToken}`]
     );
     await waitForSocketMessage(socket);
+    expect(socket.protocol).toBe("shilabs.realtime.v1");
 
     const stage = await prisma.pipelineStage.upsert({
       where: { key: "REALTIME_TEST_NEW" },
@@ -178,6 +236,43 @@ describe("realtime websocket API", () => {
     socket.close();
   });
 
+  it.each(["logout", "suspension"] as const)(
+    "revokes an open socket before delivering an update after %s",
+    async (reason) => {
+      const login = await request(createApp())
+        .post("/api/auth/login")
+        .send({ email: adminEmail, password: "CorrectHorse123!" })
+        .expect(200);
+      const auth = login.body as AuthResponse;
+      const workspace = await prisma.workspace.findUniqueOrThrow({
+        where: { slug: workspaceSlugs[0] }
+      });
+      const socket = new WebSocket(
+        `${baseUrl.replace("http:", "ws:")}/realtime?workspaceId=${workspace.id}`,
+        ["shilabs.realtime.v1", `bearer.${auth.accessToken}`]
+      );
+      await waitForSocketMessage(socket);
+      if (reason === "logout") await logout(auth.accessToken);
+      else
+        await prisma.workspaceMember.updateMany({
+          where: { workspaceId: workspace.id, userId: auth.user.id },
+          data: { status: "SUSPENDED" }
+        });
+      let closeCode: number | null = null;
+      socket.once("close", (code) => {
+        closeCode = code;
+      });
+      const noMessage = expectNoSocketMessage(socket);
+      await publishRealtimeEvent({
+        entityType: "workspace",
+        action: "security-changed",
+        workspaceId: workspace.id
+      });
+      await expect.poll(() => closeCode).toBe(1008);
+      await noMessage;
+    }
+  );
+
   it("does not deliver a lead invalidation to a client in another workspace", async () => {
     const [adminLogin, repLogin] = await Promise.all([
       request(createApp())
@@ -192,10 +287,12 @@ describe("realtime websocket API", () => {
     );
     if (!workspaceA || !workspaceB) throw new Error("Realtime test workspaces are missing");
     const adminSocket = new WebSocket(
-      `${baseUrl.replace("http:", "ws:")}/realtime?token=${encodeURIComponent((adminLogin.body as AuthResponse).accessToken)}&workspaceId=${workspaceA.id}`
+      `${baseUrl.replace("http:", "ws:")}/realtime?workspaceId=${workspaceA.id}`,
+      ["shilabs.realtime.v1", `bearer.${(adminLogin.body as AuthResponse).accessToken}`]
     );
     const repSocket = new WebSocket(
-      `${baseUrl.replace("http:", "ws:")}/realtime?token=${encodeURIComponent((repLogin.body as AuthResponse).accessToken)}&workspaceId=${workspaceB.id}`
+      `${baseUrl.replace("http:", "ws:")}/realtime?workspaceId=${workspaceB.id}`,
+      ["shilabs.realtime.v1", `bearer.${(repLogin.body as AuthResponse).accessToken}`]
     );
     await Promise.all([waitForSocketMessage(adminSocket), waitForSocketMessage(repSocket)]);
 

@@ -5,6 +5,8 @@ export const integrationCatalogKeySchema = z.enum([
   "aws-ses",
   "mailpit",
   "google-calendar",
+  "microsoft-calendar",
+  "zoom-meetings",
   "openai",
   "gemini",
   "twilio-whatsapp",

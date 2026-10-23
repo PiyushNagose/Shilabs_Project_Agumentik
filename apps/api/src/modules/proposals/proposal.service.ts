@@ -11,6 +11,11 @@ import type { AuthenticatedUser } from "../auth/auth.types.js";
 import { publishDomainEvent } from "../domain-events/domain-events.service.js";
 import { toDealDto } from "../deals/deal.service.js";
 import { findLeadById } from "../leads/lead.repository.js";
+import {
+  assertCanAccessLead,
+  assertCanMutateLead,
+  leadVisibilityWhere
+} from "../leads/lead.permissions.js";
 import { toLeadDto } from "../leads/lead.service.js";
 import { completeHumanAction } from "../leads/lead-automation-ownership.service.js";
 import { autoStartLeadAiAutomation } from "../followups/lead-ai-automation.service.js";
@@ -96,6 +101,21 @@ function requireProposal(proposal: ProposalRecord | null): ProposalRecord {
   return proposal;
 }
 
+function requireActiveWorkspace(actor: AuthenticatedUser): string {
+  if (!actor.activeWorkspaceId) {
+    throw new AppError(403, "AUTHORIZATION_ERROR", "An active workspace is required");
+  }
+  return actor.activeWorkspaceId;
+}
+
+function assertCanReadProposal(actor: AuthenticatedUser, proposal: ProposalRecord): void {
+  assertCanAccessLead(actor, proposal.lead);
+}
+
+function assertCanMutateProposal(actor: AuthenticatedUser, proposal: ProposalRecord): void {
+  assertCanMutateLead(actor, proposal.lead);
+}
+
 function ensureEditable(proposal: ProposalRecord): void {
   if (proposal.status === "APPROVED" || proposal.status === "SENT") {
     throw new AppError(409, "CONFLICT", "Approved or sent proposals cannot be edited");
@@ -112,8 +132,10 @@ function ensureStatus(
   }
 }
 
-async function loadProposal(id: string): Promise<ProposalRecord> {
-  return prisma.proposal.findUniqueOrThrow({ where: { id }, include: proposalInclude });
+async function loadProposal(actor: AuthenticatedUser, id: string): Promise<ProposalRecord> {
+  const proposal = requireProposal(await findProposalById(id, requireActiveWorkspace(actor)));
+  assertCanReadProposal(actor, proposal);
+  return proposal;
 }
 
 async function publishProposalUpdate(proposal: ProposalRecord, action: string): Promise<void> {
@@ -124,51 +146,87 @@ async function publishProposalUpdate(proposal: ProposalRecord, action: string): 
   });
 }
 
-async function ensureLeadAndDeal(input: { leadId: string; dealId?: string }): Promise<string> {
+async function ensureLeadAndDeal(
+  actor: AuthenticatedUser,
+  input: { leadId: string; dealId?: string }
+): Promise<string> {
+  const workspaceId = requireActiveWorkspace(actor);
   const lead = await findLeadById(input.leadId);
   if (!lead) throw new AppError(404, "NOT_FOUND", "Lead not found");
   if (!lead.workspaceId) throw new AppError(409, "CONFLICT", "Lead has no persisted workspace");
-  if (!input.dealId) return lead.workspaceId;
-  const deal = await prisma.deal.findUnique({
-    where: { id: input.dealId },
+  assertCanMutateLead(actor, lead);
+  if (lead.workspaceId !== workspaceId) {
+    throw new AppError(403, "AUTHORIZATION_ERROR", "Lead belongs to another workspace");
+  }
+  if (!input.dealId) return workspaceId;
+  const deal = await prisma.deal.findFirst({
+    where: { id: input.dealId, workspaceId, leadId: input.leadId },
     select: { leadId: true, workspaceId: true }
   });
   if (!deal) throw new AppError(404, "NOT_FOUND", "Deal not found");
-  if (deal.leadId !== input.leadId || deal.workspaceId !== lead.workspaceId) {
-    throw new AppError(400, "VALIDATION_ERROR", "Deal must belong to the proposal lead");
-  }
-  return lead.workspaceId;
+  return workspaceId;
 }
 
 function nextVersionNumber(proposal: ProposalRecord): number {
   return proposal.versions.reduce((max, version) => Math.max(max, version.version), 0) + 1;
 }
 
-export async function listProposals(query: ListProposalsQuery): Promise<ProposalDto[]> {
+export function listProposals(
+  actor: AuthenticatedUser,
+  query: ListProposalsQuery
+): Promise<ProposalDto[]>;
+export function listProposals(query: ListProposalsQuery): Promise<ProposalDto[]>;
+export async function listProposals(
+  actorOrQuery: AuthenticatedUser | ListProposalsQuery,
+  requestedQuery?: ListProposalsQuery
+): Promise<ProposalDto[]> {
+  const actor = requestedQuery ? (actorOrQuery as AuthenticatedUser) : null;
+  const query = requestedQuery ?? (actorOrQuery as ListProposalsQuery);
+  if (!actor && !query.leadId) {
+    throw new AppError(403, "AUTHORIZATION_ERROR", "A scoped lead context is required");
+  }
+  let workspaceId: string;
+  if (actor) {
+    workspaceId = requireActiveWorkspace(actor);
+  } else {
+    const contextualLead = await findLeadById(query.leadId ?? "");
+    if (!contextualLead?.workspaceId) {
+      throw new AppError(404, "NOT_FOUND", "Lead not found");
+    }
+    workspaceId = contextualLead.workspaceId;
+  }
   const proposals = await listProposalRecords({
+    workspaceId,
     where: {
       leadId: query.leadId,
       dealId: query.dealId,
-      status: query.status
+      status: query.status,
+      lead: actor ? leadVisibilityWhere(actor) : { id: query.leadId }
     },
     take: query.limit
   });
   return proposals.map(toProposalDto);
 }
 
-export async function getProposal(proposalId: string): Promise<ProposalDto> {
-  return toProposalDto(requireProposal(await findProposalById(proposalId)));
+export async function getProposal(
+  actor: AuthenticatedUser,
+  proposalId: string
+): Promise<ProposalDto> {
+  return toProposalDto(await loadProposal(actor, proposalId));
 }
 
 export async function createProposal(
   actor: AuthenticatedUser,
   input: CreateProposalInput
 ): Promise<ProposalDto> {
+  const workspaceId = await ensureLeadAndDeal(actor, input);
   if (input.idempotencyKey) {
-    const existing = await findProposalByIdempotencyKey(input.idempotencyKey);
-    if (existing) return toProposalDto(existing);
+    const existing = await findProposalByIdempotencyKey(input.idempotencyKey, workspaceId);
+    if (existing) {
+      assertCanMutateProposal(actor, existing);
+      return toProposalDto(existing);
+    }
   }
-  const workspaceId = await ensureLeadAndDeal(input);
 
   const proposal = await prisma.$transaction(
     async (tx) => {
@@ -232,7 +290,7 @@ export async function createProposal(
     { maxWait: 10000, timeout: 30000 }
   );
 
-  const hydrated = await loadProposal(proposal.id);
+  const hydrated = await loadProposal(actor, proposal.id);
   await publishProposalUpdate(hydrated, "proposal-created");
   return toProposalDto(hydrated);
 }
@@ -242,7 +300,10 @@ export async function updateProposalDraft(
   proposalId: string,
   input: UpdateProposalDraftInput
 ): Promise<ProposalDto> {
-  const existing = requireProposal(await findProposalById(proposalId));
+  const existing = requireProposal(
+    await findProposalById(proposalId, requireActiveWorkspace(actor))
+  );
+  assertCanMutateProposal(actor, existing);
   ensureEditable(existing);
   const title = input.title ?? existing.title;
   const versionNumber = nextVersionNumber(existing);
@@ -298,7 +359,7 @@ export async function updateProposalDraft(
     },
     { maxWait: 10000, timeout: 30000 }
   );
-  const hydrated = await loadProposal(proposal.id);
+  const hydrated = await loadProposal(actor, proposal.id);
   await publishProposalUpdate(hydrated, "proposal-updated");
   return toProposalDto(hydrated);
 }
@@ -308,7 +369,10 @@ export async function submitProposalForApproval(
   proposalId: string,
   input: SubmitProposalForApprovalInput
 ): Promise<ProposalDto> {
-  const existing = requireProposal(await findProposalById(proposalId));
+  const existing = requireProposal(
+    await findProposalById(proposalId, requireActiveWorkspace(actor))
+  );
+  assertCanMutateProposal(actor, existing);
   ensureStatus(existing, ["DRAFT"], "Only draft proposals can be submitted for approval");
   if (!existing.currentVersionId) {
     throw new AppError(409, "CONFLICT", "Proposal must have a draft version before approval");
@@ -355,7 +419,7 @@ export async function submitProposalForApproval(
     { maxWait: 10000, timeout: 30000 }
   );
 
-  const hydrated = await loadProposal(proposal.id);
+  const hydrated = await loadProposal(actor, proposal.id);
   await publishProposalUpdate(hydrated, "proposal-submitted");
   return toProposalDto(hydrated);
 }
@@ -365,7 +429,10 @@ export async function approveProposal(
   proposalId: string,
   input: ApproveProposalInput
 ): Promise<ProposalDto> {
-  const existing = requireProposal(await findProposalById(proposalId));
+  const existing = requireProposal(
+    await findProposalById(proposalId, requireActiveWorkspace(actor))
+  );
+  assertCanMutateProposal(actor, existing);
   ensureStatus(existing, ["WAITING_APPROVAL"], "Only waiting proposals can be approved");
   if (!existing.currentVersionId) {
     throw new AppError(409, "CONFLICT", "Proposal has no active draft version to approve");
@@ -435,7 +502,7 @@ export async function approveProposal(
     { maxWait: 10000, timeout: 30000 }
   );
 
-  const hydrated = await loadProposal(proposal.id);
+  const hydrated = await loadProposal(actor, proposal.id);
   await publishProposalUpdate(hydrated, "proposal-approved");
   return toProposalDto(hydrated);
 }
@@ -445,7 +512,10 @@ export async function recordProposalSentAfterProviderConfirmation(
   proposalId: string,
   input: RecordProposalSentInput
 ): Promise<ProposalDto> {
-  const existing = requireProposal(await findProposalById(proposalId));
+  const existing = requireProposal(
+    await findProposalById(proposalId, requireActiveWorkspace(actor))
+  );
+  assertCanMutateProposal(actor, existing);
   ensureStatus(existing, ["APPROVED"], "Proposal cannot be marked sent before approval");
   if (!existing.approvedVersionId || existing.approvedVersionId !== existing.currentVersionId) {
     throw new AppError(409, "CONFLICT", "Only the approved proposal version can be marked sent");
@@ -586,7 +656,7 @@ export async function recordProposalSentAfterProviderConfirmation(
     });
   }
 
-  const hydrated = await loadProposal(proposal.id);
+  const hydrated = await loadProposal(actor, proposal.id);
   await publishProposalUpdate(hydrated, "proposal-sent");
   return toProposalDto(hydrated);
 }

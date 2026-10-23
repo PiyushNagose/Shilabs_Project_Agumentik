@@ -5,10 +5,10 @@ import { getCalendarAvailability, getCalendarHealth } from "./calendar.service.j
 import type { CalendarAvailabilityInput } from "./calendar.schemas.js";
 
 export async function getCalendarHealthController(
-  _request: Request,
+  request: Request,
   response: Response<CalendarHealthDto>
 ): Promise<void> {
-  response.status(200).json(await getCalendarHealth());
+  response.status(200).json(await getCalendarHealth(getRequiredUser(request).activeWorkspaceId));
 }
 
 export async function getCalendarAvailabilityController(

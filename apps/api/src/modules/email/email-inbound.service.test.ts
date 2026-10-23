@@ -1,9 +1,12 @@
 import crypto from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { UserRole, UserStatus } from "@prisma/client";
 import { prisma } from "../../shared/prisma.js";
 import { hashPassword } from "../auth/auth.service.js";
 import { ingestSesInboundEmail } from "./email.service.js";
+import type { AIProvider } from "../ai/ai.provider.js";
+import { processInboundReply } from "../reply-processing/reply-processing.service.js";
+import { recalculateQualification } from "../qualification/qualification.service.js";
 
 const actorEmail = "r6-inbound-admin@example.local";
 const configuredEnv = {
@@ -26,6 +29,12 @@ function sign(body: unknown): { rawBody: string; timestamp: string; signature: s
 }
 
 async function cleanup(): Promise<void> {
+  await prisma.leadQualificationEvidence.deleteMany({
+    where: { qualification: { lead: { source: "r6-inbound-test" } } }
+  });
+  await prisma.leadQualification.deleteMany({ where: { lead: { source: "r6-inbound-test" } } });
+  await prisma.callingSequence.deleteMany({ where: { lead: { source: "r6-inbound-test" } } });
+  await prisma.followUpSequence.deleteMany({ where: { lead: { source: "r6-inbound-test" } } });
   await prisma.inboundEmail.deleteMany({
     where: {
       OR: [
@@ -209,6 +218,198 @@ describe("SES inbound email ingestion", () => {
       automationOwnershipReason: "MEANINGFUL_CLIENT_REPLY:EMAIL"
     });
   });
+
+  it.each([
+    { name: "OOO header", headers: [{ name: "Auto-Submitted", value: "auto-replied" }] },
+    {
+      name: "raw MIME receipt",
+      content: "Auto-Submitted: auto-generated\r\nSubject: Receipt\r\n\r\nReceived",
+      expectedTextBody: "Received"
+    },
+    {
+      name: "bounce",
+      headers: [
+        {
+          name: "Content-Type",
+          value: "multipart/report; report-type=delivery-status; boundary=abc"
+        }
+      ]
+    },
+    {
+      name: "newsletter",
+      headers: [
+        { name: "List-Id", value: "<news.example.com>" },
+        { name: "List-Unsubscribe", value: "<mailto:leave@example.com>" },
+        { name: "Precedence", value: "bulk" }
+      ]
+    },
+    { name: "OOO template", subject: "Out of office", textBody: "I am out of the office." }
+  ])(
+    "persists $name without handing off or stopping automation; a later human reply stops immediately",
+    async (automatic) => {
+      const lead = await createLead(`r6-auto-${crypto.randomUUID()}@example.com`);
+      const sequence = await prisma.followUpSequence.create({
+        data: {
+          workspaceId: lead.workspaceId,
+          leadId: lead.id,
+          contactId: lead.contactId,
+          cadenceDays: [1],
+          idempotencyKey: `r6-${crypto.randomUUID()}`
+        }
+      });
+      const calling = await prisma.callingSequence.create({
+        data: {
+          workspaceId: lead.workspaceId,
+          leadId: lead.id,
+          contactId: lead.contactId,
+          cadenceOffsets: [1],
+          maxAttempts: 1,
+          idempotencyKey: `r6-${crypto.randomUUID()}`
+        }
+      });
+      if (!lead.contact.email) throw new Error("Fixture email is missing");
+      const base = inboundPayload({
+        providerMessageId: `ses-r6-${crypto.randomUUID()}`,
+        from: lead.contact.email,
+        leadId: lead.id
+      }) as {
+        mail: {
+          source: string;
+          headers: { name: string; value: string }[];
+          commonHeaders: { subject: string; from: string[]; to: string[]; cc?: string[] };
+        };
+        textBody: string;
+      };
+      base.mail.headers.push(...(automatic.headers ?? []));
+      if (automatic.subject) base.mail.commonHeaders.subject = automatic.subject;
+      if (automatic.textBody) base.textBody = automatic.textBody;
+      if (automatic.name === "raw MIME receipt") {
+        base.mail.source = "bounce@example.com";
+        base.mail.commonHeaders.cc = ["archive@example.com"];
+      }
+      const payload = { ...base, ...(automatic.content ? { content: automatic.content } : {}) };
+      const signed = sign(payload);
+      const result = await ingestSesInboundEmail({
+        body: payload,
+        rawBody: signed.rawBody,
+        headers: signed,
+        env: configuredEnv
+      });
+      expect(result.status).toBe("PROCESSED");
+      expect(result.inboundEmail.replyProcessingStatus).toBe("SKIPPED");
+      expect(result.inboundEmail.failureCode).toBeNull();
+      const saved = await prisma.inboundEmail.findUniqueOrThrow({
+        where: { id: result.inboundEmail.id },
+        include: { message: true }
+      });
+      expect(saved.rawProviderPayload).toEqual(payload);
+      expect(saved.message).toMatchObject({
+        direction: "INBOUND",
+        body: automatic.expectedTextBody ?? base.textBody,
+        metadata: {
+          inboundClassification: { version: 1, kind: "NONMEANINGFUL" }
+        }
+      });
+      if (automatic.name === "raw MIME receipt") {
+        expect(saved).toMatchObject({
+          fromEmail: lead.contact.email,
+          toEmails: base.mail.commonHeaders.to,
+          ccEmails: base.mail.commonHeaders.cc,
+          subject: "Receipt",
+          textBody: "Received"
+        });
+      }
+      expect(await prisma.lead.findUniqueOrThrow({ where: { id: lead.id } })).toMatchObject({
+        automationOwnershipState: lead.automationOwnershipState
+      });
+      expect(
+        await prisma.followUpSequence.findUniqueOrThrow({ where: { id: sequence.id } })
+      ).toMatchObject({ status: "ACTIVE" });
+      expect(
+        await prisma.callingSequence.findUniqueOrThrow({ where: { id: calling.id } })
+      ).toMatchObject({ status: "ACTIVE" });
+      if (!saved.messageId) throw new Error("Persisted inbound message is missing");
+      expect(
+        await prisma.auditEvent.count({
+          where: { entityId: saved.messageId, action: "REPLY_PROCESSING_TRIGGERED" }
+        })
+      ).toBe(0);
+      expect(
+        await prisma.auditEvent.count({
+          where: { entityId: saved.messageId, action: "REPLY_PROCESSING_SKIPPED" }
+        })
+      ).toBe(1);
+      const understandReply = vi.fn();
+      const automaticQualification = vi.fn();
+      const provider = {
+        understandReply,
+        extractQualification: automaticQualification
+      } as unknown as AIProvider;
+      await expect(processInboundReply(saved.id, { provider })).rejects.toMatchObject({
+        code: "CONFLICT"
+      });
+      await recalculateQualification(lead.id, provider);
+      expect(understandReply).not.toHaveBeenCalled();
+      expect(automaticQualification).not.toHaveBeenCalled();
+      expect(await prisma.replyProcessingRun.count({ where: { inboundEmailId: saved.id } })).toBe(
+        0
+      );
+      const duplicate = await ingestSesInboundEmail({
+        body: payload,
+        rawBody: signed.rawBody,
+        headers: signed,
+        env: configuredEnv
+      });
+      expect(duplicate.status).toBe("DUPLICATE");
+      expect(duplicate.inboundEmail.replyProcessingStatus).toBe("SKIPPED");
+
+      const human = inboundPayload({
+        providerMessageId: `ses-r6-${crypto.randomUUID()}`,
+        from: lead.contact.email,
+        leadId: lead.id,
+        subject: "Re: Out of office"
+      }) as typeof base;
+      human.textBody = "Please stop emailing me.\n> I am out of the office.";
+      const humanSigned = sign(human);
+      const received = await ingestSesInboundEmail({
+        body: human,
+        rawBody: humanSigned.rawBody,
+        headers: humanSigned,
+        env: configuredEnv
+      });
+      expect(received.inboundEmail.replyProcessingStatus).toBe("PENDING");
+      expect(await prisma.lead.findUniqueOrThrow({ where: { id: lead.id } })).toMatchObject({
+        automationOwnershipState: "HUMAN_REQUIRED"
+      });
+      expect(
+        await prisma.followUpSequence.findUniqueOrThrow({ where: { id: sequence.id } })
+      ).toMatchObject({ status: "STOPPED" });
+      expect(
+        await prisma.callingSequence.findUniqueOrThrow({ where: { id: calling.id } })
+      ).toMatchObject({ status: "STOPPED" });
+      const extractQualification = vi.fn().mockResolvedValue({
+        need: null,
+        requirement: null,
+        budget: null,
+        budgetBand: null,
+        authority: null,
+        timeline: null,
+        businessFit: null,
+        decisionMakerIdentified: null,
+        urgency: null,
+        evidence: []
+      });
+      provider.extractQualification = extractQualification;
+      await recalculateQualification(lead.id, provider);
+      expect(extractQualification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          messages: [
+            { id: received.inboundEmail.messageId, senderType: "PROSPECT", body: human.textBody }
+          ]
+        })
+      );
+    }
+  );
 
   it("deduplicates inbound provider message IDs", async () => {
     const lead = await createLead("r6-duplicate@example.com");

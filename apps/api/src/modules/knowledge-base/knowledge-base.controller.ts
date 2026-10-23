@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 import type { ApprovedKnowledgeDto, KnowledgeBaseEntryDto } from "@shilabs/shared-types";
 import { getRequiredUser } from "../../middleware/auth.middleware.js";
+import { AppError } from "../../shared/errors.js";
 import {
   correctKnowledgeBaseEntry,
   createKnowledgeBaseEntry,
@@ -23,23 +24,36 @@ export async function listKnowledgeBaseController(
 ): Promise<void> {
   response
     .status(200)
-    .json(await listKnowledgeBase(request.validatedQuery as ListKnowledgeBaseQuery));
+    .json(
+      await listKnowledgeBase(
+        getRequiredUser(request),
+        request.validatedQuery as ListKnowledgeBaseQuery
+      )
+    );
 }
 
 export async function listApprovedKnowledgeController(
   request: Request,
   response: Response<ApprovedKnowledgeDto[]>
 ): Promise<void> {
+  const workspaceId = getRequiredUser(request).activeWorkspaceId;
+  if (!workspaceId) {
+    throw new AppError(403, "AUTHORIZATION_ERROR", "Active workspace required");
+  }
   response
     .status(200)
-    .json(await listApprovedKnowledge(request.validatedQuery as ApprovedKnowledgeQuery));
+    .json(
+      await listApprovedKnowledge(workspaceId, request.validatedQuery as ApprovedKnowledgeQuery)
+    );
 }
 
 export async function getKnowledgeBaseEntryController(
   request: Request<{ id: string }>,
   response: Response<KnowledgeBaseEntryDto>
 ): Promise<void> {
-  response.status(200).json(await getKnowledgeBaseEntry(request.params.id));
+  response
+    .status(200)
+    .json(await getKnowledgeBaseEntry(getRequiredUser(request), request.params.id));
 }
 
 export async function createKnowledgeBaseEntryController(

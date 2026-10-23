@@ -4,9 +4,21 @@ export const workerPrisma = new PrismaClient();
 
 export type DomainEventRecord = DomainEventOutbox;
 
+function configuredDatabaseSchema(): Prisma.Sql {
+  const schema =
+    new URL(process.env.DATABASE_URL ?? "postgresql://localhost/database").searchParams.get(
+      "schema"
+    ) ?? "public";
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(schema)) {
+    throw new Error("Database schema is invalid");
+  }
+  return Prisma.raw(`"${schema}"`);
+}
+
 export async function expireExhaustedPendingDomainEvents(now: Date): Promise<number> {
+  const databaseSchema = configuredDatabaseSchema();
   return workerPrisma.$executeRaw`
-    UPDATE "DomainEventOutbox"
+    UPDATE ${databaseSchema}."DomainEventOutbox"
     SET
       status = 'ATTENTION_REQUIRED',
       "failedAt" = ${now},

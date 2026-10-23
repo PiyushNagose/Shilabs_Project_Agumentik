@@ -12,6 +12,7 @@ import {
   findActiveSession,
   findActiveUserById,
   findUserByEmail,
+  hasActiveWorkspaceMembership,
   type AuthUserRecord,
   revokeSession
 } from "./auth.repository.js";
@@ -25,6 +26,9 @@ export function toPublicUser(user: AuthUserRecord | AuthenticatedUser): PublicUs
     firstName: user.firstName,
     lastName: user.lastName,
     role: user.role,
+    ...("activeWorkspaceRole" in user && user.activeWorkspaceRole
+      ? { workspaceRole: user.activeWorkspaceRole }
+      : {}),
     status: user.status,
     createdAt: user.createdAt.toISOString(),
     updatedAt: user.updatedAt.toISOString()
@@ -74,6 +78,10 @@ export async function login(input: LoginInput): Promise<AuthResponse> {
     throw new AppError(401, "AUTHENTICATION_ERROR", "Invalid email or password");
   }
 
+  if (!(await hasActiveWorkspaceMembership(user.id))) {
+    throw new AppError(403, "AUTHORIZATION_ERROR", "No active workspace membership exists");
+  }
+
   const config = getAuthConfig();
   const expiresAt = new Date(Date.now() + config.accessTokenTtlSeconds * 1000);
   const sessionId = randomUUID();
@@ -117,7 +125,7 @@ export async function verifyAccessToken(accessToken: string): Promise<Authentica
   }
 
   const user = await findActiveUserById(payload.sub);
-  if (!user) {
+  if (!user || !(await hasActiveWorkspaceMembership(user.id))) {
     throw new AppError(401, "AUTHENTICATION_ERROR", "Invalid access token");
   }
 

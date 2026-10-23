@@ -1,5 +1,5 @@
 import type React from "react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type {
   WorkflowDefinitionDto,
   WorkflowDetailDto,
@@ -30,8 +30,10 @@ import {
 } from "lucide-react";
 import { Badge, Button, Select } from "../../components/ui/index.js";
 import {
+  apiErrorMessage,
   previewWorkflow,
   publishWorkflow,
+  listAgents,
   saveWorkflowDraft,
   validateWorkflow
 } from "../../services/api-client.js";
@@ -49,6 +51,18 @@ const catalog: { type: WorkflowNodeType; label: string; icon: typeof CircleDot }
   { type: "HUMAN_APPROVAL", label: "Handoff", icon: Hand },
   { type: "END", label: "End", icon: Square }
 ];
+const nodeTypeLabel: Record<WorkflowNodeType, string> = {
+  TRIGGER: "Trigger",
+  CONDITION: "Decision",
+  WAIT: "Wait",
+  CRM_ACTION: "Update CRM",
+  TASK: "Task",
+  COMMUNICATION: "Message",
+  AGENT_INVOKE: "AI agent",
+  INTEGRATION_ACTION: "Integration",
+  HUMAN_APPROVAL: "Human handoff",
+  END: "End"
+};
 function defaultConfig(type: WorkflowNodeType): WorkflowNodeDto["config"] {
   if (type === "TRIGGER") return { event: "LEAD_UPDATED" };
   if (type === "CONDITION") return { field: "source", value: "website" };
@@ -112,6 +126,18 @@ export function WorkflowBuilder({
   const [preview, setPreview] = useState<WorkflowPreviewDto | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
+  const [agentOptions, setAgentOptions] = useState<{ value: string; label: string }[]>([]);
+  const hasUnpublishedDraft = workflow.draftVersion !== null;
+  const canPublish = dirty || hasUnpublishedDraft;
+  const hasAgentNode = definition.nodes.some((node) => node.type === "AGENT_INVOKE");
+  useEffect(() => {
+    if (!hasAgentNode) return;
+    void listAgents(accessToken)
+      .then((result) =>
+        setAgentOptions(result.agents.map((agent) => ({ value: agent.id, label: agent.name })))
+      )
+      .catch(() => setAgentOptions([]));
+  }, [accessToken, hasAgentNode]);
   const selected = definition.nodes.find((node) => node.id === selectedId) ?? null;
   const outgoing = definition.edges.filter((edge) => edge.source === selectedId);
   const nodeOptions = definition.nodes
@@ -187,8 +213,8 @@ export function WorkflowBuilder({
           await onChanged();
         }
       }
-    } catch {
-      setError(`Workflow ${action} failed.`);
+    } catch (error) {
+      setError(apiErrorMessage(error, `Workflow ${action} failed.`));
     } finally {
       setBusy(null);
     }
@@ -199,10 +225,12 @@ export function WorkflowBuilder({
       <header className="composer-toolbar">
         <div>
           <h3>Workflow Builder</h3>
-          <p>Durable orchestration using existing CRM and Agent capabilities.</p>
+          <p>Choose when automation runs, what it does, and when work returns to a person.</p>
         </div>
         <div className="composer-toolbar-actions">
-          <Badge tone={dirty ? "warning" : "neutral"}>{dirty ? "UNSAVED" : "SAVED"}</Badge>
+          <Badge tone={dirty || hasUnpublishedDraft ? "warning" : "success"}>
+            {dirty ? "UNSAVED" : hasUnpublishedDraft ? "DRAFT" : "PUBLISHED"}
+          </Badge>
           <Button disabled={!canManage || busy !== null} onClick={() => void run("save")}>
             <Save size={15} /> Save draft
           </Button>
@@ -214,10 +242,10 @@ export function WorkflowBuilder({
           </Button>
           <Button
             variant="primary"
-            disabled={!canManage || busy !== null}
+            disabled={!canManage || busy !== null || !canPublish}
             onClick={() => void run("publish")}
           >
-            <Send size={15} /> Publish
+            <Send size={15} /> {canPublish ? "Publish" : "Published"}
           </Button>
         </div>
       </header>
@@ -228,8 +256,8 @@ export function WorkflowBuilder({
       ) : null}
       <div className="composer-layout">
         <aside className="composer-palette" aria-label="Workflow nodes">
-          <strong>NODES</strong>
-          <p>Add an orchestration step.</p>
+          <strong>STEPS</strong>
+          <p>Add a step to the flow.</p>
           {catalog.map(({ type, label, icon: Icon }) => (
             <button
               key={`${type}-${label}`}
@@ -242,7 +270,7 @@ export function WorkflowBuilder({
               <Plus size={13} />
             </button>
           ))}
-          <strong>POLICY</strong>
+          <strong>RUNS FOR</strong>
           <label>
             Service
             <input
@@ -266,28 +294,6 @@ export function WorkflowBuilder({
             />
           </label>
           <label>
-            Country
-            <input
-              disabled={!canManage}
-              value={policy.country ?? ""}
-              onChange={(event) => {
-                setPolicy({ ...policy, country: event.target.value || undefined });
-                setDirty(true);
-              }}
-            />
-          </label>
-          <label>
-            Lead type
-            <input
-              disabled={!canManage}
-              value={policy.leadType ?? ""}
-              onChange={(event) => {
-                setPolicy({ ...policy, leadType: event.target.value || undefined });
-                setDirty(true);
-              }}
-            />
-          </label>
-          <label>
             Priority
             <input
               disabled={!canManage}
@@ -299,49 +305,16 @@ export function WorkflowBuilder({
             />
           </label>
           <label>
-            Manager ID
+            Follow-up days
             <input
               disabled={!canManage}
-              value={policy.managerId ?? ""}
-              onChange={(event) => {
-                setPolicy({ ...policy, managerId: event.target.value || undefined });
-                setDirty(true);
-              }}
-            />
-          </label>
-          <label>
-            Campaign
-            <input
-              disabled={!canManage}
-              value={policy.campaign ?? ""}
-              onChange={(event) => {
-                setPolicy({ ...policy, campaign: event.target.value || undefined });
-                setDirty(true);
-              }}
-            />
-          </label>
-          <label>
-            Pipeline stage ID
-            <input
-              disabled={!canManage}
-              value={policy.pipelineStageId ?? ""}
-              onChange={(event) => {
-                setPolicy({ ...policy, pipelineStageId: event.target.value || undefined });
-                setDirty(true);
-              }}
-            />
-          </label>
-          <label>
-            Cadence minutes
-            <input
-              disabled={!canManage}
-              placeholder="60, 1440, 4320"
-              value={policy.cadenceMinutes?.join(", ") ?? ""}
+              placeholder="2, 5, 8"
+              value={policy.cadenceMinutes?.map((minutes) => minutes / 1440).join(", ") ?? ""}
               onChange={(event) => {
                 const cadenceMinutes = event.target.value
                   .split(",")
-                  .map((item) => Number(item.trim()))
-                  .filter((item) => Number.isInteger(item) && item > 0);
+                  .map((item) => Number(item.trim()) * 1440)
+                  .filter((item) => Number.isInteger(item) && item >= 1440);
                 setPolicy({
                   ...policy,
                   cadenceMinutes: cadenceMinutes.length ? cadenceMinutes : undefined
@@ -350,6 +323,64 @@ export function WorkflowBuilder({
               }}
             />
           </label>
+          <details>
+            <summary>More filters</summary>
+            <label>
+              Country
+              <input
+                disabled={!canManage}
+                value={policy.country ?? ""}
+                onChange={(event) => {
+                  setPolicy({ ...policy, country: event.target.value || undefined });
+                  setDirty(true);
+                }}
+              />
+            </label>
+            <label>
+              Lead type
+              <input
+                disabled={!canManage}
+                value={policy.leadType ?? ""}
+                onChange={(event) => {
+                  setPolicy({ ...policy, leadType: event.target.value || undefined });
+                  setDirty(true);
+                }}
+              />
+            </label>
+            <label>
+              Assigned manager
+              <input
+                disabled={!canManage}
+                value={policy.managerId ?? ""}
+                onChange={(event) => {
+                  setPolicy({ ...policy, managerId: event.target.value || undefined });
+                  setDirty(true);
+                }}
+              />
+            </label>
+            <label>
+              Campaign
+              <input
+                disabled={!canManage}
+                value={policy.campaign ?? ""}
+                onChange={(event) => {
+                  setPolicy({ ...policy, campaign: event.target.value || undefined });
+                  setDirty(true);
+                }}
+              />
+            </label>
+            <label>
+              Deal stage
+              <input
+                disabled={!canManage}
+                value={policy.pipelineStageId ?? ""}
+                onChange={(event) => {
+                  setPolicy({ ...policy, pipelineStageId: event.target.value || undefined });
+                  setDirty(true);
+                }}
+              />
+            </label>
+          </details>
         </aside>
         <div
           className="composer-canvas"
@@ -371,11 +402,21 @@ export function WorkflowBuilder({
               const source = definition.nodes.find((node) => node.id === edge.source);
               const target = definition.nodes.find((node) => node.id === edge.target);
               if (!source || !target) return null;
+              const sx = source.position.x + 90;
+              const sy = source.position.y + 82;
+              const tx = target.position.x + 90;
+              const ty = target.position.y;
               return (
-                <path
-                  key={edge.id}
-                  d={`M ${String(source.position.x + 90)} ${String(source.position.y + 82)} C ${String(source.position.x + 90)} ${String(source.position.y + 115)}, ${String(target.position.x + 90)} ${String(target.position.y - 25)}, ${String(target.position.x + 90)} ${String(target.position.y)}`}
-                />
+                <g key={edge.id}>
+                  <path
+                    d={`M ${String(sx)} ${String(sy)} C ${String(sx)} ${String(sy + 33)}, ${String(tx)} ${String(ty - 25)}, ${String(tx)} ${String(ty)}`}
+                  />
+                  {edge.branch ? (
+                    <text className="composer-branch-label" x={(sx + tx) / 2} y={(sy + ty) / 2}>
+                      {edge.branch}
+                    </text>
+                  ) : null}
+                </g>
               );
             })}
           </svg>
@@ -394,10 +435,9 @@ export function WorkflowBuilder({
               >
                 <span>
                   <Icon size={14} />
-                  {node.type.replaceAll("_", " ")}
+                  {nodeTypeLabel[node.type]}
                 </span>
                 <strong>{node.label}</strong>
-                <small>{node.id}</small>
               </button>
             );
           })}
@@ -409,10 +449,9 @@ export function WorkflowBuilder({
             <>
               <header>
                 <div>
-                  <span>{selected.type.replaceAll("_", " ")}</span>
-                  <h4>Node settings</h4>
+                  <span>{nodeTypeLabel[selected.type]}</span>
+                  <h4>Step settings</h4>
                 </div>
-                <Badge>{selected.id}</Badge>
               </header>
               <label>
                 Label
@@ -422,7 +461,12 @@ export function WorkflowBuilder({
                   onChange={(event) => updateNode({ label: event.target.value })}
                 />
               </label>
-              <NodeFields node={selected} disabled={!canManage} onChange={updateConfig} />
+              <NodeFields
+                node={selected}
+                disabled={!canManage}
+                agentOptions={agentOptions}
+                onChange={updateConfig}
+              />
               <label>Next steps</label>
               {outgoing.map((edge, index) => (
                 <div className="composer-edge-editor" key={edge.id}>
@@ -492,34 +536,6 @@ export function WorkflowBuilder({
                   <Plus size={14} /> Add connection
                 </Button>
               ) : null}
-              <div className="inspector-position">
-                <label>
-                  X
-                  <input
-                    type="number"
-                    disabled={!canManage}
-                    value={selected.position.x}
-                    onChange={(event) =>
-                      updateNode({
-                        position: { ...selected.position, x: Number(event.target.value) }
-                      })
-                    }
-                  />
-                </label>
-                <label>
-                  Y
-                  <input
-                    type="number"
-                    disabled={!canManage}
-                    value={selected.position.y}
-                    onChange={(event) =>
-                      updateNode({
-                        position: { ...selected.position, y: Number(event.target.value) }
-                      })
-                    }
-                  />
-                </label>
-              </div>
               <Button
                 variant="danger"
                 disabled={!canManage || selected.type === "TRIGGER"}
@@ -571,10 +587,12 @@ export function WorkflowBuilder({
 function NodeFields({
   node,
   disabled,
+  agentOptions,
   onChange
 }: {
   node: WorkflowNodeDto;
   disabled: boolean;
+  agentOptions: { value: string; label: string }[];
   onChange: (key: string, value: string | number) => void;
 }): React.JSX.Element {
   const input = (key: string, label: string) => (
@@ -587,11 +605,45 @@ function NodeFields({
       />
     </label>
   );
-  if (node.type === "TRIGGER") return input("event", "Domain event");
+  if (node.type === "TRIGGER")
+    return (
+      <label>
+        Starts when
+        <Select
+          ariaLabel="Workflow trigger"
+          disabled={disabled}
+          value={value(node, "event") || "LEAD_UPDATED"}
+          options={[
+            { value: "LEAD_CREATED", label: "A lead is created" },
+            { value: "LEAD_UPDATED", label: "A lead is updated" },
+            { value: "HUMAN_ACTION_COMPLETED", label: "The salesperson finishes their response" },
+            { value: "CUSTOMER_REPLIED", label: "The customer replies" }
+          ]}
+          onChange={(item) => onChange("event", item)}
+        />
+      </label>
+    );
   if (node.type === "CONDITION")
     return (
       <>
-        {input("field", "Lead field")}
+        <label>
+          Lead field
+          <Select
+            ariaLabel="Lead condition field"
+            disabled={disabled}
+            value={value(node, "field") || "status"}
+            options={[
+              { value: "status", label: "Lead status" },
+              { value: "source", label: "Lead source" },
+              { value: "stageId", label: "Deal stage" },
+              { value: "serviceInterest", label: "Service interest" },
+              { value: "ownership", label: "Automation ownership" },
+              { value: "meaningfulReply", label: "Customer has replied" },
+              { value: "requiresHuman", label: "Human review is required" }
+            ]}
+            onChange={(item) => onChange("field", item)}
+          />
+        </label>
         {input("value", "Equals")}
       </>
     );
@@ -628,7 +680,7 @@ function NodeFields({
           ariaLabel="CRM decision"
           disabled={disabled}
           value={value(node, "action") || "FOLLOW_UP"}
-          options={["FOLLOW_UP", "WAIT", "ESCALATE", "STOP", "ASK_HUMAN"].map((item) => ({
+          options={["FOLLOW_UP", "ESCALATE", "STOP", "ASK_HUMAN"].map((item) => ({
             value: item,
             label: item.replaceAll("_", " ")
           }))}
@@ -673,9 +725,37 @@ function NodeFields({
         ) : null}
       </>
     );
-  if (node.type === "AGENT_INVOKE") return input("agentId", "Existing agent ID");
-  if (node.type === "INTEGRATION_ACTION") return input("eventType", "Approved domain event");
-  if (node.type === "HUMAN_APPROVAL") return input("reason", "Approval reason");
+  if (node.type === "AGENT_INVOKE")
+    return (
+      <label>
+        Agent
+        <Select
+          ariaLabel="Agent"
+          disabled={disabled}
+          value={value(node, "agentId")}
+          options={agentOptions}
+          onChange={(item) => onChange("agentId", item)}
+        />
+      </label>
+    );
+  if (node.type === "INTEGRATION_ACTION")
+    return (
+      <label>
+        Connected action
+        <Select
+          ariaLabel="Connected action"
+          disabled={disabled}
+          value={value(node, "eventType") || "NOTIFICATION_ACKNOWLEDGED"}
+          options={[
+            { value: "NOTIFICATION_ACKNOWLEDGED", label: "Acknowledge notification" },
+            { value: "AGENT_CORRECTION_RECORDED", label: "Record agent correction" },
+            { value: "REPLY_UNDERSTOOD", label: "Record understood reply" }
+          ]}
+          onChange={(item) => onChange("eventType", item)}
+        />
+      </label>
+    );
+  if (node.type === "HUMAN_APPROVAL") return input("reason", "Why a person is needed");
   return input("outcome", "Outcome");
 }
 function Preview({
@@ -689,17 +769,21 @@ function Preview({
     <div className="composer-preview">
       <header>
         <div>
-          <span>SAFE PREVIEW</span>
-          <h4>Sandbox trace</h4>
+          <span>PREVIEW</span>
+          <h4>Steps that will run</h4>
         </div>
-        <Badge tone="success">NO LIVE ACTIONS</Badge>
+        <Badge tone="success">SAFE PREVIEW ONLY</Badge>
       </header>
       {preview.steps.map((step) => (
         <article key={step.nodeId}>
           <span>{step.order}</span>
           <div>
             <strong>{step.label}</strong>
-            <small>{step.outcome}</small>
+            <small>
+              {step.outcome.startsWith("Simulated")
+                ? "Checked without sending or changing data"
+                : "Ready"}
+            </small>
           </div>
         </article>
       ))}

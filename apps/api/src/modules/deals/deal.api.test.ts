@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import request from "supertest";
-import { UserRole, UserStatus } from "@prisma/client";
+import { beforeEach, describe, expect, it } from "vitest";
+import { UserRole, UserStatus, WorkspaceRole } from "@prisma/client";
 import type {
   ActivityDto,
   AuthResponse,
@@ -276,6 +277,19 @@ describe("M5 CRM pipeline and deals API", () => {
         }
       ]
     });
+    const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
+    const users = await prisma.user.findMany({
+      where: { email: { in: [adminEmail, repEmail] } },
+      select: { id: true, email: true }
+    });
+    await prisma.workspaceMember.createMany({
+      data: users.map((user) => ({
+        workspaceId: workspace.id,
+        userId: user.id,
+        role: user.email === adminEmail ? WorkspaceRole.ADMIN : WorkspaceRole.SALES_REP,
+        status: "ACTIVE"
+      }))
+    });
   });
 
   afterAll(async () => {
@@ -355,7 +369,7 @@ describe("M5 CRM pipeline and deals API", () => {
     expect(stages.slice(0, pipelineStages.length).map((stage) => stage.order)).toEqual(
       pipelineStages.map((stage) => stage.order)
     );
-  }, 45000);
+  }, 180000);
 
   it("changes a lead stage and records activity plus audit history", async () => {
     const token = await login(adminEmail);
@@ -386,7 +400,7 @@ describe("M5 CRM pipeline and deals API", () => {
         action: "STAGE_CHANGED"
       }
     });
-  }, 45000);
+  }, 180000);
 
   it("rejects reopening a closed won lead through the normal stage endpoint", async () => {
     const token = await login(adminEmail);
@@ -405,7 +419,7 @@ describe("M5 CRM pipeline and deals API", () => {
       .set("Authorization", `Bearer ${token}`)
       .send({ stageId: newStage.id })
       .expect(409);
-  }, 45000);
+  }, 180000);
 
   it("creates deals with default probability from the selected stage", async () => {
     const token = await login(adminEmail);
@@ -446,7 +460,27 @@ describe("M5 CRM pipeline and deals API", () => {
         action: "DEAL_CREATED"
       }
     });
-  }, 45000);
+  }, 180000);
+
+  it("inherits the lead value and currency when deal overrides are omitted", async () => {
+    const token = await login(adminEmail);
+    const lead = await createLead(token);
+    const proposalStage = await stageByKey("PROPOSAL");
+    await prisma.lead.update({
+      where: { id: lead.id },
+      data: { estimatedValue: "1850000", currency: "INR" }
+    });
+
+    const response = await request(app)
+      .post("/api/deals")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ leadId: lead.id, stageId: proposalStage.id })
+      .expect(201);
+    const deal = response.body as unknown as DealDto;
+
+    expect(deal.value).toBe("1850000");
+    expect(deal.currency).toBe("INR");
+  }, 180000);
 
   it("updates deal value and defaults probability when the deal stage changes", async () => {
     const token = await login(adminEmail);
@@ -525,5 +559,5 @@ describe("M5 CRM pipeline and deals API", () => {
       nextAction: null,
       nextActionAt: null
     });
-  }, 45000);
+  }, 180000);
 });

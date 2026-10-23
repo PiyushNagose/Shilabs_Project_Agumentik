@@ -149,6 +149,24 @@ export class ZohoTimelineSyncer implements TimelineSyncer {
       };
     }
 
+    const leadMapping = await this.prisma.externalRecordMapping.findUnique({
+      where: {
+        workspaceId_provider_entityType_localEntityId: {
+          workspaceId,
+          provider: "ZOHO_BIGIN",
+          entityType: "LEAD",
+          localEntityId: activity.leadId
+        }
+      }
+    });
+    if (!leadMapping) {
+      return {
+        status: "SKIPPED",
+        externalRecordId: null,
+        lastError: null
+      };
+    }
+
     const zohoConfig = config(input.env);
     if (zohoConfig.status === "NOT_CONFIGURED") {
       const lastError = `Missing configuration: ${zohoConfig.missing.join(", ")}`;
@@ -174,24 +192,6 @@ export class ZohoTimelineSyncer implements TimelineSyncer {
         update: { status: "NOT_CONFIGURED", lastCheckedAt: new Date(), lastError }
       });
       return { status: "NOT_CONFIGURED", externalRecordId: null, lastError };
-    }
-
-    const leadMapping = await this.prisma.externalRecordMapping.findUnique({
-      where: {
-        workspaceId_provider_entityType_localEntityId: {
-          workspaceId,
-          provider: "ZOHO_BIGIN",
-          entityType: "LEAD",
-          localEntityId: activity.leadId
-        }
-      }
-    });
-    if (!leadMapping) {
-      return {
-        status: "FAILED",
-        externalRecordId: null,
-        lastError: "Lead is not mapped to Zoho Bigin"
-      };
     }
 
     const account = await this.prisma.integrationAccount.upsert({

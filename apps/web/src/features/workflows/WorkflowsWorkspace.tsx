@@ -1,4 +1,6 @@
 import type React from "react";
+import { ExecutionTiming } from "../../components/ExecutionTiming.js";
+import { executionStatusLabel, formatDateTime } from "../../utils/date-time.js";
 import { useState } from "react";
 import type {
   PublicUser,
@@ -24,6 +26,7 @@ import type { WorkflowDetailTab } from "../../app/routing.js";
 import { Badge, Button, Card, Modal, Select } from "../../components/ui/index.js";
 import { StateBlock } from "../../components/StateBlock.js";
 import { usePersistedResource } from "../../hooks/usePersistedResource.js";
+import { isWorkspaceManager } from "../auth/workspace-access.js";
 import {
   createWorkflow,
   getWorkflow,
@@ -36,11 +39,11 @@ function tone(status: WorkflowStatusName): "neutral" | "success" | "warning" {
   return status === "PUBLISHED" ? "success" : status === "PAUSED" ? "warning" : "neutral";
 }
 function date(value: string | null): string {
-  return value
-    ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(
-        new Date(value)
-      )
-    : "Not yet";
+  return formatDateTime(value, "Not yet");
+}
+function businessLabel(value: string): string {
+  const label = value.replaceAll("_", " ").toLowerCase();
+  return `${label.charAt(0).toUpperCase()}${label.slice(1)}`;
 }
 export function WorkflowsWorkspace({
   accessToken,
@@ -58,13 +61,14 @@ export function WorkflowsWorkspace({
   const [createOpen, setCreateOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("ALL");
-  const canManage = currentUser.role === "ADMIN" || currentUser.role === "SALES_MANAGER";
+  const canManage = isWorkspaceManager(currentUser);
   const tab = initialTab ?? "overview";
   const resource = usePersistedResource<WorkflowDashboardDto | WorkflowDetailDto>({
     scope: initialWorkflowId ? `workflow:${initialWorkflowId}` : "workflows",
     load: () =>
       initialWorkflowId ? getWorkflow(accessToken, initialWorkflowId) : listWorkflows(accessToken),
-    accepts: (event) => event.entityType === "workflow" || event.entityType === "workspace",
+    accepts: (event) =>
+      ["workflow", "workspace", "lead", "domain-event", "operations"].includes(event.entityType),
     errorMessage: "The workspace workflow data could not be loaded."
   });
   const dashboard = initialWorkflowId ? null : (resource.data as WorkflowDashboardDto | null);
@@ -390,8 +394,8 @@ function ExecutionList({ workflow }: { workflow: WorkflowDetailDto }): React.JSX
               )}
             </span>
             <div>
-              <strong>{execution.source.replaceAll("_", " ")}</strong>
-              <small>{execution.correlationId}</small>
+              <strong>{businessLabel(execution.source)}</strong>
+              <small>Workflow run</small>
             </div>
             <Badge
               tone={
@@ -402,19 +406,19 @@ function ExecutionList({ workflow }: { workflow: WorkflowDetailDto }): React.JSX
                     : "warning"
               }
             >
-              {execution.status}
+              {executionStatusLabel(execution.status, Boolean(execution.nextRunAt))}
             </Badge>
           </header>
           <div className="agent-execution-meta">
             <span>
-              Lead<strong>{execution.leadId ?? "None"}</strong>
+              <small>Lead</small>
+              <strong>{execution.leadId ? "Linked" : "Not linked"}</strong>
             </span>
             <span>
-              Steps<strong>{execution.steps.length}</strong>
+              <small>Steps</small>
+              <strong>{execution.steps.length}</strong>
             </span>
-            <span>
-              Started<strong>{date(execution.startedAt ?? execution.createdAt)}</strong>
-            </span>
+            <ExecutionTiming run={execution} />
           </div>
         </Card>
       ))}

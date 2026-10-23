@@ -237,6 +237,32 @@ describe("M10 qualification service", () => {
     expect(activity.actorUserId).toBeNull();
   }, 45000);
 
+  it("does not treat a price or discount request as disclosed budget or authority", async () => {
+    const { leadId, messageId } = await createLeadWithMessage(
+      "Please share your best price, confirm a 25% discount, and guarantee delivery."
+    );
+    const qualification = await recalculateQualification(
+      leadId,
+      provider({
+        need: "CRM implementation",
+        requirement: null,
+        budget: "Please share your best price and confirm a 25% discount.",
+        budgetBand: "25% discount",
+        authority: "Not provided",
+        timeline: null,
+        businessFit: null,
+        decisionMakerIdentified: false,
+        urgency: null,
+        evidence: [{ messageId, quote: "Please share your best price" }]
+      })
+    );
+
+    expect(qualification.budget).toBeNull();
+    expect(qualification.budgetBand).toBeNull();
+    expect(qualification.authority).toBeNull();
+    expect(qualification.decisionMakerIdentified).toBeNull();
+  }, 45000);
+
   it("rejects malformed AI extraction before saving", async () => {
     const { leadId } = await createLeadWithMessage();
     const badProvider = {

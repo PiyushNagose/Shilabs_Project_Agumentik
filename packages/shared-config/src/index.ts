@@ -35,6 +35,7 @@ export interface AuthConfig {
 }
 
 export type CalendarProviderName = "none" | "google" | "microsoft";
+export type MeetingConferenceProviderName = "native" | "zoom" | "none";
 export type VoiceProviderName = "none" | "twilio" | "exotel";
 export type MessagingProviderName = "none" | "meta_whatsapp" | "twilio_whatsapp";
 
@@ -59,6 +60,13 @@ export interface CalendarConfig {
     clientId: string;
     clientSecret: string;
     userId: string;
+  };
+  conferenceProvider: MeetingConferenceProviderName;
+  zoom: {
+    accountId: string;
+    clientId: string;
+    clientSecret: string;
+    hostUserId: string;
   };
 }
 
@@ -124,7 +132,7 @@ export interface FollowUpTimingConfig {
   mode: FollowUpCadenceMode;
   nodeEnv: string;
   appEnv: string;
-  productionCadenceDays: number[];
+  e2eBaselineCadenceDays: number[];
   offsetsMinutes: number[];
 }
 
@@ -208,6 +216,12 @@ function parseCalendarProvider(value: string | undefined): CalendarProviderName 
   }
 
   throw new Error("CALENDAR_PROVIDER must be one of: none, google, microsoft");
+}
+
+function parseMeetingConferenceProvider(value: string | undefined): MeetingConferenceProviderName {
+  const provider = (value ?? "native").trim().toLowerCase();
+  if (provider === "native" || provider === "zoom" || provider === "none") return provider;
+  throw new Error("MEETING_CONFERENCE_PROVIDER must be one of: native, zoom, none");
 }
 
 function parseVoiceProvider(value: string | undefined): VoiceProviderName {
@@ -373,6 +387,13 @@ export function getCalendarConfig(env: NodeJS.ProcessEnv = process.env): Calenda
       clientId: env.MICROSOFT_CALENDAR_CLIENT_ID ?? "",
       clientSecret: env.MICROSOFT_CALENDAR_CLIENT_SECRET ?? "",
       userId: env.MICROSOFT_CALENDAR_USER_ID ?? ""
+    },
+    conferenceProvider: parseMeetingConferenceProvider(env.MEETING_CONFERENCE_PROVIDER),
+    zoom: {
+      accountId: env.ZOOM_ACCOUNT_ID ?? "",
+      clientId: env.ZOOM_CLIENT_ID ?? "",
+      clientSecret: env.ZOOM_CLIENT_SECRET ?? "",
+      hostUserId: env.ZOOM_HOST_USER_ID ?? "me"
     }
   };
 }
@@ -563,7 +584,8 @@ export function getFollowUpTimingConfig(
   const mode = parseFollowUpCadenceMode(env.FOLLOW_UP_CADENCE_MODE);
   const nodeEnv = env.NODE_ENV ?? "development";
   const appEnv = env.APP_ENV ?? "";
-  const productionCadenceDays = [0, 1, 5, 9];
+  // This preserves the established four-step E2E acceleration shape; production uses a policy.
+  const e2eBaselineCadenceDays = [0, 1, 5, 9];
   const offsetsMinutes =
     mode === "e2e_accelerated_minutes"
       ? parseNumberCsv(
@@ -571,9 +593,9 @@ export function getFollowUpTimingConfig(
           env.FOLLOW_UP_E2E_CADENCE_MINUTES,
           [0, 1, 3, 5]
         )
-      : productionCadenceDays.map((day) => day * 24 * 60);
+      : e2eBaselineCadenceDays.map((day) => day * 24 * 60);
 
-  if (offsetsMinutes.length !== productionCadenceDays.length) {
+  if (offsetsMinutes.length !== e2eBaselineCadenceDays.length) {
     throw new Error("FOLLOW_UP_E2E_CADENCE_MINUTES must contain exactly 4 offsets");
   }
 
@@ -595,7 +617,7 @@ export function getFollowUpTimingConfig(
     mode,
     nodeEnv,
     appEnv,
-    productionCadenceDays,
+    e2eBaselineCadenceDays,
     offsetsMinutes
   };
 }
@@ -800,7 +822,26 @@ export function assertProductionEnvironment(
       "GOOGLE_CALENDAR_REFRESH_TOKEN",
       "GOOGLE_CALENDAR_ID"
     ]);
+  } else if (calendar === "microsoft") {
+    requireConfigured(env, errors, [
+      "MICROSOFT_CALENDAR_TENANT_ID",
+      "MICROSOFT_CALENDAR_CLIENT_ID",
+      "MICROSOFT_CALENDAR_CLIENT_SECRET",
+      "MICROSOFT_CALENDAR_USER_ID"
+    ]);
   } else if (calendar !== "none") errors.push("CALENDAR_PROVIDER");
+
+  const conference = (env.MEETING_CONFERENCE_PROVIDER ?? "native").toLowerCase();
+  if (conference === "zoom") {
+    requireConfigured(env, errors, [
+      "ZOOM_ACCOUNT_ID",
+      "ZOOM_CLIENT_ID",
+      "ZOOM_CLIENT_SECRET",
+      "ZOOM_HOST_USER_ID"
+    ]);
+  } else if (!["native", "none"].includes(conference)) {
+    errors.push("MEETING_CONFERENCE_PROVIDER");
+  }
 
   const zohoConfigured = [
     "ZOHO_BIGIN_CLIENT_ID",

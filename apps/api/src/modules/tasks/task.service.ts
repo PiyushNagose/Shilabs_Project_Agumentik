@@ -10,6 +10,7 @@ import {
   assertCanMutateLead,
   leadVisibilityWhere
 } from "../leads/lead.permissions.js";
+import { completeHumanActionInTransaction } from "../leads/lead-automation-ownership.service.js";
 import { publishRealtimeEvent } from "../realtime/realtime.service.js";
 import type { CreateTaskInput, ListTasksQuery, UpdateTaskInput } from "./task.schemas.js";
 
@@ -410,6 +411,14 @@ export async function completeTask(actor: AuthenticatedUser, taskId: string): Pr
   if (existing.status === "COMPLETED") return getTask(actor, taskId);
   const correlationId = randomUUID();
   const task = await prisma.$transaction(async (tx) => {
+    const metadata =
+      existing.metadata &&
+      typeof existing.metadata === "object" &&
+      !Array.isArray(existing.metadata)
+        ? existing.metadata
+        : null;
+    const nodeId = metadata && typeof metadata.nodeId === "string" ? metadata.nodeId : null;
+    const resumesExecution = metadata?.resumeOnCompletion === true;
     const completed = await tx.task.update({
       where: { id: taskId },
       data: {
@@ -449,7 +458,91 @@ export async function completeTask(actor: AuthenticatedUser, taskId: string): Pr
         correlationId
       }
     });
+
+    if (
+      resumesExecution &&
+      nodeId &&
+      existing.sourceId &&
+      (existing.sourceType === "WORKFLOW_EXECUTION" || existing.sourceType === "AGENT_EXECUTION")
+    ) {
+      const executionType = existing.sourceType === "WORKFLOW_EXECUTION" ? "workflow" : "agent";
+      const execution =
+        executionType === "workflow"
+          ? await tx.workflowExecution.findFirst({
+              where: {
+                id: existing.sourceId,
+                workspaceId: existing.workspaceId,
+                leadId,
+                currentNodeId: nodeId,
+                status: "HUMAN_REQUIRED"
+              },
+              select: { id: true, correlationId: true }
+            })
+          : await tx.agentExecution.findFirst({
+              where: {
+                id: existing.sourceId,
+                workspaceId: existing.workspaceId,
+                leadId,
+                currentNodeId: nodeId,
+                status: "HUMAN_REQUIRED"
+              },
+              select: { id: true, correlationId: true }
+            });
+
+      if (execution) {
+        const ownership = await completeHumanActionInTransaction({
+          client: tx,
+          leadId,
+          reason: "HUMAN_HANDOFF_TASK_COMPLETED",
+          actorType: "USER",
+          actorId: actor.id,
+          sourceType: "TASK",
+          sourceId: taskId,
+          correlationId
+        });
+        if (ownership.activated) {
+          if (executionType === "workflow") {
+            await tx.workflowExecution.update({
+              where: { id: execution.id },
+              data: {
+                status: "WAITING",
+                nextRunAt: new Date(),
+                failureCode: null,
+                failureMessage: null
+              }
+            });
+          } else {
+            await tx.agentExecution.update({
+              where: { id: execution.id },
+              data: { status: "WAITING", nextRunAt: new Date(), completedAt: null }
+            });
+          }
+          await tx.domainEventOutbox.upsert({
+            where: { idempotencyKey: `human-task:${taskId}:resume` },
+            update: {},
+            create: {
+              workspaceId: existing.workspaceId,
+              eventType:
+                executionType === "workflow"
+                  ? "WORKFLOW_EXECUTION_RESUME"
+                  : "AGENT_EXECUTION_RESUME",
+              aggregateType: executionType === "workflow" ? "WorkflowExecution" : "AgentExecution",
+              aggregateId: execution.id,
+              payload:
+                executionType === "workflow"
+                  ? { workflowExecutionId: execution.id, leadId, taskId }
+                  : { agentExecutionId: execution.id, leadId, taskId },
+              correlationId: execution.correlationId,
+              idempotencyKey: `human-task:${taskId}:resume`
+            }
+          });
+        }
+      }
+    }
     return tx.task.findUniqueOrThrow({ where: { id: taskId }, include: taskInclude });
+  }, {
+    maxWait: 10_000,
+    timeout: 30_000
   });
   await publishRealtimeEvent({
     entityType: "task",

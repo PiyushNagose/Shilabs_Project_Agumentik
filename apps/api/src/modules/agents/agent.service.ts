@@ -4,7 +4,6 @@ import {
   AgentStatus,
   AgentType,
   Prisma,
-  UserRole,
   type Agent,
   type AgentExecution,
   type AgentVersion
@@ -20,6 +19,7 @@ import type {
 import { AppError } from "../../shared/errors.js";
 import { prisma } from "../../shared/prisma.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
+import { isWorkspaceManager } from "../authorization/workspace-permissions.js";
 import { publishRealtimeEvent } from "../realtime/realtime.service.js";
 import type {
   CreateAgentInput,
@@ -117,7 +117,7 @@ export function workspaceIdFor(actor: AuthenticatedUser): string {
 }
 
 export function assertCanManage(actor: AuthenticatedUser): void {
-  if (actor.role !== UserRole.ADMIN && actor.role !== UserRole.SALES_MANAGER) {
+  if (!isWorkspaceManager(actor)) {
     throw new AppError(403, "AUTHORIZATION_ERROR", "Agent management requires manager access");
   }
 }
@@ -152,6 +152,7 @@ function versionDto(version: AgentVersion): AgentVersionDto {
 }
 
 function executionDto(execution: AgentExecution): AgentExecutionDto {
+  const result = execution.result as { timing?: { actualStartedAt?: string | null } } | null;
   return {
     id: execution.id,
     agentId: execution.agentId,
@@ -163,6 +164,14 @@ function executionDto(execution: AgentExecution): AgentExecutionDto {
     entityId: execution.entityId,
     leadId: execution.leadId,
     status: execution.status,
+    currentNodeId: execution.currentNodeId,
+    nextRunAt: execution.nextRunAt?.toISOString() ?? null,
+    createdAt: execution.createdAt.toISOString(),
+    actualStartedAt: result?.timing
+      ? (result.timing.actualStartedAt ?? null)
+      : execution.status === "QUEUED"
+        ? null
+        : execution.startedAt.toISOString(),
     startedAt: execution.startedAt.toISOString(),
     completedAt: execution.completedAt?.toISOString() ?? null,
     durationMs: execution.durationMs,
@@ -201,7 +210,12 @@ function agentDto(agent: AgentRecord, executions: AgentExecution[]): AgentDto {
     successfulExecutionCount: successful,
     failedExecutionCount: failed,
     successRate: completed > 0 ? Math.round((successful / completed) * 1000) / 10 : null,
-    lastExecutedAt: scoped[0]?.startedAt.toISOString() ?? null
+    lastExecutedAt:
+      scoped
+        .map((execution) => executionDto(execution).actualStartedAt)
+        .filter((value): value is string => Boolean(value))
+        .sort()
+        .at(-1) ?? null
   };
 }
 
@@ -246,6 +260,8 @@ interface NativeExecution {
   leadId: string | null;
   status: AgentExecutionStatus;
   startedAt: Date;
+  actualStartedAt?: Date | null;
+  nextRunAt?: Date | null;
   completedAt: Date | null;
   summary: string;
   result?: Prisma.InputJsonObject;
@@ -258,6 +274,9 @@ function completedStatus(
 ): AgentExecutionStatus {
   if (success.includes(status)) return AgentExecutionStatus.SUCCEEDED;
   if (failed.includes(status)) return AgentExecutionStatus.FAILED;
+  if (["QUEUED", "PENDING", "SCHEDULED"].includes(status)) return AgentExecutionStatus.QUEUED;
+  if (["ATTENTION_REQUIRED", "NEEDS_INPUT", "CONFIRMATION_REQUIRED"].includes(status))
+    return AgentExecutionStatus.HUMAN_REQUIRED;
   return AgentExecutionStatus.RUNNING;
 }
 
@@ -266,6 +285,18 @@ async function nativeExecutions(workspaceId: string): Promise<NativeExecution[]>
     await Promise.all([
       prisma.followUpAttempt.findMany({
         where: { lead: { workspaceId } },
+        include: {
+          outboundEmail: { select: { createdAt: true } },
+          sequence: { select: { status: true, stoppedAt: true } },
+          lead: {
+            select: {
+              status: true,
+              automationOwnershipState: true,
+              contact: { select: { doNotContact: true } },
+              intelligence: { select: { aiControlStatus: true, humanInterventionRequired: true } }
+            }
+          }
+        },
         orderBy: { createdAt: "desc" },
         take: 250
       }),
@@ -307,21 +338,52 @@ async function nativeExecutions(workspaceId: string): Promise<NativeExecution[]>
     ]);
 
   return [
-    ...outreach.map((run): NativeExecution => ({
-      agentType: AgentType.OUTREACH,
-      source: "FOLLOW_UP_ENGINE",
-      sourceEntityType: "FollowUpAttempt",
-      sourceEntityId: run.id,
-      leadId: run.leadId,
-      status: completedStatus(run.status, ["SENT"], ["FAILED", "BLOCKED", "CANCELLED", "SKIPPED"]),
-      startedAt: run.createdAt,
-      completedAt: run.sentAt ?? run.failedAt,
-      summary:
-        run.status === "SENT"
-          ? `Outreach sent: ${run.subject}`
-          : `Outreach ${run.status.toLowerCase()}: ${run.subject}`,
-      result: { kind: run.kind, status: run.status }
-    })),
+    ...outreach.map((run): NativeExecution => {
+      const unstarted = run.status === "SCHEDULED";
+      const stopped =
+        unstarted &&
+        (run.sequence.status === "STOPPED" ||
+          run.sequence.status === "COMPLETED" ||
+          ["WON", "LOST", "DISQUALIFIED"].includes(run.lead.status) ||
+          run.lead.contact.doNotContact);
+      const paused =
+        unstarted &&
+        (run.sequence.status === "ATTENTION_REQUIRED" ||
+          run.lead.automationOwnershipState !== "AI_ACTIVE" ||
+          ["OFF", "PAUSED"].includes(run.lead.intelligence?.aiControlStatus ?? "") ||
+          run.lead.intelligence?.humanInterventionRequired);
+      const status = stopped
+        ? AgentExecutionStatus.CANCELED
+        : paused || run.status === "BLOCKED"
+          ? AgentExecutionStatus.HUMAN_REQUIRED
+          : ["CANCELLED", "SKIPPED"].includes(run.status)
+            ? AgentExecutionStatus.CANCELED
+            : completedStatus(run.status, ["SENT"], ["FAILED"]);
+      return {
+        agentType: AgentType.OUTREACH,
+        source: "FOLLOW_UP_ENGINE",
+        sourceEntityType: "FollowUpAttempt",
+        sourceEntityId: run.id,
+        leadId: run.leadId,
+        status,
+        startedAt: run.createdAt,
+        actualStartedAt: run.outboundEmail?.createdAt ?? null,
+        nextRunAt: status === "QUEUED" ? run.scheduledAt : null,
+        completedAt:
+          run.status === "SENT"
+            ? run.sentAt
+            : ["FAILED", "CANCELLED", "SKIPPED"].includes(run.status)
+              ? run.failedAt
+              : status === "CANCELED"
+                ? run.sequence.stoppedAt
+                : null,
+        summary:
+          run.status === "SENT"
+            ? `Outreach sent: ${run.subject}`
+            : `Outreach ${status === "QUEUED" ? "scheduled" : status === "HUMAN_REQUIRED" ? "needs review" : status.toLowerCase()}: ${run.subject}`,
+        result: { kind: run.kind, status: run.status }
+      };
+    }),
     ...replies.map((run): NativeExecution => ({
       agentType: AgentType.REPLY_UNDERSTANDING,
       source: "REPLY_PROCESSING",
@@ -330,7 +392,7 @@ async function nativeExecutions(workspaceId: string): Promise<NativeExecution[]>
       leadId: run.leadId,
       status: completedStatus(run.status, ["COMPLETED", "SKIPPED"], ["FAILED"]),
       startedAt: run.createdAt,
-      completedAt: run.updatedAt,
+      completedAt: ["COMPLETED", "SKIPPED", "FAILED"].includes(run.status) ? run.updatedAt : null,
       summary:
         run.summary ??
         (run.failureMessage
@@ -350,7 +412,7 @@ async function nativeExecutions(workspaceId: string): Promise<NativeExecution[]>
       leadId: run.leadId,
       status: completedStatus(run.status, ["COMPLETED", "SKIPPED"], ["FAILED"]),
       startedAt: run.createdAt,
-      completedAt: run.createdAt,
+      completedAt: ["COMPLETED", "SKIPPED", "FAILED"].includes(run.status) ? run.createdAt : null,
       summary:
         run.reason ??
         (run.score === null
@@ -368,9 +430,9 @@ async function nativeExecutions(workspaceId: string): Promise<NativeExecution[]>
       sourceEntityType: "ProposalGenerationRun",
       sourceEntityId: run.id,
       leadId: run.leadId,
-      status: completedStatus(run.status, ["COMPLETED", "NEEDS_INPUT"], ["FAILED"]),
+      status: completedStatus(run.status, ["COMPLETED"], ["FAILED"]),
       startedAt: run.createdAt,
-      completedAt: run.updatedAt,
+      completedAt: ["COMPLETED", "FAILED"].includes(run.status) ? run.updatedAt : null,
       summary:
         run.status === "FAILED"
           ? `Proposal generation failed: ${run.failureMessage ?? "Unknown error"}`
@@ -450,7 +512,7 @@ async function nativeExecutions(workspaceId: string): Promise<NativeExecution[]>
       leadId: run.leadId,
       status: completedStatus(run.status, ["COMPLETED"], ["FAILED"]),
       startedAt: run.createdAt,
-      completedAt: run.updatedAt,
+      completedAt: ["COMPLETED", "FAILED"].includes(run.status) ? run.updatedAt : null,
       summary:
         run.summary ??
         (run.failureMessage
@@ -473,9 +535,20 @@ async function synchronizeExecutions(workspaceId: string): Promise<void> {
   for (const execution of native) {
     const agent = byType.get(execution.agentType);
     if (!agent?.currentVersion) continue;
-    const durationMs = execution.completedAt
-      ? Math.max(0, execution.completedAt.getTime() - execution.startedAt.getTime())
-      : null;
+    const actualStartedAt =
+      execution.actualStartedAt !== undefined
+        ? execution.actualStartedAt
+        : execution.status === "QUEUED"
+          ? null
+          : execution.startedAt;
+    const durationMs =
+      execution.completedAt && actualStartedAt
+        ? Math.max(0, execution.completedAt.getTime() - actualStartedAt.getTime())
+        : null;
+    const result = {
+      ...execution.result,
+      timing: { actualStartedAt: actualStartedAt?.toISOString() ?? null }
+    };
     await prisma.agentExecution.upsert({
       where: {
         workspaceId_agentId_sourceEntityType_sourceEntityId: {
@@ -496,11 +569,12 @@ async function synchronizeExecutions(workspaceId: string): Promise<void> {
         entityId: execution.leadId,
         leadId: execution.leadId,
         status: execution.status,
+        nextRunAt: execution.nextRunAt ?? null,
         startedAt: execution.startedAt,
         completedAt: execution.completedAt,
         durationMs,
         summary: execution.summary,
-        result: execution.result,
+        result,
         evaluation: {
           outcome:
             execution.status === AgentExecutionStatus.FAILED
@@ -513,10 +587,11 @@ async function synchronizeExecutions(workspaceId: string): Promise<void> {
       },
       update: {
         status: execution.status,
+        nextRunAt: execution.nextRunAt ?? null,
         completedAt: execution.completedAt,
         durationMs,
         summary: execution.summary,
-        result: execution.result,
+        result,
         evaluation: {
           outcome:
             execution.status === AgentExecutionStatus.FAILED
@@ -590,7 +665,7 @@ export async function getAgent(
   const agent = await findAgent(workspaceId, agentId);
   const executions = await prisma.agentExecution.findMany({
     where: { workspaceId, agentId, status: query.status },
-    orderBy: { startedAt: "desc" },
+    orderBy: [{ nextRunAt: { sort: "asc", nulls: "last" } }, { startedAt: "desc" }],
     take: query.limit
   });
   return { ...agentDto(agent, executions), executions: executions.map(executionDto) };

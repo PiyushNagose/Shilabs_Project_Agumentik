@@ -20,6 +20,17 @@ describe("test database environment guard", () => {
     ).not.toThrow();
   });
 
+  it("accepts an explicitly isolated test schema", () => {
+    const schemaUrl = "postgresql://shilabs:test@localhost:5433/shilabs_sales?schema=codex_test_run";
+    expect(() =>
+      assertTestDatabaseEnvironment({
+        NODE_ENV: "test",
+        DATABASE_URL: schemaUrl,
+        TEST_DATABASE_URL: schemaUrl
+      })
+    ).not.toThrow();
+  });
+
   it.each([
     [{ DATABASE_URL: testUrl, TEST_DATABASE_URL: testUrl }, "NODE_ENV must be test"],
     [
@@ -40,7 +51,7 @@ describe("test database environment guard", () => {
         DATABASE_URL: "postgresql://shilabs:test@localhost:5433/shilabs_sales",
         TEST_DATABASE_URL: "postgresql://shilabs:test@localhost:5433/shilabs_sales"
       },
-      "database name must contain a distinct test segment"
+      "database name or schema must contain a distinct test segment"
     ]
   ])("rejects unsafe test configuration", (env, message) => {
     expect(() => assertTestDatabaseEnvironment(env)).toThrow(message);

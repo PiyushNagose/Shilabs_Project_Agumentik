@@ -1,11 +1,5 @@
 import crypto from "node:crypto";
-import {
-  AgentType,
-  IntegrationAccountStatus,
-  Prisma,
-  UserRole,
-  VoiceCallStatus
-} from "@prisma/client";
+import { AgentType, IntegrationAccountStatus, Prisma, VoiceCallStatus } from "@prisma/client";
 import { getVoiceConfig, type VoiceConfig } from "@shilabs/shared-config";
 import type {
   IntegrationHealthDto,
@@ -16,6 +10,7 @@ import { AppError } from "../../shared/errors.js";
 import { prisma } from "../../shared/prisma.js";
 import { redactSecrets } from "../../shared/redaction.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
+import { isWorkspaceManager } from "../authorization/workspace-permissions.js";
 import { assertAgentCapabilityActive } from "../agents/agent.service.js";
 import { publishDomainEvent } from "../domain-events/domain-events.service.js";
 import {
@@ -191,11 +186,7 @@ function normalizePhone(phone: string | null | undefined): string | null {
 }
 
 function canAccessLead(actor: AuthenticatedUser, lead: { ownerId: string | null }): boolean {
-  return (
-    actor.role === UserRole.ADMIN ||
-    actor.role === UserRole.SALES_MANAGER ||
-    lead.ownerId === actor.id
-  );
+  return isWorkspaceManager(actor) || lead.ownerId === actor.id;
 }
 
 function isTerminalLead(status: string): boolean {

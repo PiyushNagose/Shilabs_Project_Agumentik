@@ -20,7 +20,11 @@ import { WorkflowsWorkspace } from "../workflows/WorkflowsWorkspace.js";
 import { IntegrationsWorkspace } from "../integrations/IntegrationsWorkspace.js";
 import { AiCommandCenter } from "../intelligence/AiCommandCenter.js";
 import { OrdersWorkspace } from "../orders/OrdersWorkspace.js";
+import { UsersWorkspace } from "../users/UsersWorkspace.js";
+import { SettingsWorkspace } from "../settings/SettingsWorkspace.js";
+import { ReportsWorkspace } from "../analytics/ReportsWorkspace.js";
 import { useAuth } from "./AuthProvider.js";
+import { isWorkspaceManager, navigationRole, workspaceRole } from "./workspace-access.js";
 
 const routesWithWorkspaceHeaders = new Set<AppRouteId>([
   "dashboard",
@@ -34,12 +38,16 @@ const routesWithWorkspaceHeaders = new Set<AppRouteId>([
   "command-center",
   "orders",
   "crm",
-  "workspace"
+  "workspace",
+  "users",
+  "settings",
+  "team",
+  "reports"
 ]);
 
 export function AuthenticatedShell(): React.JSX.Element {
-  const { accessToken, user, logout } = useAuth();
-  const role = user?.role ?? "SALES_REP";
+  const { accessToken, user, logout, updateCurrentUser } = useAuth();
+  const role = user ? navigationRole(user) : "SALES_REP";
   const allowedRoutes = navigationByRole[role];
   const { route, navigate } = useAppRouter(allowedRoutes);
 
@@ -62,6 +70,7 @@ export function AuthenticatedShell(): React.JSX.Element {
     content = (
       <SalesActionDashboard
         accessToken={accessToken}
+        canEscalate={isWorkspaceManager(user)}
         onOpenLead={openWorkspace}
         onOpenOperations={() => navigateTo("operations")}
       />
@@ -145,7 +154,29 @@ export function AuthenticatedShell(): React.JSX.Element {
         />
       </section>
     );
-  } else if (route.id === "crm" || route.id === "workspace") {
+  } else if (route.id === "users" || route.id === "team") {
+    content = (
+      <section className="app-page-content">
+        <UsersWorkspace accessToken={accessToken} currentUser={user} />
+      </section>
+    );
+  } else if (route.id === "reports") {
+    content = (
+      <section className="app-page-content">
+        <ReportsWorkspace accessToken={accessToken} />
+      </section>
+    );
+  } else if (route.id === "settings") {
+    content = (
+      <section className="app-page-content">
+        <SettingsWorkspace
+          accessToken={accessToken}
+          currentUser={user}
+          onUserUpdated={updateCurrentUser}
+        />
+      </section>
+    );
+  } else {
     content = (
       <CrmWorkspace
         accessToken={accessToken}
@@ -155,22 +186,12 @@ export function AuthenticatedShell(): React.JSX.Element {
         onRouteChange={openWorkspace}
       />
     );
-  } else {
-    content = (
-      <section className="crm-workspace">
-        <div className="workspace-panel reserved-workspace">
-          <div className="state-block" role="status">
-            <strong>{appRoutes[route.id].label} is not available yet</strong>
-            <span>This section has not been enabled.</span>
-          </div>
-        </div>
-      </section>
-    );
   }
 
   return (
     <AppShell
       activeRoute={route.id}
+      navigationKey={JSON.stringify(route)}
       allowedRoutes={allowedRoutes}
       user={user}
       onLogout={() => void logout()}
@@ -179,7 +200,7 @@ export function AuthenticatedShell(): React.JSX.Element {
       {!routesWithWorkspaceHeaders.has(route.id) ? (
         <section className="access-summary" aria-labelledby="access-title">
           <h1 id="access-title">{appRoutes[route.id].title}</h1>
-          <p>{user.role.replace("_", " ")} permissions are active for this account.</p>
+          <p>{workspaceRole(user).replaceAll("_", " ")} permissions are active here.</p>
         </section>
       ) : null}
       {content}

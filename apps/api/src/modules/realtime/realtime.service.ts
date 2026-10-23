@@ -1,11 +1,12 @@
 import type { IncomingMessage, Server } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
-import { getApiConfig } from "@shilabs/shared-config";
-import { UserRole } from "@prisma/client";
+import { emitOperationalAlert, getApiConfig } from "@shilabs/shared-config";
+import { RealtimeRelay } from "./realtime-relay.js";
 import { verifyAccessToken } from "../auth/auth.service.js";
 import type { AuthenticatedUser } from "../auth/auth.types.js";
 import { prisma } from "../../shared/prisma.js";
 import { resolveWorkspaceContext } from "../workspaces/workspace.service.js";
+import { isWorkspaceManager } from "../authorization/workspace-permissions.js";
 
 export type RealtimeEntityType =
   | "workspace"
@@ -47,16 +48,30 @@ interface RealtimeClient {
   socket: WebSocket;
   user: AuthenticatedUser;
   workspaceId: string;
+  accessToken: string;
 }
 
 const clients = new Map<WebSocket, RealtimeClient>();
+let relay: RealtimeRelay | null = null;
+let serverCount = 0;
+let lastRelayAlertAt = 0;
+
+function relayError(): void {
+  if (Date.now() - lastRelayAlertAt < 60000) return;
+  lastRelayAlertAt = Date.now();
+  void emitOperationalAlert({
+    category: "realtime_relay_failure",
+    severity: "error",
+    message: "Shared live updates are unavailable; database reads remain available."
+  });
+}
 
 function jsonMessage(event: RealtimeEvent): string {
   return JSON.stringify(event);
 }
 
 function canReceiveLeadEvent(user: AuthenticatedUser, ownerId: string | null | undefined): boolean {
-  if (user.role === UserRole.ADMIN || user.role === UserRole.SALES_MANAGER) return true;
+  if (isWorkspaceManager(user)) return true;
   return ownerId === null || ownerId === user.id;
 }
 
@@ -151,9 +166,34 @@ export async function publishRealtimeEvent(
   };
   const scope = await resolveRealtimeEventScope(event);
   if (!scope) return;
+  event.workspaceId = scope.workspaceId;
+  await deliverRealtimeEvent(event, scope);
+  if (relay) await relay.publish(event).catch(relayError);
+}
+
+async function deliverRealtimeEvent(
+  event: RealtimeEvent,
+  resolvedScope?: { workspaceId: string; ownerId: string | null }
+): Promise<void> {
+  const scope = resolvedScope ?? (await resolveRealtimeEventScope(event));
+  if (!scope) return;
   const message = jsonMessage(event);
   for (const client of clients.values()) {
     if (client.socket.readyState !== WebSocket.OPEN) continue;
+    if (client.workspaceId !== scope.workspaceId) continue;
+    try {
+      const user = await verifyAccessToken(client.accessToken);
+      const workspace = await resolveWorkspaceContext(user.id, client.workspaceId);
+      client.user = {
+        ...user,
+        activeWorkspaceId: workspace.workspaceId,
+        activeWorkspaceRole: workspace.role
+      };
+    } catch {
+      clients.delete(client.socket);
+      client.socket.close(1008, "Access no longer available");
+      continue;
+    }
     if (
       !canDeliverRealtimeEvent({
         clientWorkspaceId: client.workspaceId,
@@ -168,16 +208,44 @@ export async function publishRealtimeEvent(
   }
 }
 
+function nonEmptyEnvironmentValue(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  return trimmed;
+}
+
 export function installRealtimeWebSocketServer(server: Server): () => Promise<void> {
-  const wss = new WebSocketServer({ noServer: true });
+  serverCount += 1;
+  const configuredRelayUrl = nonEmptyEnvironmentValue(process.env.REALTIME_REDIS_URL);
+  const fallbackRelayUrl =
+    process.env.NODE_ENV === "test" ? undefined : nonEmptyEnvironmentValue(process.env.REDIS_URL);
+  const relayUrl = configuredRelayUrl ?? fallbackRelayUrl;
+  const configuredChannel = nonEmptyEnvironmentValue(process.env.REALTIME_REDIS_CHANNEL);
+  if (!relay && relayUrl) {
+    relay = new RealtimeRelay(
+      relayUrl,
+      configuredChannel ?? "shilabs:realtime:v1",
+      (event) => deliverRealtimeEvent(event as RealtimeEvent),
+      relayError
+    );
+  }
+  const protocol = "shilabs.realtime.v1";
+  const wss = new WebSocketServer({
+    noServer: true,
+    // Never echo the credential-bearing subprotocol in the handshake response.
+    handleProtocols: (protocols) => (protocols.has(protocol) ? protocol : false)
+  });
 
   server.on("upgrade", (request: IncomingMessage, socket, head) => {
     const host = request.headers.host ?? "localhost";
     const url = new URL(request.url ?? "/", `http://${host}`);
     if (url.pathname !== "/realtime") return;
 
-    const token = url.searchParams.get("token");
-    if (!token) {
+    const protocols =
+      request.headers["sec-websocket-protocol"]?.split(",").map((value) => value.trim()) ?? [];
+    const credentials = protocols.filter((value) => value.startsWith("bearer."));
+    const token = credentials.length === 1 ? credentials[0]?.slice("bearer.".length) : undefined;
+    if (url.searchParams.has("token") || !protocols.includes(protocol) || !token) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
       socket.destroy();
       return;
@@ -192,9 +260,15 @@ export function installRealtimeWebSocketServer(server: Server): () => Promise<vo
         const realtimeRequest = request as IncomingMessage & {
           realtimeUser?: AuthenticatedUser;
           realtimeWorkspaceId?: string;
+          realtimeAccessToken?: string;
         };
-        realtimeRequest.realtimeUser = user;
+        realtimeRequest.realtimeUser = {
+          ...user,
+          activeWorkspaceId: workspace.workspaceId,
+          activeWorkspaceRole: workspace.role
+        };
         realtimeRequest.realtimeWorkspaceId = workspace.workspaceId;
+        realtimeRequest.realtimeAccessToken = token;
         wss.handleUpgrade(request, socket, head, (ws) => {
           wss.emit("connection", ws, request);
         });
@@ -209,14 +283,16 @@ export function installRealtimeWebSocketServer(server: Server): () => Promise<vo
     const realtimeRequest = request as IncomingMessage & {
       realtimeUser?: AuthenticatedUser;
       realtimeWorkspaceId?: string;
+      realtimeAccessToken?: string;
     };
     const user = realtimeRequest.realtimeUser;
     const workspaceId = realtimeRequest.realtimeWorkspaceId;
-    if (!user || !workspaceId) {
+    const accessToken = realtimeRequest.realtimeAccessToken;
+    if (!user || !workspaceId || !accessToken) {
       socket.close(1008, "Authentication required");
       return;
     }
-    clients.set(socket, { socket, user, workspaceId });
+    clients.set(socket, { socket, user, workspaceId, accessToken });
     socket.send(
       JSON.stringify({
         type: "realtime:connected",
@@ -230,10 +306,23 @@ export function installRealtimeWebSocketServer(server: Server): () => Promise<vo
     });
   });
 
+  let closed = false;
   return () =>
     new Promise<void>((resolve) => {
-      for (const socket of wss.clients) socket.terminate();
-      clients.clear();
+      if (closed) {
+        resolve();
+        return;
+      }
+      closed = true;
+      serverCount -= 1;
+      if (serverCount === 0) {
+        relay?.close();
+        relay = null;
+      }
+      for (const socket of wss.clients) {
+        clients.delete(socket);
+        socket.terminate();
+      }
       wss.close(() => resolve());
     });
 }

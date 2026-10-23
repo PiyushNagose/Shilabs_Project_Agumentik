@@ -4,6 +4,7 @@ import { prisma } from "../../shared/prisma.js";
 import { publishRealtimeEvent } from "../realtime/realtime.service.js";
 
 type TransactionClient = Prisma.TransactionClient;
+const ownershipTransactionOptions = { maxWait: 10_000, timeout: 30_000 };
 
 interface TransitionInput {
   client: TransactionClient;
@@ -39,10 +40,13 @@ async function transitionInTransaction(input: TransitionInput): Promise<boolean>
   if (!lead.workspaceId) {
     throw new AppError(409, "CONFLICT", "Lead has no persisted workspace");
   }
-  if (
-    lead.automationOwnershipState === input.state &&
-    lead.automationOwnershipReason === input.reason
-  ) {
+  if (lead.automationOwnershipState === input.state) {
+    if (lead.automationOwnershipReason !== input.reason) {
+      await input.client.lead.update({
+        where: { id: lead.id },
+        data: { automationOwnershipReason: input.reason }
+      });
+    }
     return false;
   }
 
@@ -187,6 +191,20 @@ export async function requireHumanActionInTransaction(
     where: { leadId: input.leadId, status: "OPEN" },
     data: { mode: "HUMAN" }
   });
+  if (input.reason.startsWith("MEANINGFUL_CLIENT_REPLY")) {
+    await input.client.lead.update({
+      where: { id: input.leadId },
+      data: { nextAction: "Review customer reply and respond", nextActionAt: null }
+    });
+  }
+  const lead = await input.client.lead.findUnique({
+    where: { id: input.leadId },
+    select: { automationOwnershipState: true }
+  });
+  if (!lead) throw new AppError(404, "NOT_FOUND", "Lead not found");
+  if (lead.automationOwnershipState === "AI_ACTIVE") {
+    await transitionInTransaction({ ...input, state: "AI_STOPPED" });
+  }
   await transitionInTransaction({ ...input, state: "HUMAN_REQUIRED" });
 }
 
@@ -231,6 +249,67 @@ export async function completeHumanActionInTransaction(
       where: { conversationId: { in: conversations.map((item) => item.id) }, status: "ACTIVE" }
     });
   }
+  if (
+    input.actorType === "USER" &&
+    input.sourceType === "CONVERSATION" &&
+    input.reason === "HUMAN_REPLY_SENT"
+  ) {
+    const handoffs = await input.client.negotiationHandoff.findMany({
+      where: { leadId: input.leadId, status: { in: ["ACTIVE", "ATTENTION_REQUIRED"] } },
+      select: { id: true }
+    });
+    if (handoffs.length > 0) {
+      const handoffIds = handoffs.map((handoff) => handoff.id);
+      await input.client.negotiationHandoff.updateMany({
+        where: { id: { in: handoffIds } },
+        data: { status: "RESOLVED" }
+      });
+      await input.client.internalNotification.updateMany({
+        where: { negotiationHandoffId: { in: handoffIds }, status: { not: "ACKNOWLEDGED" } },
+        data: {
+          status: "ACKNOWLEDGED",
+          acknowledgedAt: new Date(),
+          acknowledgedByUserId: input.actorId ?? null,
+          readAt: new Date(),
+          readByUserId: input.actorId ?? null
+        }
+      });
+      await input.client.activity.create({
+        data: {
+          workspaceId: lead.workspaceId,
+          leadId: input.leadId,
+          actorType: "USER",
+          actorUserId: input.actorId ?? null,
+          sourceType: input.sourceType,
+          sourceId: input.sourceId ?? null,
+          type: "NEGOTIATION_HANDOFF",
+          title: "Negotiation handoff resolved",
+          description:
+            "The salesperson responded to the pricing request and completed the handoff.",
+          correlationId: input.correlationId ?? null,
+          visibility: "BUSINESS"
+        }
+      });
+      for (const handoffId of handoffIds) {
+        await input.client.auditEvent.create({
+          data: {
+            workspaceId: lead.workspaceId,
+            actorType: "USER",
+            actorId: input.actorId ?? null,
+            actorUserId: input.actorId ?? null,
+            sourceType: input.sourceType,
+            sourceId: input.sourceId ?? null,
+            entityType: "NegotiationHandoff",
+            entityId: handoffId,
+            action: "NEGOTIATION_HANDOFF_RESOLVED",
+            before: { status: "ACTIVE" },
+            after: { status: "RESOLVED" },
+            correlationId: input.correlationId ?? null
+          }
+        });
+      }
+    }
+  }
   const activeHandoff = await input.client.negotiationHandoff.count({
     where: { leadId: input.leadId, status: { in: ["ACTIVE", "ATTENTION_REQUIRED"] } }
   });
@@ -253,7 +332,10 @@ export async function completeHumanActionInTransaction(
 export async function requireHumanAction(
   input: Omit<TransitionInput, "client" | "state">
 ): Promise<void> {
-  await prisma.$transaction((client) => requireHumanActionInTransaction({ ...input, client }));
+  await prisma.$transaction(
+    (client) => requireHumanActionInTransaction({ ...input, client }),
+    ownershipTransactionOptions
+  );
   await publishRealtimeEvent({
     entityType: "lead",
     action: "automation-ownership-changed",
@@ -264,7 +346,10 @@ export async function requireHumanAction(
 export async function activateHuman(
   input: Omit<TransitionInput, "client" | "state">
 ): Promise<void> {
-  await prisma.$transaction((client) => activateHumanInTransaction({ ...input, client }));
+  await prisma.$transaction(
+    (client) => activateHumanInTransaction({ ...input, client }),
+    ownershipTransactionOptions
+  );
   await publishRealtimeEvent({
     entityType: "lead",
     action: "automation-ownership-changed",
@@ -273,7 +358,10 @@ export async function activateHuman(
 }
 
 export async function stopAi(input: Omit<TransitionInput, "client" | "state">): Promise<void> {
-  await prisma.$transaction((client) => stopAiInTransaction({ ...input, client }));
+  await prisma.$transaction(
+    (client) => stopAiInTransaction({ ...input, client }),
+    ownershipTransactionOptions
+  );
   await publishRealtimeEvent({
     entityType: "lead",
     action: "automation-ownership-changed",
@@ -284,8 +372,9 @@ export async function stopAi(input: Omit<TransitionInput, "client" | "state">): 
 export async function completeHumanAction(
   input: Omit<CompleteHumanActionInput, "client">
 ): Promise<{ activated: boolean }> {
-  const result = await prisma.$transaction((client) =>
-    completeHumanActionInTransaction({ ...input, client })
+  const result = await prisma.$transaction(
+    (client) => completeHumanActionInTransaction({ ...input, client }),
+    ownershipTransactionOptions
   );
   await publishRealtimeEvent({
     entityType: "lead",

@@ -2,6 +2,8 @@ import { IntegrationAccountStatus } from "@prisma/client";
 import { getAIConfig } from "../../config/ai.js";
 import { getSemrushConfig } from "../../config/semrush.js";
 import { prisma } from "../../shared/prisma.js";
+import { AppError } from "../../shared/errors.js";
+import type { AuthenticatedUser } from "../auth/auth.types.js";
 import { getCalendarHealth } from "../calendar/calendar.service.js";
 import { getAwsSesHealth } from "../email/email.service.js";
 import { getZohoBiginHealth } from "../integrations/zoho-bigin/zoho-bigin.service.js";
@@ -201,16 +203,16 @@ function mapCalendarHealth(health: CalendarHealthDto): OperationsProviderHealthD
   });
 }
 
-async function getProviderHealth(): Promise<OperationsProviderHealthDto[]> {
+async function getProviderHealth(workspaceId: string): Promise<OperationsProviderHealthDto[]> {
   const [zoho, email, calendar, voice, messaging] = await Promise.all([
     safely(
       (error) => failedHealth({ key: "zoho", label: "Zoho Bigin", provider: "ZOHO_BIGIN", error }),
-      () => getZohoBiginHealth(),
+      () => getZohoBiginHealth({ workspaceId }),
       (health) => mapIntegrationHealth("zoho", "Zoho Bigin", health)
     ),
     safely(
       (error) => failedHealth({ key: "email", label: "Email Provider", provider: "EMAIL", error }),
-      () => getAwsSesHealth(),
+      () => getAwsSesHealth({ workspaceId }),
       (health) => mapIntegrationHealth("email", "Email Provider", health)
     ),
     safely(
@@ -220,7 +222,7 @@ async function getProviderHealth(): Promise<OperationsProviderHealthDto[]> {
     ),
     safely(
       (error) => failedHealth({ key: "voice", label: "Voice Provider", provider: "TWILIO", error }),
-      () => getVoiceHealth(),
+      () => getVoiceHealth({ workspaceId }),
       (health) => mapIntegrationHealth("voice", "Voice Provider", health)
     ),
     safely(
@@ -260,16 +262,17 @@ function workDetail(event: {
   return `${event.eventType} for ${event.aggregateType}`;
 }
 
-async function getWorkSummary(): Promise<OperationsDashboardDto["work"]> {
+async function getWorkSummary(workspaceId: string): Promise<OperationsDashboardDto["work"]> {
   const [groups, recent] = await Promise.all([
     prisma.domainEventOutbox.groupBy({
       by: ["status"],
-      where: { eventType: { notIn: [...NON_ACTIONABLE_DOMAIN_EVENT_TYPES] } },
+      where: { workspaceId, eventType: { notIn: [...NON_ACTIONABLE_DOMAIN_EVENT_TYPES] } },
       _count: { _all: true }
     }),
     prisma.domainEventOutbox.findMany({
       where: {
-        status: { in: ["FAILED", "ATTENTION_REQUIRED", "QUEUED", "PROCESSING"] },
+        workspaceId,
+        status: { in: ["PENDING", "FAILED", "ATTENTION_REQUIRED", "QUEUED", "PROCESSING"] },
         eventType: { notIn: [...NON_ACTIONABLE_DOMAIN_EVENT_TYPES] }
       },
       orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
@@ -294,15 +297,22 @@ async function getWorkSummary(): Promise<OperationsDashboardDto["work"]> {
       type: event.eventType,
       status: event.status,
       detail: workDetail(event),
-      occurredAt: event.updatedAt.toISOString()
+      occurredAt: event.updatedAt.toISOString(),
+      nextRunAt:
+        ["PENDING", "QUEUED"].includes(event.status) ||
+        (event.status === "FAILED" && event.attempts < event.maxAttempts && !event.deadLetteredAt)
+          ? event.nextAttemptAt.toISOString()
+          : null
     }))
   };
 }
 
-async function getUnsyncedRecords(): Promise<OperationsDashboardDto["unsyncedRecords"]> {
+async function getUnsyncedRecords(
+  workspaceId: string
+): Promise<OperationsDashboardDto["unsyncedRecords"]> {
   const groups = await prisma.externalRecordMapping.groupBy({
     by: ["provider", "syncStatus"],
-    where: { syncStatus: { not: "SYNCED" } },
+    where: { workspaceId, syncStatus: { not: "SYNCED" } },
     _count: { _all: true }
   });
 
@@ -334,7 +344,7 @@ function providerError(input: {
   };
 }
 
-async function getProviderErrors(): Promise<OperationsProviderErrorDto[]> {
+async function getProviderErrors(workspaceId: string): Promise<OperationsProviderErrorDto[]> {
   const [
     syncRuns,
     mappings,
@@ -346,12 +356,16 @@ async function getProviderErrors(): Promise<OperationsProviderErrorDto[]> {
     proposals
   ] = await Promise.all([
     prisma.integrationSyncRun.findMany({
-      where: { OR: [{ status: { in: ["FAILED", "PARTIAL"] } }, { lastError: { not: null } }] },
+      where: {
+        workspaceId,
+        OR: [{ status: { in: ["FAILED", "PARTIAL"] } }, { lastError: { not: null } }]
+      },
       orderBy: { updatedAt: "desc" },
       take: 10
     }),
     prisma.externalRecordMapping.findMany({
       where: {
+        workspaceId,
         OR: [{ syncStatus: { in: ["FAILED", "CONFLICT"] } }, { lastErrorMessage: { not: null } }]
       },
       orderBy: { updatedAt: "desc" },
@@ -359,6 +373,7 @@ async function getProviderErrors(): Promise<OperationsProviderErrorDto[]> {
     }),
     prisma.domainEventOutbox.findMany({
       where: {
+        workspaceId,
         status: { in: ["FAILED", "ATTENTION_REQUIRED"] },
         eventType: { notIn: [...NON_ACTIONABLE_DOMAIN_EVENT_TYPES] }
       },
@@ -366,22 +381,26 @@ async function getProviderErrors(): Promise<OperationsProviderErrorDto[]> {
       take: 10
     }),
     prisma.outboundEmail.findMany({
-      where: { status: { in: ["BLOCKED", "BOUNCED", "COMPLAINED", "FAILED"] } },
+      where: {
+        workspaceId,
+        status: { in: ["BLOCKED", "BOUNCED", "COMPLAINED", "FAILED"] }
+      },
       orderBy: { updatedAt: "desc" },
       take: 10
     }),
     prisma.voiceCallAttempt.findMany({
-      where: { status: { in: ["FAILED", "BLOCKED", "NOT_CONFIGURED"] } },
+      where: { workspaceId, status: { in: ["FAILED", "BLOCKED", "NOT_CONFIGURED"] } },
       orderBy: { updatedAt: "desc" },
       take: 10
     }),
     prisma.outboundWhatsAppMessage.findMany({
-      where: { status: { in: ["FAILED", "BLOCKED", "NOT_CONFIGURED"] } },
+      where: { workspaceId, status: { in: ["FAILED", "BLOCKED", "NOT_CONFIGURED"] } },
       orderBy: { updatedAt: "desc" },
       take: 10
     }),
     prisma.meetingRequest.findMany({
       where: {
+        workspaceId,
         OR: [
           { status: "ATTENTION_REQUIRED" },
           { providerSyncStatus: { in: ["FAILED", "NOT_CONFIGURED"] } },
@@ -392,7 +411,10 @@ async function getProviderErrors(): Promise<OperationsProviderErrorDto[]> {
       take: 10
     }),
     prisma.proposal.findMany({
-      where: { zohoTimelineSyncStatus: { in: ["FAILED", "NOT_CONFIGURED"] } },
+      where: {
+        workspaceId,
+        zohoTimelineSyncStatus: { in: ["FAILED", "NOT_CONFIGURED"] }
+      },
       orderBy: { updatedAt: "desc" },
       take: 10
     })
@@ -514,7 +536,7 @@ function usageIndicator(input: {
   };
 }
 
-async function getUsageIndicators(): Promise<OperationsUsageIndicatorDto[]> {
+async function getUsageIndicators(workspaceId: string): Promise<OperationsUsageIndicatorDto[]> {
   const voiceConfig = getVoiceConfig();
   const messagingConfig = getMessagingConfig();
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
@@ -529,15 +551,17 @@ async function getUsageIndicators(): Promise<OperationsUsageIndicatorDto[]> {
     briefingRuns,
     meetingConfirmations
   ] = await Promise.all([
-    prisma.outboundEmail.count({ where: { status: { in: ["SENT", "DELIVERED"] } } }),
-    prisma.emailProviderEvent.count({ where: { receivedAt: { gte: since } } }),
-    prisma.voiceCallAttempt.count(),
-    prisma.outboundWhatsAppMessage.count(),
-    prisma.whatsAppProviderEvent.count({ where: { receivedAt: { gte: since } } }),
-    prisma.proposalGenerationRun.count(),
-    prisma.replyProcessingRun.count(),
-    prisma.briefingRun.count(),
-    prisma.meetingRequest.count({ where: { status: "CONFIRMED" } })
+    prisma.outboundEmail.count({
+      where: { workspaceId, status: { in: ["SENT", "DELIVERED"] } }
+    }),
+    prisma.emailProviderEvent.count({ where: { workspaceId, receivedAt: { gte: since } } }),
+    prisma.voiceCallAttempt.count({ where: { workspaceId } }),
+    prisma.outboundWhatsAppMessage.count({ where: { workspaceId } }),
+    prisma.whatsAppProviderEvent.count({ where: { workspaceId, receivedAt: { gte: since } } }),
+    prisma.proposalGenerationRun.count({ where: { lead: { workspaceId } } }),
+    prisma.replyProcessingRun.count({ where: { lead: { workspaceId } } }),
+    prisma.briefingRun.count({ where: { lead: { workspaceId } } }),
+    prisma.meetingRequest.count({ where: { workspaceId, status: "CONFIRMED" } })
   ]);
 
   return [
@@ -595,13 +619,20 @@ async function getUsageIndicators(): Promise<OperationsUsageIndicatorDto[]> {
   ];
 }
 
-export async function getOperationsDashboard(): Promise<OperationsDashboardDto> {
+export async function getOperationsDashboard(
+  actor: AuthenticatedUser
+): Promise<OperationsDashboardDto> {
+  const workspaceId = actor.activeWorkspaceId;
+  if (!workspaceId) {
+    throw new AppError(403, "AUTHORIZATION_ERROR", "An active workspace is required");
+  }
+
   const [providerHealth, work, unsyncedRecords, providerErrors, usage] = await Promise.all([
-    getProviderHealth(),
-    getWorkSummary(),
-    getUnsyncedRecords(),
-    getProviderErrors(),
-    getUsageIndicators()
+    getProviderHealth(workspaceId),
+    getWorkSummary(workspaceId),
+    getUnsyncedRecords(workspaceId),
+    getProviderErrors(workspaceId),
+    getUsageIndicators(workspaceId)
   ]);
 
   return {

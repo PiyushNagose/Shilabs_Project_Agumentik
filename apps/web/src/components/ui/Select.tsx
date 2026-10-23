@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 export interface SelectOption {
   label: string;
   value: string;
+  description?: string;
 }
 
 export function Select({
@@ -74,8 +75,11 @@ export function Select({
         <div className="themed-select-menu" role="listbox" aria-label={ariaLabel}>
           {options.map((option) => (
             <button
+              aria-label={
+                option.description ? `${option.label} - ${option.description}` : option.label
+              }
               aria-selected={option.value === value}
-              className={option.value === value ? "selected" : ""}
+              className={`${option.value === value ? "selected" : ""}${option.description ? " detailed-option" : ""}`}
               key={option.value}
               onClick={() => {
                 onChange(option.value);
@@ -84,7 +88,14 @@ export function Select({
               role="option"
               type="button"
             >
-              {option.label}
+              {option.description ? (
+                <span className="themed-select-option-copy">
+                  <span>{option.label}</span>
+                  <small>{option.description}</small>
+                </span>
+              ) : (
+                option.label
+              )}
             </button>
           ))}
         </div>

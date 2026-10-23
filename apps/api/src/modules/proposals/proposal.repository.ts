@@ -28,20 +28,27 @@ export const proposalInclude = {
 
 export type ProposalRecord = Prisma.ProposalGetPayload<{ include: typeof proposalInclude }>;
 
-export function findProposalById(id: string): Promise<ProposalRecord | null> {
-  return prisma.proposal.findUnique({ where: { id }, include: proposalInclude });
+export function findProposalById(id: string, workspaceId: string): Promise<ProposalRecord | null> {
+  return prisma.proposal.findFirst({ where: { id, workspaceId }, include: proposalInclude });
 }
 
-export function findProposalByIdempotencyKey(key: string): Promise<ProposalRecord | null> {
-  return prisma.proposal.findUnique({ where: { idempotencyKey: key }, include: proposalInclude });
+export function findProposalByIdempotencyKey(
+  key: string,
+  workspaceId: string
+): Promise<ProposalRecord | null> {
+  return prisma.proposal.findFirst({
+    where: { idempotencyKey: key, workspaceId },
+    include: proposalInclude
+  });
 }
 
 export function listProposalRecords(input: {
+  workspaceId: string;
   where: Prisma.ProposalWhereInput;
   take: number;
 }): Promise<ProposalRecord[]> {
   return prisma.proposal.findMany({
-    where: input.where,
+    where: { AND: [{ workspaceId: input.workspaceId }, input.where] },
     include: proposalInclude,
     orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
     take: input.take

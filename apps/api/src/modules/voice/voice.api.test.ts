@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import request from "supertest";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { UserRole, UserStatus } from "@prisma/client";
+import { UserRole, UserStatus, WorkspaceMemberStatus, WorkspaceRole } from "@prisma/client";
 import type {
   AuthResponse,
   IntegrationHealthDto,
@@ -73,6 +73,11 @@ async function cleanup(): Promise<void> {
 }
 
 async function seedUsers(): Promise<void> {
+  const workspace = await prisma.workspace.upsert({
+    where: { slug: "default" },
+    create: { name: "Default Workspace", slug: "default" },
+    update: {}
+  });
   const passwordHash = await hashPassword(password);
   await prisma.user.createMany({
     data: [
@@ -93,6 +98,17 @@ async function seedUsers(): Promise<void> {
         status: UserStatus.ACTIVE
       }
     ]
+  });
+  const users = await prisma.user.findMany({
+    where: { email: { in: [adminEmail, repEmail] } }
+  });
+  await prisma.workspaceMember.createMany({
+    data: users.map((user) => ({
+      workspaceId: workspace.id,
+      userId: user.id,
+      role: user.role === UserRole.ADMIN ? WorkspaceRole.ADMIN : WorkspaceRole.SALES_REP,
+      status: WorkspaceMemberStatus.ACTIVE
+    }))
   });
 }
 
@@ -169,12 +185,18 @@ describe("R22 voice API", () => {
   }, 45000);
 
   it("ingests Exotel status callbacks and updates persisted call state", async () => {
+    const workspace = await prisma.workspace.upsert({
+      where: { slug: "default" },
+      create: { name: "Default Workspace", slug: "default" },
+      update: {}
+    });
     const stage = await prisma.pipelineStage.findUniqueOrThrow({ where: { key: "NEW" } });
     const company = await prisma.company.create({
-      data: { name: `${companyPrefix} Exotel` }
+      data: { workspaceId: workspace.id, name: `${companyPrefix} Exotel` }
     });
     const contact = await prisma.contact.create({
       data: {
+        workspaceId: workspace.id,
         companyId: company.id,
         firstName: "Exotel",
         lastName: "Callback",
@@ -186,6 +208,7 @@ describe("R22 voice API", () => {
     });
     const lead = await prisma.lead.create({
       data: {
+        workspaceId: workspace.id,
         companyId: company.id,
         contactId: contact.id,
         stageId: stage.id,
@@ -194,6 +217,7 @@ describe("R22 voice API", () => {
     });
     const callingSequence = await prisma.callingSequence.create({
       data: {
+        workspaceId: workspace.id,
         leadId: lead.id,
         contactId: contact.id,
         cadenceOffsets: [0, 240, 4320],
@@ -203,6 +227,7 @@ describe("R22 voice API", () => {
     });
     const voiceCall = await prisma.voiceCallAttempt.create({
       data: {
+        workspaceId: workspace.id,
         leadId: lead.id,
         contactId: contact.id,
         provider: "EXOTEL",

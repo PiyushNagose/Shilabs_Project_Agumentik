@@ -4,6 +4,7 @@ import { AppError } from "../shared/errors.js";
 import { verifyAccessToken } from "../modules/auth/auth.service.js";
 import type { AuthenticatedUser } from "../modules/auth/auth.types.js";
 import { resolveWorkspaceContext } from "../modules/workspaces/workspace.service.js";
+import { workspaceRoleMatchesLegacyRoles } from "../modules/authorization/workspace-permissions.js";
 
 function getBearerToken(request: Request): string {
   const authorization = request.header("authorization");
@@ -24,7 +25,11 @@ export async function requireAuth(
     const user = await verifyAccessToken(token);
     const workspace = await resolveWorkspaceContext(user.id, request.header("x-workspace-id"));
     request.workspace = workspace;
-    request.user = { ...user, activeWorkspaceId: workspace.workspaceId };
+    request.user = {
+      ...user,
+      activeWorkspaceId: workspace.workspaceId,
+      activeWorkspaceRole: workspace.role
+    };
     request.accessToken = token;
     next();
   } catch (error) {
@@ -43,7 +48,7 @@ export function getRequiredUser(request: Request): AuthenticatedUser {
 export function requireRole(allowedRoles: readonly UserRole[]) {
   return (request: Request, _response: Response, next: NextFunction): void => {
     const user = getRequiredUser(request);
-    if (!allowedRoles.includes(user.role)) {
+    if (!workspaceRoleMatchesLegacyRoles(user, allowedRoles)) {
       next(new AppError(403, "AUTHORIZATION_ERROR", "Insufficient role permissions"));
       return;
     }
@@ -55,7 +60,7 @@ export function requireRole(allowedRoles: readonly UserRole[]) {
 export function requireSelfOrRole(allowedRoles: readonly UserRole[]) {
   return (request: Request, _response: Response, next: NextFunction): void => {
     const user = getRequiredUser(request);
-    if (request.params.id === user.id || allowedRoles.includes(user.role)) {
+    if (request.params.id === user.id || workspaceRoleMatchesLegacyRoles(user, allowedRoles)) {
       next();
       return;
     }

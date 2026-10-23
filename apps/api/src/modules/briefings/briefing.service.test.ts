@@ -157,6 +157,7 @@ async function seedBase(): Promise<{
   });
   const kb = await prisma.knowledgeBaseEntry.create({
     data: {
+      workspaceId: workspace.id,
       key: "r26-briefing-service",
       title: "R26 briefing service",
       category: "SERVICE",

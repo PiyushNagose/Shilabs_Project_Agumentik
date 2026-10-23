@@ -9,6 +9,7 @@ const sesMailSchema = z.object({
     .looseObject({
       from: z.array(z.string()).optional(),
       to: z.array(z.string()).optional(),
+      cc: z.array(z.string()).optional(),
       subject: z.string().optional(),
       messageId: z.string().optional(),
       date: z.string().optional()
@@ -73,7 +74,20 @@ export const sesInboundNotificationSchema = z.object({
   receipt: z.record(z.string(), z.unknown()).optional(),
   content: z.string().optional(),
   textBody: z.string().optional(),
-  htmlBody: z.string().optional()
+  htmlBody: z.string().optional(),
+  attachments: z
+    .array(
+      z.object({
+        fileName: z.string().min(1).max(255),
+        contentType: z.string().min(1).max(255),
+        sizeBytes: z.number().int().nonnegative(),
+        contentId: z.string().max(255).optional(),
+        disposition: z.enum(["attachment", "inline"]).optional(),
+        providerAttachmentId: z.string().max(500).optional()
+      })
+    )
+    .max(100)
+    .optional()
 });
 
 export type SesInboundNotification = z.infer<typeof sesInboundNotificationSchema>;

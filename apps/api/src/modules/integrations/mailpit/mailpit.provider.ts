@@ -47,12 +47,23 @@ export class MailpitEmailProvider implements EmailProvider {
       this.transport.sendMail({
         from: input.from,
         to: input.to,
+        cc: input.cc,
         replyTo: input.replyTo ?? undefined,
         subject: input.subject,
         text: input.textBody ?? undefined,
         html: input.htmlBody ?? undefined,
+        attachments: input.attachments?.map((attachment) => ({
+          filename: attachment.fileName,
+          contentType: attachment.contentType,
+          content: Buffer.from(attachment.content),
+          cid: attachment.contentId ?? undefined,
+          contentDisposition: attachment.disposition
+        })),
         headers: {
-          "X-Shilabs-Idempotency-Key": input.idempotencyKey
+          "X-Shilabs-Idempotency-Key": input.idempotencyKey,
+          ...(input.threadId ? { "X-Shilabs-Thread-Id": input.threadId } : {}),
+          ...(input.inReplyTo ? { "In-Reply-To": input.inReplyTo } : {}),
+          ...(input.references?.length ? { References: input.references.join(" ") } : {})
         }
       }),
       "Mailpit SMTP send failed"

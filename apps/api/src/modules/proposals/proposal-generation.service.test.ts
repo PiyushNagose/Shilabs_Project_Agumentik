@@ -125,7 +125,8 @@ async function cleanup(): Promise<void> {
 }
 
 async function seedActor() {
-  return prisma.user.create({
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
+  const user = await prisma.user.create({
     data: {
       email: actorEmail,
       passwordHash: await hashPassword("CorrectHorse123!"),
@@ -135,6 +136,7 @@ async function seedActor() {
       status: UserStatus.ACTIVE
     }
   });
+  return { ...user, activeWorkspaceId: workspace.id };
 }
 
 async function seedLeadAndDeal() {
@@ -202,8 +204,10 @@ async function seedLeadAndDeal() {
 }
 
 async function seedApprovedKnowledge() {
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
   const entry = await prisma.knowledgeBaseEntry.create({
     data: {
+      workspaceId: workspace.id,
       key: `r15-${randomUUID()}`,
       title: "R15 Approved Proposal Knowledge",
       category: "PROPOSAL",

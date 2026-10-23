@@ -308,7 +308,7 @@ describe("R16 proposal send service", () => {
     expect(result.zohoTimeline).toBeNull();
   });
 
-  it("persists missing Zoho config without changing confirmed proposal send", async () => {
+  it("does not require Zoho configuration for a native CRM proposal", async () => {
     const { actor, approved } = await seedApprovedProposal();
     const provider = new TestEmailProvider();
 
@@ -324,8 +324,8 @@ describe("R16 proposal send service", () => {
 
     expect(result.outboundEmail.status).toBe("SENT");
     expect(result.proposal.status).toBe("SENT");
-    expect(result.proposal.zohoTimelineSyncStatus).toBe("NOT_CONFIGURED");
-    expect(result.zohoTimeline?.status).toBe("NOT_CONFIGURED");
+    expect(result.proposal.zohoTimelineSyncStatus).toBe("NOT_REQUIRED");
+    expect(result.zohoTimeline?.status).toBe("SKIPPED");
   });
 
   it("retries Zoho only after an already confirmed proposal email send", async () => {

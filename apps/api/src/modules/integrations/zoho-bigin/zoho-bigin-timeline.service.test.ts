@@ -40,12 +40,31 @@ function noteSuccessResponse(): Response {
 }
 
 async function cleanup(): Promise<void> {
+  const contacts = await prisma.contact.findMany({
+    where: { email: "timeline@example.local" },
+    select: { id: true }
+  });
+  const companies = await prisma.company.findMany({
+    where: { name: "R4 Timeline Company" },
+    select: { id: true }
+  });
   const mappings = await prisma.externalRecordMapping.findMany({
     where: { provider: "ZOHO_BIGIN", externalRecordId: { startsWith: "r4-timeline-" } }
   });
-  const leadIds = mappings
+  const mappedLeadIds = mappings
     .filter((mapping) => mapping.entityType === "LEAD")
     .map((mapping) => mapping.localEntityId);
+  const leads = await prisma.lead.findMany({
+    where: {
+      OR: [
+        { id: { in: mappedLeadIds } },
+        { contactId: { in: contacts.map(({ id }) => id) } },
+        { companyId: { in: companies.map(({ id }) => id) } }
+      ]
+    },
+    select: { id: true }
+  });
+  const leadIds = leads.map(({ id }) => id);
   const activityIds = mappings
     .filter((mapping) => mapping.entityType === "ACTIVITY")
     .map((mapping) => mapping.localEntityId);
@@ -153,6 +172,37 @@ describe("Zoho timeline append", () => {
     const second = await appendActivityToZohoTimeline({ activityId, env, transport });
     expect(second.status).toBe("SKIPPED");
     expect(transport).toHaveBeenCalledTimes(2);
+  });
+
+  it("skips optional Zoho timeline sync for a native CRM lead", async () => {
+    const activityId = await createMappedActivity();
+    const activity = await prisma.activity.findUniqueOrThrow({
+      where: { id: activityId },
+      select: { leadId: true }
+    });
+    await prisma.externalRecordMapping.deleteMany({
+      where: {
+        provider: "ZOHO_BIGIN",
+        entityType: "LEAD",
+        localEntityId: activity.leadId
+      }
+    });
+    const transport = vi.fn<FetchTransport>();
+
+    const result = await appendActivityToZohoTimeline({
+      activityId,
+      env: {
+        ...env,
+        ZOHO_BIGIN_ACCOUNTS_URL: "",
+        ZOHO_BIGIN_API_DOMAIN: "",
+        ZOHO_BIGIN_TIMEOUT_MS: "0",
+        ZOHO_BIGIN_TIMELINE_RELATED_MODULE: ""
+      },
+      transport
+    });
+
+    expect(result).toMatchObject({ status: "SKIPPED", lastError: null });
+    expect(transport).not.toHaveBeenCalled();
   });
 
   it("does not create a successful timeline mapping when Zoho rejects the write", async () => {

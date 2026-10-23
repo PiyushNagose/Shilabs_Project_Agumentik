@@ -49,7 +49,8 @@ async function cleanup(): Promise<void> {
 }
 
 async function seedUser(email: string, role: UserRole = UserRole.ADMIN) {
-  return prisma.user.create({
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
+  const user = await prisma.user.create({
     data: {
       email,
       passwordHash: await hashPassword("CorrectHorse123!"),
@@ -59,6 +60,7 @@ async function seedUser(email: string, role: UserRole = UserRole.ADMIN) {
       status: UserStatus.ACTIVE
     }
   });
+  return { ...user, activeWorkspaceId: workspace.id };
 }
 
 async function seedLeadAndDeal() {

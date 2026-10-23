@@ -10,8 +10,10 @@ import {
   getAiCommandCenterController,
   getLeadIntelligenceController,
   refreshLeadIntelligenceController,
-  updateLeadIntelligenceControlsController
+  updateLeadIntelligenceControlsController,
+  uploadLeadDocumentController
 } from "./lead-intelligence.controller.js";
+import { parseLeadDocumentUpload } from "./lead-document-upload.js";
 import {
   createLeadDocumentSchema,
   updateLeadIntelligenceControlsSchema
@@ -42,6 +44,12 @@ leadIntelligenceRoutes.post(
   requireRole([UserRole.ADMIN, UserRole.SALES_MANAGER]),
   validateBody(createLeadDocumentSchema),
   asyncHandler(createLeadDocumentController)
+);
+leadIntelligenceRoutes.post(
+  "/leads/:leadId/documents/upload",
+  requireRole([UserRole.ADMIN, UserRole.SALES_MANAGER]),
+  parseLeadDocumentUpload,
+  asyncHandler(uploadLeadDocumentController)
 );
 leadIntelligenceRoutes.delete(
   "/leads/:leadId/documents/:documentId",

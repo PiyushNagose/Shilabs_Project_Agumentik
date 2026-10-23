@@ -20,7 +20,7 @@ export const createDealSchema = z.object({
   stageId: z.string().trim().min(1).optional(),
   ownerId: z.string().trim().min(1).nullable().optional(),
   value: decimalString.nullable().optional(),
-  currency: z.string().trim().length(3).default("INR"),
+  currency: z.string().trim().length(3).optional(),
   probability: z.number().int().min(0).max(100).optional(),
   status: dealStatusSchema.optional(),
   proposalStatus: proposalStatusSchema.nullable().optional(),

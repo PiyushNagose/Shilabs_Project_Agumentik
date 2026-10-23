@@ -7,10 +7,16 @@ import {
   createUserController,
   getUserController,
   listUsersController,
+  updateOwnProfileController,
   updateUserController,
   updateUserStatusController
 } from "./user.controller.js";
-import { createUserSchema, updateUserSchema, updateUserStatusSchema } from "./user.schemas.js";
+import {
+  createUserSchema,
+  updateOwnProfileSchema,
+  updateUserSchema,
+  updateUserStatusSchema
+} from "./user.schemas.js";
 
 export const userRoutes = Router();
 
@@ -19,6 +25,11 @@ userRoutes.get(
   "/",
   requireRole([UserRole.ADMIN, UserRole.SALES_MANAGER]),
   asyncHandler(listUsersController)
+);
+userRoutes.patch(
+  "/me/profile",
+  validateBody(updateOwnProfileSchema),
+  asyncHandler(updateOwnProfileController)
 );
 userRoutes.get("/:id", asyncHandler(getUserController));
 userRoutes.post(

@@ -82,7 +82,7 @@ describe("WorkflowBuilder", () => {
     expect(conditionNode).toBeDefined();
     if (conditionNode) fireEvent.click(conditionNode);
     expect(screen.getByDisplayValue("false")).toBeTruthy();
-    expect(screen.getByText("Node settings")).toBeTruthy();
+    expect(screen.getByText("Step settings")).toBeTruthy();
 
     const palette = screen.getByLabelText("Workflow nodes");
     for (const label of [
@@ -101,5 +101,16 @@ describe("WorkflowBuilder", () => {
     for (const action of ["Save draft", "Validate", "Preview", "Publish"]) {
       expect(screen.getByRole("button", { name: new RegExp(action, "i") })).toBeTruthy();
     }
+
+    const publishButton = screen.getByRole("button", { name: /published/i });
+    expect(publishButton.hasAttribute("disabled")).toBe(true);
+    expect(screen.getByText("PUBLISHED")).toBeTruthy();
+
+    const waitButton = within(palette).getByText("Wait").closest("button");
+    expect(waitButton).toBeTruthy();
+    if (!waitButton) throw new Error("Wait palette action is missing");
+    fireEvent.click(waitButton);
+    expect(screen.getByRole("button", { name: /^publish$/i }).hasAttribute("disabled")).toBe(false);
+    expect(screen.getByText("UNSAVED")).toBeTruthy();
   });
 });
