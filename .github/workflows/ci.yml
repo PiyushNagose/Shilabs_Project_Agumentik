@@ -63,4 +63,5 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: npx playwright install --with-deps chromium
+      - run: node scripts/seed-browser-tests.cjs
       - run: npm run test:visual

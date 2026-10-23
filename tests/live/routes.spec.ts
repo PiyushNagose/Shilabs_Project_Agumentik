@@ -42,7 +42,7 @@ for (const path of paths) {
         errors.push(`HTTP ${String(response.status())} ${new URL(response.url()).pathname}`);
     });
     const waitForContent = async (): Promise<void> => {
-      await expect(page.locator("main h1, main h2").first()).toBeVisible();
+      await expect(page.locator("main h1, main h2, main .state-block h3").first()).toBeVisible();
       await expect(
         page.locator(".state-block").filter({
           hasText: /loading|fetching|preparing|unavailable|could not/i
