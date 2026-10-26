@@ -284,6 +284,15 @@ export function listLeads(
   return apiRequest<PaginatedResponse<LeadDto>>(`/api/leads${toQueryString(params)}`, accessToken);
 }
 
+export async function listAllLeads(accessToken: string, params: Omit<LeadListParams, "page" | "pageSize"> = {}): Promise<LeadDto[]> {
+  const first = await listLeads(accessToken, { ...params, page: 1, pageSize: 100 });
+  const leads = [...first.items];
+  for (let page = 2; page <= first.totalPages; page += 1) {
+    leads.push(...(await listLeads(accessToken, { ...params, page, pageSize: 100 })).items);
+  }
+  return leads;
+}
+
 export function createLead(accessToken: string, body: LeadBody): Promise<LeadDto> {
   return apiRequest<LeadDto>("/api/leads", accessToken, {
     method: "POST",

@@ -138,3 +138,32 @@ test("report counts match recorded activity rather than substituting overall lea
     await expect(region.locator(".accountability-metric").filter({ has: page.getByText(label, { exact: true }) }).locator("strong")).toHaveText(String(value));
   }
 });
+
+test("company pipeline values match open deals rather than lead estimates", async ({ page, request }) => {
+  await page.goto("/companies");
+  const token = await page.evaluate(() => localStorage.getItem("shilabs.accessToken"));
+  const base = process.env.LIVE_FLOW_API_URL || process.env.VITE_API_BASE_URL;
+  async function get<T>(path: string): Promise<T> {
+    const response = await request.get(`${base}${path}`, { headers: { Authorization: `Bearer ${token}` } });
+    expect(response.ok()).toBeTruthy();
+    return await response.json() as T;
+  }
+  const companies = await get<CompanyDto[]>("/api/companies");
+  const first = await get<PaginatedResponse<DealDto>>("/api/deals?status=OPEN&page=1&pageSize=100");
+  const deals = [...first.items];
+  for (let page = 2; page <= first.totalPages; page += 1) {
+    deals.push(...(await get<PaginatedResponse<DealDto>>(`/api/deals?status=OPEN&page=${page}&pageSize=100`)).items);
+  }
+  for (const company of companies) {
+    const open = deals.filter(deal => deal.lead.companyId === company.id);
+    const expected = await page.evaluate((records) => {
+      if (records.length === 0) return "No open deals";
+      const totals = new Map<string, number>();
+      for (const record of records) if (record.value !== null) totals.set(record.currency, (totals.get(record.currency) ?? 0) + Number(record.value));
+      if (totals.size === 0) return "Value not set";
+      return [...totals].sort(([a], [b]) => a.localeCompare(b)).map(([currency, value]) => new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: 2 }).format(value)).join(", ");
+    }, open);
+    const card = page.locator(".company-card").filter({ has: page.getByRole("heading", { name: company.name, exact: true }) });
+    await expect(card.locator(".company-facts > div").filter({ has: page.getByText("Open pipeline", { exact: true }) }).locator("dd")).toHaveText(expected);
+  }
+});

@@ -1,4 +1,4 @@
-import type { ActivityDto, CompanyDto, ContactDto, LeadDto } from "@shilabs/shared-types";
+import type { ActivityDto, CompanyDto, ContactDto, DealDto, LeadDto } from "@shilabs/shared-types";
 import {
   ArrowUpRight,
   Building2,
@@ -20,8 +20,9 @@ import {
   createCompany,
   listCompanies,
   listContacts,
+  listDeals,
   listLeadActivities,
-  listLeads
+  listAllLeads
 } from "../../services/api-client.js";
 import { apiErrorMessage } from "../../services/api/core.js";
 import { LeadTimeline, leadName } from "../leads/LeadExperience.js";
@@ -34,6 +35,7 @@ interface CompaniesData {
   companies: CompanyDto[];
   contacts: ContactDto[];
   leads: LeadDto[];
+  deals: DealDto[];
 }
 
 interface CompanyDetailData {
@@ -55,15 +57,25 @@ function companyOwners(leads: LeadDto[]): NonNullable<LeadDto["owner"]>[] {
   return [...owners.values()];
 }
 
-function pipelineValue(leads: LeadDto[]): string {
-  const total = leads.reduce((sum, lead) => sum + Number(lead.estimatedValue ?? 0), 0);
-  if (total === 0) return "Not set";
-  const currency = leads.find((lead) => lead.estimatedValue)?.currency ?? "USD";
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency,
-    maximumFractionDigits: 0
-  }).format(total);
+export function companyPipelineValue(deals: Pick<DealDto, "status" | "currency" | "value">[]): string {
+  const open = deals.filter((deal) => deal.status === "OPEN");
+  if (open.length === 0) return "No open deals";
+  const totals = new Map<string, number>();
+  for (const deal of open) {
+    if (deal.value !== null) totals.set(deal.currency, (totals.get(deal.currency) ?? 0) + Number(deal.value));
+  }
+  if (totals.size === 0) return "Value not set";
+  return [...totals].sort(([left], [right]) => left.localeCompare(right)).map(([currency, value]) =>
+    new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: 2 }).format(value)
+  ).join(", ");
+}
+
+async function listOpenCompanyDeals(accessToken: string): Promise<DealDto[]> {
+  const first = await listDeals(accessToken, { status: "OPEN", page: 1, pageSize: 100 });
+  const remaining = await Promise.all(Array.from({ length: Math.max(0, first.totalPages - 1) }, (_, index) =>
+    listDeals(accessToken, { status: "OPEN", page: index + 2, pageSize: 100 })
+  ));
+  return [first.items, ...remaining.map((page) => page.items)].flat();
 }
 
 function websiteHref(company: CompanyDto): string | null {
@@ -200,21 +212,20 @@ export function CompaniesWorkspace({
   const resource = usePersistedResource<CompaniesData>({
     scope: `companies:${accessToken}`,
     load: async () => {
-      const [companies, contacts, leadPage] = await Promise.all([
+      const [companies, contacts, leads, deals] = await Promise.all([
         listCompanies(accessToken),
         listContacts(accessToken),
-        listLeads(accessToken, {
-          page: 1,
-          pageSize: 100,
+        listAllLeads(accessToken, {
           sort: "lastActivityAt",
           direction: "desc"
-        })
+        }),
+        listOpenCompanyDeals(accessToken)
       ]);
-      return { companies, contacts, leads: leadPage.items };
+      return { companies, contacts, leads, deals };
     },
     accepts: (event) =>
       event.type === "realtime:reconnected" ||
-      ["workspace", "company", "contact", "lead", "activity"].includes(event.entityType),
+      ["workspace", "company", "contact", "lead", "activity", "deal", "pipeline"].includes(event.entityType),
     errorMessage: "Companies could not be loaded"
   });
 
@@ -253,7 +264,7 @@ export function CompaniesWorkspace({
     errorMessage: "Company details could not be loaded"
   });
 
-  const data = resource.data ?? { companies: [], contacts: [], leads: [] };
+  const data = resource.data ?? { companies: [], contacts: [], leads: [], deals: [] };
   const industries = useMemo(
     () =>
       [
@@ -449,7 +460,7 @@ export function CompaniesWorkspace({
                     </div>
                     <div>
                       <dt>Open pipeline</dt>
-                      <dd>{pipelineValue(leads)}</dd>
+                      <dd>{companyPipelineValue(data.deals.filter((deal) => deal.lead.companyId === company.id))}</dd>
                     </div>
                   </dl>
                   <div className="company-owners">

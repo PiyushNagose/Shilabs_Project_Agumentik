@@ -791,6 +791,10 @@ function crmFetch(input: RequestInfo | URL): Promise<Response> {
     return Promise.resolve(jsonResponse([lead.company]));
   }
 
+  if (url.includes("/api/deals")) {
+    return Promise.resolve(jsonResponse({ items: [], total: 0, page: 1, pageSize: 100, totalPages: 1 }));
+  }
+
   if (url.endsWith("/api/contacts")) {
     return Promise.resolve(jsonResponse([lead.contact]));
   }

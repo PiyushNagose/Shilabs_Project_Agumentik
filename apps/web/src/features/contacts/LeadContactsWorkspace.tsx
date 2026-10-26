@@ -32,7 +32,7 @@ import {
   getLead,
   getLeadQualification,
   listLeadActivities,
-  listLeads,
+  listAllLeads,
   listCompanies,
   listContacts,
   listMeetingRequests,
@@ -299,10 +299,8 @@ export function LeadContactsWorkspace({
   const resource = usePersistedResource<ContactWorkspaceData>({
     scope: `lead-contacts:${accessToken}`,
     load: async () => {
-      const [page, tasks, contacts, companies] = await Promise.all([
-        listLeads(accessToken, {
-          page: 1,
-          pageSize: 100,
+      const [leads, tasks, contacts, companies] = await Promise.all([
+        listAllLeads(accessToken, {
           sort: "lastActivityAt",
           direction: "desc"
         }),
@@ -310,7 +308,7 @@ export function LeadContactsWorkspace({
         listContacts(accessToken),
         listCompanies(accessToken)
       ]);
-      return { companies, contacts, leads: page.items, tasks };
+      return { companies, contacts, leads, tasks };
     },
     accepts: (event) =>
       event.type === "realtime:reconnected" ||
