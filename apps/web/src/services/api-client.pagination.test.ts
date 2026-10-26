@@ -6,7 +6,8 @@ afterEach(() => vi.restoreAllMocks());
 it("loads every page for company and contact relationships, preserving filters", async () => {
   const pages: number[] = [];
   vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
-    const url = new URL(String(input));
+    if (typeof input !== "string") throw new Error("Expected the API client to provide a URL string");
+    const url = new URL(input);
     const page = Number(url.searchParams.get("page"));
     pages.push(page);
     expect(url.searchParams.get("ownerId")).toBe("owner-1");
