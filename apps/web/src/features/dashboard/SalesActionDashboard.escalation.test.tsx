@@ -31,7 +31,7 @@ vi.mock("../../services/api-client.js", () => ({
 }));
 vi.mock("../../services/api/notifications.js", () => ({ escalateNotification: vi.fn() }));
 
-function setup(patch: Partial<SalesActionDashboardItemDto> = {}, canEscalate?: boolean) {
+function setup(patch: Partial<SalesActionDashboardItemDto> = {}, canEscalate?: boolean, dashboardPatch: Partial<SalesActionDashboardDto> = {}) {
   const item: SalesActionDashboardItemDto = {
     id: "notification:alert",
     type: "NEGOTIATION_HANDOFF",
@@ -50,6 +50,7 @@ function setup(patch: Partial<SalesActionDashboardItemDto> = {}, canEscalate?: b
   };
   resource.data = {
     generatedAt: item.occurredAt,
+    overview: { leads: 8, contacts: 8, companies: 8, openDeals: 2 },
     actionItems: [item],
     negotiationAndTakeoverAlerts: [item],
     pendingProposalApprovals: [],
@@ -61,7 +62,8 @@ function setup(patch: Partial<SalesActionDashboardItemDto> = {}, canEscalate?: b
       failuresRequiringAttention: 0,
       meetings: 0,
       totalActionItems: 1
-    }
+    },
+    ...dashboardPatch
   };
   render(
     <ToastProvider>
@@ -84,6 +86,25 @@ describe("dashboard notification escalation parity", () => {
   afterEach(() => {
     cleanup();
     vi.resetAllMocks();
+  });
+
+  it("shows CRM records even when no action is waiting", () => {
+    setup({}, true, {
+      actionItems: [], pendingProposalApprovals: [], negotiationAndTakeoverAlerts: [],
+      failuresRequiringAttention: [],
+      summary: { pendingProposalApprovals: 0, negotiationAndTakeoverAlerts: 0, failuresRequiringAttention: 0, meetings: 0, totalActionItems: 0 }
+    });
+    const overview = screen.getByRole("region", { name: "CRM overview" });
+    for (const [label, value] of [["Leads", "8"], ["Contacts", "8"], ["Companies", "8"], ["Open deals", "2"]] as const) {
+      expect(within(overview).getByText(label).parentElement?.querySelector("strong")?.textContent).toBe(value);
+    }
+    expect(screen.getByText("No immediate action")).toBeTruthy();
+    expect(within(screen.getByRole("region", { name: "Work needing attention" })).getAllByText("0")).toHaveLength(4);
+  });
+
+  it("does not turn missing overview data into zero", () => {
+    setup({}, true, { overview: undefined });
+    expect(within(screen.getByRole("region", { name: "CRM overview" })).getAllByText("Unavailable")).toHaveLength(4);
   });
 
   it("shows escalation in Priority Actions and Handoffs for managers", () => {

@@ -296,6 +296,8 @@ export function SalesActionDashboard({
         "dashboard",
         "workspace",
         "lead",
+        "company",
+        "contact",
         "task",
         "activity",
         "conversation",
@@ -411,7 +413,7 @@ export function SalesActionDashboard({
         <div>
           <p className="eyebrow">Action Dashboard</p>
           <h2>Sales Engineer Actions</h2>
-          <p>Approvals, handoffs and failures from persisted workflow state.</p>
+          <p>Your CRM records and work that needs attention.</p>
           {lastUpdatedAt ? (
             <small className="dashboard-updated" aria-live="polite">
               Updated {formatDate(lastUpdatedAt)}
@@ -424,24 +426,38 @@ export function SalesActionDashboard({
         </div>
       </header>
 
-      <div className="dashboard-summary-grid">
-        <span>
-          <small>Proposal approvals</small>
-          <strong>{dashboard.summary.pendingProposalApprovals}</strong>
-        </span>
-        <span>
-          <small>Handoff alerts</small>
-          <strong>{dashboard.summary.negotiationAndTakeoverAlerts}</strong>
-        </span>
-        <span>
-          <small>Failures</small>
-          <strong>{dashboard.summary.failuresRequiringAttention}</strong>
-        </span>
-        <span>
-          <small>Meetings</small>
-          <strong>{dashboard.summary.meetings}</strong>
-        </span>
-      </div>
+      <section className="dashboard-overview" aria-label="CRM overview">
+        <h3>CRM overview</h3>
+        <div className="dashboard-summary-grid">
+          {([
+            ["leads", "Leads"], ["contacts", "Contacts"],
+            ["companies", "Companies"], ["openDeals", "Open deals"]
+          ] as const).map(([key, label]) => (
+            <span key={key}><small>{label}</small><strong>{dashboard.overview?.[key] ?? "Unavailable"}</strong></span>
+          ))}
+        </div>
+      </section>
+      <section className="dashboard-overview" aria-label="Work needing attention">
+        <h3>Needs attention</h3>
+        <div className="dashboard-summary-grid">
+          <span>
+            <small>Proposal approvals</small>
+            <strong>{dashboard.summary.pendingProposalApprovals}</strong>
+          </span>
+          <span>
+            <small>Handoff alerts</small>
+            <strong>{dashboard.summary.negotiationAndTakeoverAlerts}</strong>
+          </span>
+          <span>
+            <small>Failures</small>
+            <strong>{dashboard.summary.failuresRequiringAttention}</strong>
+          </span>
+          <span>
+            <small>Meeting actions</small>
+            <strong>{dashboard.summary.meetings}</strong>
+          </span>
+        </div>
+      </section>
 
       <section className="dashboard-section dashboard-priority" aria-label="Priority actions">
         <header>

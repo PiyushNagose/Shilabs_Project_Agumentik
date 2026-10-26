@@ -315,7 +315,7 @@ export function CompaniesWorkspace({
           <div>
             <span className="records-eyebrow">CRM / Accounts</span>
             <h2>Companies</h2>
-            <p>{visibleCompanies.length} authorized accounts</p>
+              <p>{resource.data ? `${String(visibleCompanies.length)} authorized accounts` : resource.loading ? "Loading companies..." : "Company count unavailable"}</p>
           </div>
           <div className="records-heading-actions">
             <div className="view-toggle" aria-label="Company view">

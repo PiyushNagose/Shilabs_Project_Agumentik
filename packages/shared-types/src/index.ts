@@ -941,6 +941,12 @@ export interface SalesActionDashboardMeetingSectionDto {
 
 export interface SalesActionDashboardDto {
   generatedAt: string;
+  overview?: {
+    leads: number;
+    contacts: number;
+    companies: number;
+    openDeals: number;
+  };
   pendingProposalApprovals: SalesActionDashboardItemDto[];
   negotiationAndTakeoverAlerts: SalesActionDashboardItemDto[];
   failuresRequiringAttention: SalesActionDashboardItemDto[];

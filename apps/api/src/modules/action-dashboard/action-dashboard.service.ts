@@ -14,6 +14,8 @@ import {
   toNegotiationHandoffDto
 } from "../notifications/notification.service.js";
 import { proposalInclude } from "../proposals/proposal.repository.js";
+import { companyVisibilityWhere, contactVisibilityWhere } from "../authorization/crm-record.permissions.js";
+import { AppError } from "../../shared/errors.js";
 
 const DASHBOARD_LIMIT = 25;
 const EXPECTED_AUTOMATION_STOP_CODES = [
@@ -115,6 +117,7 @@ function domainEventTitle(eventType: string, aggregateType: string): string {
 export async function getSalesActionDashboard(
   actor: AuthenticatedUser
 ): Promise<SalesActionDashboardDto> {
+  if (!actor.activeWorkspaceId) throw new AppError(403, "AUTHORIZATION_ERROR", "An active workspace is required");
   const leadWhere = leadVisibilityWhere(actor);
   const notificationWhere = notificationVisibilityWhere(actor);
   const managersCanSeeOperations = canSeeAll(actor);
@@ -129,7 +132,8 @@ export async function getSalesActionDashboard(
     failedFollowUpAttempts,
     failedWhatsAppMessages,
     failedProposals,
-    failedDomainEvents
+    failedDomainEvents,
+    overviewCounts
   ] = await Promise.all([
     prisma.proposal.findMany({
       where: { status: "WAITING_APPROVAL", lead: leadWhere },
@@ -231,7 +235,13 @@ export async function getSalesActionDashboard(
           orderBy: [{ priority: "desc" }, { updatedAt: "desc" }],
           take: DASHBOARD_LIMIT
         })
-      : Promise.resolve([])
+      : Promise.resolve([]),
+    Promise.all([
+      prisma.lead.count({ where: leadWhere }),
+      prisma.contact.count({ where: contactVisibilityWhere(actor) }),
+      prisma.company.count({ where: companyVisibilityWhere(actor) }),
+      prisma.deal.count({ where: { workspaceId: actor.activeWorkspaceId, lead: leadWhere, status: "OPEN" } })
+    ])
   ]);
 
   const pendingProposalApprovals: SalesActionDashboardItemDto[] = waitingProposals.map(
@@ -471,6 +481,12 @@ export async function getSalesActionDashboard(
 
   return {
     generatedAt: new Date().toISOString(),
+    overview: {
+      leads: overviewCounts[0],
+      contacts: overviewCounts[1],
+      companies: overviewCounts[2],
+      openDeals: overviewCounts[3]
+    },
     pendingProposalApprovals,
     negotiationAndTakeoverAlerts,
     failuresRequiringAttention,

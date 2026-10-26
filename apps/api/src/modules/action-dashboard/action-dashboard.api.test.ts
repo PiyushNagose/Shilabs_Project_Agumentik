@@ -67,6 +67,7 @@ async function cleanup(): Promise<void> {
       ]
     }
   });
+  await prisma.deal.deleteMany({ where: { lead: { company: { name: { startsWith: companyPrefix } } } } });
   await prisma.lead.deleteMany({
     where: { company: { name: { startsWith: companyPrefix } } }
   });
@@ -76,6 +77,7 @@ async function cleanup(): Promise<void> {
   await prisma.company.deleteMany({
     where: { name: { startsWith: companyPrefix } }
   });
+  await prisma.workspace.deleteMany({ where: { slug: "r19-dashboard-foreign" } });
   await prisma.user.deleteMany({
     where: { email: { in: [adminEmail, repEmail, otherRepEmail] } }
   });
@@ -144,8 +146,9 @@ async function seedUsers(): Promise<{ adminId: string; repId: string; otherRepId
 async function seedLead(input: {
   ownerId: string | null;
   suffix: string;
+  workspaceId?: string;
 }): Promise<{ leadId: string; contactId: string; conversationId: string; workspaceId: string }> {
-  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { slug: "default" } });
+  const workspace = await prisma.workspace.findUniqueOrThrow({ where: input.workspaceId ? { id: input.workspaceId } : { slug: "default" } });
   const stage = await prisma.pipelineStage.findUniqueOrThrow({ where: { key: "NEW" } });
   const company = await prisma.company.create({
     data: {
@@ -208,6 +211,30 @@ describe("R19 action dashboard API", () => {
   it("requires authentication", async () => {
     await request(app).get("/api/action-dashboard").expect(401);
   });
+
+  it("counts visible CRM records independently of pending actions and matches their list endpoints", async () => {
+    const users = await seedUsers();
+    const own = await seedLead({ ownerId: users.repId, suffix: "overview-own" });
+    await seedLead({ ownerId: users.otherRepId, suffix: "overview-other" });
+    const foreign = await prisma.workspace.create({ data: { name: "Foreign dashboard workspace", slug: "r19-dashboard-foreign" } });
+    const foreignLead = await seedLead({ ownerId: users.repId, suffix: "overview-foreign", workspaceId: foreign.id });
+    const stage = await prisma.pipelineStage.findUniqueOrThrow({ where: { key: "NEW" } });
+    for (const lead of [own, foreignLead]) {
+      await prisma.deal.create({ data: { workspaceId: lead.workspaceId, leadId: lead.leadId, stageId: stage.id, ownerId: users.repId, value: 100, probability: stage.probability, status: "OPEN" } });
+    }
+    for (const email of [adminEmail, repEmail]) {
+      const token = await login(email);
+      const get = (path: string) => request(app).get(path).set("Authorization", `Bearer ${token}`).expect(200);
+      const dashboard = (await get("/api/action-dashboard")).body as SalesActionDashboardDto;
+      const leads = (await get("/api/leads")).body as { total: number };
+      const contacts = (await get("/api/contacts")).body as unknown[];
+      const companies = (await get("/api/companies")).body as unknown[];
+      const deals = (await get("/api/deals?status=OPEN")).body as { total: number };
+      expect(dashboard.overview).toEqual({ leads: leads.total, contacts: contacts.length, companies: companies.length, openDeals: deals.total });
+      expect(dashboard.overview?.openDeals).toBe(1);
+      expect(dashboard.actionItems.filter((item) => [own.leadId, foreignLead.leadId].includes(item.leadId ?? ""))).toHaveLength(0);
+    }
+  }, 45000);
 
   it("explains calendar reconnects and does not recommend retrying safety-blocked automation", async () => {
     const users = await seedUsers();

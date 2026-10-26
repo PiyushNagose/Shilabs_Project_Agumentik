@@ -577,6 +577,7 @@ const historicalFailedMeetingRequest = {
 
 const actionDashboard = {
   generatedAt: new Date().toISOString(),
+  overview: { leads: 1, contacts: 1, companies: 1, openDeals: 1 },
   pendingProposalApprovals: [
     {
       id: "proposal:proposal_1",

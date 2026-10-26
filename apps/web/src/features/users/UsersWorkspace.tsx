@@ -194,12 +194,12 @@ export function UsersWorkspace({
       <section className="admin-summary" aria-label="Team summary">
         <Card>
           <span>Team members</span>
-          <strong>{resource.data?.length ?? 0}</strong>
+          <strong>{resource.data?.length ?? (resource.loading ? "Loading..." : "Unavailable")}</strong>
         </Card>
         <Card>
           <span>Active</span>
           <strong>
-            {resource.data?.filter((person) => person.status === "ACTIVE").length ?? 0}
+            {resource.data?.filter((person) => person.status === "ACTIVE").length ?? (resource.loading ? "Loading..." : "Unavailable")}
           </strong>
         </Card>
         <Card>

@@ -92,6 +92,7 @@ describe("manager accountability report", () => {
     });
     vi.mocked(getSalesActionDashboard).mockResolvedValue({
       generatedAt: "2026-10-17T10:00:00.000Z",
+      overview: { leads: 8, contacts: 8, companies: 8, openDeals: 2 },
       pendingProposalApprovals: [],
       negotiationAndTakeoverAlerts: [],
       failuresRequiringAttention: [],

@@ -709,7 +709,7 @@ export function DealsWorkspace({
         <div>
           <span className="records-eyebrow">CRM / DEALS</span>
           <h2>Deals</h2>
-          <p>{data?.total ?? 0} authorized records</p>
+          <p>{data ? `${String(data.total)} authorized records` : resource.loading ? "Loading deals..." : "Deal count unavailable"}</p>
         </div>
         <div className="deals-actions">
           <div className="deal-view-toggle">

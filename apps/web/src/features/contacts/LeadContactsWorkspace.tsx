@@ -456,7 +456,7 @@ export function LeadContactsWorkspace({
           <div>
             <span className="records-eyebrow">CRM / Contacts</span>
             <h2>Lead contacts</h2>
-            <p>{visibleContacts.length} authorized records</p>
+            <p>{resource.data ? `${String(visibleContacts.length)} authorized records` : resource.loading ? "Loading contacts..." : "Contact count unavailable"}</p>
           </div>
           <Button
             disabled={companies.length === 0}

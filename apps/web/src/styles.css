@@ -987,6 +987,17 @@ nav a.active-nav::after,
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+.dashboard-overview {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.dashboard-overview > h3 {
+  margin: 0;
+  font-size: var(--type-section);
+}
+
 .dashboard-summary-grid span {
   position: relative;
   display: grid;
