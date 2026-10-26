@@ -227,28 +227,39 @@ async function ensureCapabilityAgents(workspaceId: string): Promise<void> {
   );
   for (const capability of capabilities) {
     if (existing.has(capability.key)) continue;
-    await prisma.$transaction(async (tx) => {
-      const agent = await tx.agent.create({
-        data: {
-          workspaceId,
-          key: capability.key,
-          name: capability.name,
-          description: capability.description,
-          type: capability.type,
-          status: AgentStatus.ACTIVE
-        }
+    try {
+      await prisma.$transaction(async (tx) => {
+        const agent = await tx.agent.create({
+          data: {
+            workspaceId,
+            key: capability.key,
+            name: capability.name,
+            description: capability.description,
+            type: capability.type,
+            status: AgentStatus.ACTIVE
+          }
+        });
+        const version = await tx.agentVersion.create({
+          data: {
+            agentId: agent.id,
+            version: 1,
+            definition: { capability: capability.key, adapter: capability.service, managed: true },
+            toolsConfig: { tools: capability.tools },
+            publishedAt: new Date()
+          }
+        });
+        await tx.agent.update({ where: { id: agent.id }, data: { currentVersionId: version.id } });
       });
-      const version = await tx.agentVersion.create({
-        data: {
-          agentId: agent.id,
-          version: 1,
-          definition: { capability: capability.key, adapter: capability.service, managed: true },
-          toolsConfig: { tools: capability.tools },
-          publishedAt: new Date()
-        }
+    } catch (error) {
+      // Concurrent first-page requests can initialize the same capability.
+      if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002")
+        throw error;
+      const initialized = await prisma.agent.findUnique({
+        where: { workspaceId_key: { workspaceId, key: capability.key } },
+        select: { currentVersionId: true }
       });
-      await tx.agent.update({ where: { id: agent.id }, data: { currentVersionId: version.id } });
-    });
+      if (!initialized?.currentVersionId) throw error;
+    }
   }
 }
 

@@ -108,6 +108,21 @@ describe("Phase 6 agents", () => {
     await api("get", `/api/agents/${firstAgent.id}`, second.token, second.workspace.id).expect(404);
   });
 
+  it("initializes capability agents once under concurrent first-page requests", async () => {
+    const admin = await identity("concurrent");
+    const responses = await Promise.all(
+      Array.from({ length: 4 }, () =>
+        api("get", "/api/agents", admin.token, admin.workspace.id).expect(200)
+      )
+    );
+    for (const response of responses) {
+      const dashboard = response.body as AgentDashboardDto;
+      expect(dashboard.agents).toHaveLength(8);
+      expect(dashboard.agents.every((agent) => agent.currentVersionId !== null)).toBe(true);
+    }
+    expect(await prisma.agent.count({ where: { workspaceId: admin.workspace.id } })).toBe(8);
+  });
+
   it("creates immutable versions and enforces manager lifecycle controls", async () => {
     const admin = await identity("admin");
     const rep = await identity("rep", UserRole.SALES_REP);
